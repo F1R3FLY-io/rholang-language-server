@@ -73,12 +73,14 @@ jobs:
     - name: Install RNode dependencies (macOS)
       if: startsWith(matrix.os, 'macos')
       run: |
+        brew update
         brew install openjdk@11 git sbt curl unzip make cmake libtool autoconf protobuf jflex bnfc
         # Set JAVA_HOME for JDK 11
-        export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
-        export PATH="/usr/lib/jvm/java-11-openjdk-amd64/bin:$PATH"
+        sudo ln -sfn /opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk /Library/Java/JavaVirtualMachines/openjdk-11.jdk
+        export JAVA_HOME="/opt/homebrew/opt/openjdk@11"
+        export PATH="$JAVA_HOME/bin:$PATH"
         echo "JAVA_HOME=/usr/local/opt/openjdk@11" >> $GITHUB_ENV
-        echo "/usr/local/opt/openjdk@11/bin" >> $GITHUB_PATH
+        echo "$JAVA_HOME/bin" >> $GITHUB_PATH
     - name: Install RNode dependencies (Windows)
       if: startsWith(matrix.os, 'windows')
       run: |
