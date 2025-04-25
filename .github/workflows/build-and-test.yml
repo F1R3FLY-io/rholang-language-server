@@ -74,8 +74,10 @@ jobs:
           iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
         }
         choco install -y openjdk11 git sbt curl unzip cmake mingw protoc haskell-stack msys2
+        Write-Output "C:\tools\msys64\usr\bin;C:\tools\msys64\mingw64\bin" >> $env:GITHUB_PATH
         # Set JAVA_HOME for JDK 11
-        $JAVA_HOME = (Get-Command java | Select-Object -ExpandProperty Source | Split-Path -Parent | Split-Path -Parent)
+        $JAVA_HOME = "C:\Program Files\OpenJDK\jdk-11"
+        $env:PATH = "$JAVA_HOME\bin;$env:PATH"
         Write-Output "JAVA_HOME=$JAVA_HOME" >> $env:GITHUB_ENV
         Write-Output "$JAVA_HOME\bin" >> $env:GITHUB_PATH
         # Install make and autoconf via MSYS2
