@@ -1,17 +1,24 @@
 [package]
-name = "f1r3fly-lsp-server"
+name = "rholang-language-server"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+indoc = "2"
+lazy_static = "1.5"
+log = "0.4"
 prost = "0.13"
 regex = "1.11"
+ropey = "1.6"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
+time = { version = "0.3", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
 tonic = "0.13"
 tower-lsp = "0.20"
-lazy_static = "1.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
+url = "2.5"
 
 [build-dependencies]
 tonic-build = "0.13"
