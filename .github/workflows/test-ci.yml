@@ -155,7 +155,7 @@ jobs:
           exit 1
         fi
         # Start RNode in background
-        "$RNODE_BIN" run -s
+        "$RNODE_BIN" run -s &
         RNODE_PID=$!
         # Wait for RNode to start
         for i in {1..30}; do
