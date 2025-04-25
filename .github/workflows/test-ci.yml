@@ -26,6 +26,16 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
+    - name: Install protoc
+      run: |
+        if [ "${{ runner.os }}" == "Linux" ]; then
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+        elif [ "${{ runner.os }}" == "macOS" ]; then
+          brew install protobuf
+        elif [ "${{ runner.os }}" == "Windows" ]; then
+          choco install protoc
+        fi
     - name: Cache Cargo dependencies
       uses: actions/cache@v4
       with:
