@@ -1,4 +1,4 @@
-name: Test CI
+name: Build and Test
 on:
   push:
     branches:
@@ -82,15 +82,25 @@ jobs:
         C:\tools\msys64\usr\bin\pacman.exe -S --noconfirm make autoconf
         # Use Stack to install BNFC
         stack install BNFC
+        # Define the Stack bin directory
+        $stackBin = "$env:APPDATA\local\bin"
+        Write-Output "$stackBin" >> $env:GITHUB_PATH
+        # Get the current system PATH
+        $currentPath = [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::Machine)
+        # Check if the Stack bin directory is already in PATH
+        if ($currentPath -notlike "*$stackBin*") {
+            Write-Host "Adding $stackBin to system PATH..."
+            # Append the Stack bin directory to PATH
+            [Environment]::SetEnvironmentVariable(
+                "Path",
+                "$currentPath;$stackBin",
+                [EnvironmentVariableTarget]::Machine
+            )
+            Write-Host "PATH updated successfully."
+        } else {
+            Write-Host "Stack bin directory is already in PATH."
+        }
         bnfc --version
-        # BNFC: Manual download required
-        Write-Output "BNFC 2.9.5 must be manually downloaded from https://github.com/BNFC/bnfc/releases/download/2.9.5/bnfc-2.9.5-windows-x86_64.exe"
-        Write-Output "Place it in C:\ProgramData\bnfc\bnfc.exe and add C:\ProgramData\bnfc to PATH."
-        Write-Output "Warning: Native Windows builds may fail. If issues occur, consider using WSL or a Ubuntu VM (Hyper-V)."
-        # Create a dummy BNFC to allow the workflow to proceed (replace with actual BNFC in production)
-        New-Item -ItemType Directory -Force -Path "C:\ProgramData\bnfc"
-        Set-Content -Path "C:\ProgramData\bnfc\bnfc.exe" -Value "echo BNFC placeholder"
-        $env:PATH += ";C:\ProgramData\bnfc;C:\tools\msys64\usr\bin"
         # ------------------------------------------- #
         # Install JFlex (this is a bit more involved) #
         # ------------------------------------------- #
@@ -108,6 +118,7 @@ jobs:
         Expand-Archive -Path $zipFile -DestinationPath $installDir -Force
         # Add JFlex bin to system PATH
         $jflexBin = "$installDir\jflex-$jflexVersion\bin"
+        Write-Output "$jflexBin" >> $env:GITHUB_PATH
         $currentPath = [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::Machine)
         if ($currentPath -notlike "*$jflexBin*") {
             Write-Host "Adding JFlex to system PATH..."
@@ -164,6 +175,7 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-rnode-
     - name: Clone F1R3FLY repository
+      if: steps.cache-rnode.outputs.cache-hit != 'true'
       run: |
         git clone --single-branch --branch main --depth 1 ${{ env.F1R3FLY_REPO_URL }} f1r3fly
         if [ $? -ne 0 ]; then
