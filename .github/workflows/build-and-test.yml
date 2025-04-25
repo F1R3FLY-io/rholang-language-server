@@ -84,27 +84,13 @@ jobs:
         # Use Stack to install BNFC #
         # ------------------------- #
         stack install BNFC
-        stack path --local-pkg-db
-        stack exec -- which bnfc
-        # Define the Stack bin directory
-        $stackBin = "$env:APPDATA\local\bin"
-        Write-Output "$stackBin" >> $env:GITHUB_PATH
-        # Get the current system PATH
-        $currentPath = [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::Machine)
-        # Check if the Stack bin directory is already in PATH
-        if ($currentPath -notlike "*$stackBin*") {
-            Write-Host "Adding $stackBin to system PATH..."
-            # Append the Stack bin directory to PATH
-            [Environment]::SetEnvironmentVariable(
-                "Path",
-                "$currentPath;$stackBin",
-                [EnvironmentVariableTarget]::Machine
-            )
-            Write-Host "PATH updated successfully."
-        } else {
-            Write-Host "Stack bin directory is already in PATH."
-        }
-        bnfc --version
+        # Run the command and capture the output
+        $bnfcPath = stack exec -- which bnfc
+        # Convert Unix-style path to Windows-style path (if needed)
+        $bnfcPath = $bnfcPath -replace '^/c/', 'C:\' -replace '/', '\'
+        # Get the parent directory
+        $bnfcBinDir = Split-Path -Path $bnfcPath -Parent
+        Write-Output "$bnfcBinDir" >> $env:GITHUB_PATH
         # ------------------------------------------- #
         # Install JFlex (this is a bit more involved) #
         # ------------------------------------------- #
