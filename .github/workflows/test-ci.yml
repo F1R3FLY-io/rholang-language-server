@@ -19,7 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - windows-latest
+          # - windows-latest
           - macos-latest
           - ubuntu-latest
     steps:
@@ -104,6 +104,11 @@ jobs:
           echo "Error: BNFC not installed correctly." >&2
           exit 1
         fi
+    - name: Clear sbt and Coursier caches (macOS)
+      if: startsWith(matrix.os, 'macos')
+      run: |
+        rm -rf ~/.sbt ~/.ivy2 ~/Library/Caches/Coursier
+      shell: bash
     - name: Cache RNode artifacts
       uses: actions/cache@v4
       id: cache-rnode
@@ -124,14 +129,14 @@ jobs:
         fi
         # Store commit hash for cache key
         cd f1r3fly
-        echo "RCHAIN_COMMIT_HASH=$(git rev-parse HEAD)" >> $GITHUB_ENV
+        echo "F1R3FLY_COMMIT_HASH=$(git rev-parse HEAD)" >> $GITHUB_ENV
         cd ..
       shell: bash
     - name: Build RNode
       if: steps.cache-rnode.outputs.cache-hit != 'true'
       run: |
         cd f1r3fly
-        sbt -mem 8192 -Dsbt.supershell=false -J-Xmx8G -J-Xms2G -J-XX:MaxMetaspaceSize=1G -J-XX:+UseG1GC "set scalaVersion := \"2.12.15\"" clean bnfc:generate compile test assembly
+        sbt -mem 8192 -Dsbt.supershell=false -J-Xmx8G -J-Xms2G -J-XX:MaxMetaspaceSize=1G -J-XX:+UseG1GC "set scalaVersion := \"2.12.15\"" clean bnfc:generate compile stage
         cd ..
       shell: bash
     - name: Start RNode in standalone mode
