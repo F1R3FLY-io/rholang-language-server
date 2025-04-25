@@ -68,14 +68,6 @@ impl<R: BufRead + Read> LspMessageStream<R> {
         }
     }
 
-    fn uppercase(b: u8) -> u8 {
-        if b.is_ascii_lowercase() {
-            b & 0xDF
-        } else {
-            b
-        }
-    }
-
     fn parse_header_name(&mut self) -> Result<String, String> {
         let start = self.position();
         loop {

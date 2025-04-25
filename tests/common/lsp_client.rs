@@ -53,7 +53,11 @@ pub struct LspClient {
     stdin_thread: Mutex<Option<JoinHandle<()>>>,
     stdout_thread: Mutex<Option<JoinHandle<()>>>,
     stderr_thread: Mutex<Option<JoinHandle<()>>>,
+    // ---------------------------------------------------------------------
+    // TODO: Find a cleaner way to register with event handlers than passing
+    // them a self-reference:
     pub self_ref: RwLock<Option<Arc<LspClient>>>,
+    // ---------------------------------------------------------------------
 }
 
 #[allow(dead_code)]
@@ -371,7 +375,7 @@ impl LspClient {
             "data": data,
         });
         let message = json!({
-            "jsonrpc": "2.0",
+            "jsonrpc": "2.0", //<- invariant
             "id": id,
             "error": error,
         });
@@ -387,7 +391,7 @@ impl LspClient {
 
     fn send_response(&self, result: Option<Value>, id: Option<u64>) -> Result<(), String> {
         let message = json!({
-            "jsonrpc": "2.0",
+            "jsonrpc": "2.0", //<- invariant
             "id": id,
             "result": result,
         });
@@ -405,7 +409,7 @@ impl LspClient {
 
     fn send_request(&self, request_id: u64, method: &str, params: Option<Value>) {
         let mut message = json!({
-            "jsonrpc": "2.0",
+            "jsonrpc": "2.0", //<- invariant
             "id": request_id,
             "method": method
         });
@@ -429,7 +433,7 @@ impl LspClient {
 
     fn send_notification(&self, method: &str, params: Value) {
         let message = json!({
-            "jsonrpc": "2.0",
+            "jsonrpc": "2.0", //<- invariant
             "method": method,
             "params": params
         });

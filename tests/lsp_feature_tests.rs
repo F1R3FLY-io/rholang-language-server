@@ -6,13 +6,15 @@ pub mod common;
 use crate::common::lsp_client::LspClient;
 
 with_lsp_client!(test_diagnostics, (|client: &LspClient|{
-    let doc = client.open_document("/path/to/source.rho", indoc! {"
-        new x { x!(\"Hello World!\") }
-    "});
-    let params = client.await_diagnostics(&doc).unwrap();
-    assert!(params.uri.to_string() == doc.uri());
-    assert!(params.diagnostics.len() == 1);
-    let diagnostic = &params.diagnostics[0];
+    let doc = client.open_document("/path/to/source.rho", indoc! {r#"
+        new x {
+            x!("Hello World!")
+        }
+    "#});
+    let diagnostic_params = client.await_diagnostics(&doc).unwrap();
+    assert!(diagnostic_params.uri.to_string() == doc.uri());
+    assert!(diagnostic_params.diagnostics.len() == 1);
+    let diagnostic = &diagnostic_params.diagnostics[0];
     let range = &diagnostic.range;
     let start = &range.start;
     let start_line = start.line as usize;
