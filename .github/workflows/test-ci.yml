@@ -66,6 +66,8 @@ jobs:
         cabal install alex happy
         cabal install BNFC
         # Set JAVA_HOME for JDK 11
+        export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+        export PATH="/usr/lib/jvm/java-11-openjdk-amd64/bin:$PATH"
         echo "JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64" >> $GITHUB_ENV
         echo "/usr/lib/jvm/java-11-openjdk-amd64/bin" >> $GITHUB_PATH
     - name: Install RNode dependencies (macOS)
@@ -73,6 +75,8 @@ jobs:
       run: |
         brew install openjdk@11 git sbt curl unzip make cmake libtool autoconf protobuf jflex bnfc
         # Set JAVA_HOME for JDK 11
+        export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+        export PATH="/usr/lib/jvm/java-11-openjdk-amd64/bin:$PATH"
         echo "JAVA_HOME=/usr/local/opt/openjdk@11" >> $GITHUB_ENV
         echo "/usr/local/opt/openjdk@11/bin" >> $GITHUB_PATH
     - name: Install RNode dependencies (Windows)
@@ -151,9 +155,8 @@ jobs:
       shell: bash
     - name: Start RNode in standalone mode
       run: |
-        # Find the RNode JAR (version may vary, so use wildcard)
         RNODE_BIN="$PWD/f1r3fly/node/target/universal/stage/bin/rnode"
-        if [ -x "$RNODE_BIN" ]; then
+        if [ ! -x "$RNODE_BIN" ]; then
           echo "Error: RNode executable not found." >&2
           exit 1
         fi
