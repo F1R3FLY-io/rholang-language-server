@@ -113,7 +113,7 @@ jobs:
         # Update jflex.bat to use the correct Java and JAR path
         $BAT_CONTENT = @"
         @echo off
-        java -Xmx512m -jar "$JAR_PATH" %*
+        java -jar "$JAR_PATH" %*
         "@
         Set-Content -Path $JFLEX_BAT -Value $BAT_CONTENT
         # Add JFlex bin directory to PATH
@@ -122,7 +122,7 @@ jobs:
         [Environment]::SetEnvironmentVariable("PATH", $env:PATH, [System.EnvironmentVariableTarget]::Process)
         # Verify installation
         Write-Output "Verifying JFlex installation..."
-        "$JFLEX_BIN\jflex.bat" --version
+        Start-Process -FilePath "$JFLEX_BIN\jflex.bat" -ArgumentList --version
         # Clean up
         Remove-Item -Path $DOWNLOAD_PATH
         Write-Output "$JFLEX_BIN" >> $env:GITHUB_PATH
