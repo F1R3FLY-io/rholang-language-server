@@ -19,7 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          # - windows-latest
+          - windows-latest
           - macos-latest
           - ubuntu-latest
     steps:
@@ -53,8 +53,6 @@ jobs:
         cabal install alex happy
         cabal install BNFC
         # Set JAVA_HOME for JDK 11
-        export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
-        export PATH="/usr/lib/jvm/java-11-openjdk-amd64/bin:$PATH"
         echo "JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64" >> $GITHUB_ENV
         echo "/usr/lib/jvm/java-11-openjdk-amd64/bin" >> $GITHUB_PATH
     - name: Install RNode dependencies (macOS)
@@ -64,10 +62,8 @@ jobs:
         brew install openjdk@11 git sbt curl unzip make cmake libtool autoconf protobuf jflex bnfc
         # Set JAVA_HOME for JDK 11
         sudo ln -sfn /opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk /Library/Java/JavaVirtualMachines/openjdk-11.jdk
-        export JAVA_HOME="/opt/homebrew/opt/openjdk@11"
-        export PATH="$JAVA_HOME/bin:$PATH"
-        echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
-        echo "$JAVA_HOME/bin" >> $GITHUB_PATH
+        echo "JAVA_HOME=/opt/homebrew/opt/openjdk@11" >> $GITHUB_ENV
+        echo "/opt/homebrew/opt/openjdk@11/bin" >> $GITHUB_PATH
     - name: Install RNode dependencies (Windows)
       if: startsWith(matrix.os, 'windows')
       run: |
@@ -77,14 +73,16 @@ jobs:
           [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
           iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
         }
-        choco install -y openjdk11 git sbt curl unzip cmake mingw protoc
-        # Install make and autoconf via MSYS2
-        choco install -y msys2
-        C:\tools\msys64\usr\bin\pacman.exe -S --noconfirm make autoconf
+        choco install -y openjdk11 git sbt curl unzip cmake mingw protoc haskell-stack msys2
         # Set JAVA_HOME for JDK 11
         $JAVA_HOME = (Get-Command java | Select-Object -ExpandProperty Source | Split-Path -Parent | Split-Path -Parent)
         Write-Output "JAVA_HOME=$JAVA_HOME" >> $env:GITHUB_ENV
         Write-Output "$JAVA_HOME\bin" >> $env:GITHUB_PATH
+        # Install make and autoconf via MSYS2
+        C:\tools\msys64\usr\bin\pacman.exe -S --noconfirm make autoconf
+        # Use Stack to install BNFC
+        stack install BNFC
+        bnfc --version
         # BNFC: Manual download required
         Write-Output "BNFC 2.9.5 must be manually downloaded from https://github.com/BNFC/bnfc/releases/download/2.9.5/bnfc-2.9.5-windows-x86_64.exe"
         Write-Output "Place it in C:\ProgramData\bnfc\bnfc.exe and add C:\ProgramData\bnfc to PATH."
@@ -93,6 +91,43 @@ jobs:
         New-Item -ItemType Directory -Force -Path "C:\ProgramData\bnfc"
         Set-Content -Path "C:\ProgramData\bnfc\bnfc.exe" -Value "echo BNFC placeholder"
         $env:PATH += ";C:\ProgramData\bnfc;C:\tools\msys64\usr\bin"
+        # ------------------------------------------- #
+        # Install JFlex (this is a bit more involved) #
+        # ------------------------------------------- #
+        $jflexVersion = "1.9.1"  # Replace with desired version or fetch dynamically
+        $jflexUrl = "https://github.com/jflex-de/jflex/releases/download/v$jflexVersion/jflex-$jflexVersion.zip"
+        $installDir = "C:\jflex"
+        $zipFile = "$env:TEMP\jflex-$jflexVersion.zip"
+        # Create installation directory
+        New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+        # Download JFlex ZIP
+        Write-Host "Downloading JFlex v$jflexVersion..."
+        Invoke-WebRequest -Uri $jflexUrl -OutFile $zipFile
+        # Extract ZIP
+        Write-Host "Extracting JFlex to $installDir..."
+        Expand-Archive -Path $zipFile -DestinationPath $installDir -Force
+        # Add JFlex bin to system PATH
+        $jflexBin = "$installDir\jflex-$jflexVersion\bin"
+        $currentPath = [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::Machine)
+        if ($currentPath -notlike "*$jflexBin*") {
+            Write-Host "Adding JFlex to system PATH..."
+            [Environment]::SetEnvironmentVariable(
+                "Path",
+                "$currentPath;$jflexBin",
+                [EnvironmentVariableTarget]::Machine
+            )
+        }
+        # Clean up
+        Remove-Item -Path $zipFile -Force
+        Write-Host "JFlex installation complete."
+        # Verify installation
+        Write-Host "Verifying JFlex installation..."
+        $jflexPath = "$jflexBin\jflex.bat"
+        if (Test-Path $jflexPath) {
+            & $jflexPath --version
+        } else {
+            Write-Host "Error: JFlex not found at $jflexPath"
+        }
     - name: Verify protoc and BNFC
       run: |
         if ! command -v protoc >/dev/null 2>&1; then
