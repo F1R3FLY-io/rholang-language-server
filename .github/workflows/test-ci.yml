@@ -61,21 +61,20 @@ jobs:
         echo "deb https://repo.scala-sbt.org/scalasbt/debian /" | sudo tee /etc/apt/sources.list.d/sbt_old.list
         curl -sL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x2EE0EA64E40A89B84B2DF73499E82A75642AC823" | sudo apt-key add
         sudo apt-get update
-        sudo apt-get install sbt
-
-        sudo apt-get install jflex
-        sudo apt-get install cabal-install
+        sudo apt-get install -y openjdk-11-jdk git curl unzip make cmake libtool autoconf ghc cabal-install protobuf-compiler sbt jflex
         cabal update
         cabal install alex happy
         cabal install BNFC
+        # Set JAVA_HOME for JDK 11
+        echo "JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64" >> $GITHUB_ENV
+        echo "/usr/lib/jvm/java-11-openjdk-amd64/bin" >> $GITHUB_PATH
     - name: Install RNode dependencies (macOS)
       if: startsWith(matrix.os, 'macos')
       run: |
-        brew install git
-        brew install sbt
-
-        brew install jflex
-        brew install bnfc
+        brew install openjdk@11 git sbt curl unzip make cmake libtool autoconf protobuf jflex bnfc
+        # Set JAVA_HOME for JDK 11
+        echo "JAVA_HOME=/usr/local/opt/openjdk@11" >> $GITHUB_ENV
+        echo "/usr/local/opt/openjdk@11/bin" >> $GITHUB_PATH
     - name: Install RNode dependencies (Windows)
       if: startsWith(matrix.os, 'windows')
       run: |
@@ -85,7 +84,14 @@ jobs:
           [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
           iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
         }
-        choco install -y openjdk11 git sbt curl unzip make cmake mingw autoconf
+        choco install -y openjdk11 git sbt curl unzip cmake mingw protoc
+        # Install make and autoconf via MSYS2
+        choco install -y msys2
+        C:\tools\msys64\usr\bin\pacman.exe -S --noconfirm make autoconf
+        # Set JAVA_HOME for JDK 11
+        $JAVA_HOME = (Get-Command java | Select-Object -ExpandProperty Source | Split-Path -Parent | Split-Path -Parent)
+        Write-Output "JAVA_HOME=$JAVA_HOME" >> $env:GITHUB_ENV
+        Write-Output "$JAVA_HOME\bin" >> $env:GITHUB_PATH
         # BNFC: Manual download required
         Write-Output "BNFC 2.9.5 must be manually downloaded from https://github.com/BNFC/bnfc/releases/download/2.9.5/bnfc-2.9.5-windows-x86_64.exe"
         Write-Output "Place it in C:\ProgramData\bnfc\bnfc.exe and add C:\ProgramData\bnfc to PATH."
@@ -93,21 +99,25 @@ jobs:
         # Create a dummy BNFC to allow the workflow to proceed (replace with actual BNFC in production)
         New-Item -ItemType Directory -Force -Path "C:\ProgramData\bnfc"
         Set-Content -Path "C:\ProgramData\bnfc\bnfc.exe" -Value "echo BNFC placeholder"
-        $env:PATH += ";C:\ProgramData\bnfc"
+        $env:PATH += ";C:\ProgramData\bnfc;C:\tools\msys64\usr\bin"
     - name: Verify protoc and BNFC
       run: |
         if ! command -v protoc >/dev/null 2>&1; then
           echo "Error: protoc not installed correctly." >&2
           exit 1
         fi
-        if ! command -v bnfc >/dev/null 2>&1; then
-          echo "Error: BNFC not installed correctly." >&2
+        if ! bnfc --version >/dev/null 2>&1; then
+          echo "Error: BNFC not installed correctly or not executable." >&2
+          bnfc --version
+          file /usr/local/bin/bnfc || true
           exit 1
         fi
-    - name: Clear sbt and Coursier caches (macOS)
-      if: startsWith(matrix.os, 'macos')
-      run: |
-        rm -rf ~/.sbt ~/.ivy2 ~/Library/Caches/Coursier
+        # Verify JDK 11
+        if ! java -version 2>&1 | grep -q "11\."; then
+          echo "Error: JDK 11 is not being used." >&2
+          java -version
+          exit 1
+        fi
       shell: bash
     - name: Cache RNode artifacts
       uses: actions/cache@v4
@@ -136,7 +146,7 @@ jobs:
       if: steps.cache-rnode.outputs.cache-hit != 'true'
       run: |
         cd f1r3fly
-        sbt -mem 8192 -Dsbt.supershell=false -J-Xmx8G -J-Xms2G -J-XX:MaxMetaspaceSize=1G -J-XX:+UseG1GC "set scalaVersion := \"2.12.15\"" clean bnfc:generate compile stage
+        sbt -mem 8192 -Dsbt.supershell=false -java-home "${JAVA_HOME}" -J-Xmx8G -J-Xms2G -J-XX:MaxMetaspaceSize=1G -J-XX:+UseG1GC "set scalaVersion := \"2.12.15\"" clean bnfc:generate compile stage
         cd ..
       shell: bash
     - name: Start RNode in standalone mode
