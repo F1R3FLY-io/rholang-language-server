@@ -83,6 +83,8 @@ jobs:
         # ------------------------- #
         # Use Stack to install BNFC #
         # ------------------------- #
+        $env:PATH = "$env:USERPROFILE\AppData\Roaming\local\bin;$env:PATH"
+        Write-Output "$env:USERPROFILE\AppData\Roaming\local\bin" >> $env:GITHUB_PATH
         stack install BNFC
         # Run the command and capture the output
         $BNFC_PATH = stack exec -- which bnfc
@@ -104,8 +106,8 @@ jobs:
         Write-Output "Extracting JFlex to $INSTALL_DIR..."
         Expand-Archive -Path $DOWNLOAD_PATH -DestinationPath $INSTALL_DIR -Force
         # Configure jflex.bat (ensure it points to the correct JAR and Java)
-        $JFLEX_BAT = "$INSTALL_DIR\jflex-$JFLEX_VERSION\bin\jflex.bat"
-        $JAR_PATH = "$INSTALL_DIR\jflex-$JFLEX_VERSION\lib\jflex-$JFLEX_VERSION.jar"
+        $JFLEX_BAT = "$INSTALL_DIR\bin\jflex.bat"
+        $JAR_PATH = "$INSTALL_DIR\lib\jflex-$JFLEX_VERSION.jar"
         if (-not (Test-Path $JAR_PATH)) {
             Write-Error "JFlex JAR not found at $JAR_PATH"
             exit 1
@@ -117,7 +119,7 @@ jobs:
         "@
         Set-Content -Path $JFLEX_BAT -Value $BAT_CONTENT
         # Add JFlex bin directory to PATH
-        $JFLEX_BIN = "$INSTALL_DIR\jflex-$JFLEX_VERSION\bin"
+        $JFLEX_BIN = "$INSTALL_DIR\bin"
         $env:PATH = "$JFLEX_BIN;$env:PATH"
         [Environment]::SetEnvironmentVariable("PATH", $env:PATH, [System.EnvironmentVariableTarget]::Process)
         # Verify installation
