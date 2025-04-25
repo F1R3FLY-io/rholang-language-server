@@ -125,6 +125,11 @@ jobs:
           exit 1
         fi
       shell: bash
+    - name: Java Info
+      run: |
+        which java
+        java -version
+      shell: bash
     - name: Cache RNode artifacts
       uses: actions/cache@v4
       id: cache-rnode
