@@ -80,8 +80,12 @@ jobs:
         Write-Output "$JAVA_HOME\bin" >> $env:GITHUB_PATH
         # Install make and autoconf via MSYS2
         C:\tools\msys64\usr\bin\pacman.exe -S --noconfirm make autoconf
-        # Use Stack to install BNFC
+        # ------------------------- #
+        # Use Stack to install BNFC #
+        # ------------------------- #
         stack install BNFC
+        stack path --local-pkg-db
+        stack exec -- which bnfc
         # Define the Stack bin directory
         $stackBin = "$env:APPDATA\local\bin"
         Write-Output "$stackBin" >> $env:GITHUB_PATH
