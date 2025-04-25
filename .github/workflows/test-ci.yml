@@ -15,6 +15,7 @@ jobs:
     name: Build and Test against ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os:
           - windows-latest
