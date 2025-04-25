@@ -98,35 +98,35 @@ jobs:
         # ------------------------------------------- #
         $JFLEX_VERSION = "1.9.1"  # Specify the desired JFlex version
         $JFLEX_URL = "https://github.com/jflex-de/jflex/releases/download/v$JFLEX_VERSION/jflex-$JFLEX_VERSION.zip"
-        $INSTALL_DIR = "$env:USERPROFILE\jflex-$JFLEX_VERSION"
-        $DOWNLOAD_PATH = "$env:TEMP\jflex-$JFLEX_VERSION.zip"
+        $JFLEX_INSTALL_DIR = "$env:USERPROFILE"
+        $JFLEX_DOWNLOAD_PATH = "$env:TEMP\jflex-$JFLEX_VERSION.zip"
         # Download JFlex
         Write-Output "Downloading JFlex v$JFLEX_VERSION from $JFLEX_URL..."
-        Invoke-WebRequest -Uri $JFLEX_URL -OutFile $DOWNLOAD_PATH
-        Write-Output "Extracting JFlex to $INSTALL_DIR..."
-        Expand-Archive -Path $DOWNLOAD_PATH -DestinationPath $INSTALL_DIR -Force
+        Invoke-WebRequest -Uri $JFLEX_URL -OutFile $JFLEX_DOWNLOAD_PATH
+        Write-Output "Extracting JFlex to $JFLEX_INSTALL_DIR..."
+        Expand-Archive -Path $JFLEX_DOWNLOAD_PATH -DestinationPath $JFLEX_INSTALL_DIR -Force
         # Configure jflex.bat (ensure it points to the correct JAR and Java)
-        $JFLEX_BAT = "$INSTALL_DIR\bin\jflex.bat"
-        $JAR_PATH = "$INSTALL_DIR\lib\jflex-$JFLEX_VERSION.jar"
-        if (-not (Test-Path $JAR_PATH)) {
-            Write-Error "JFlex JAR not found at $JAR_PATH"
+        $JFLEX_BAT = "$JFLEX_INSTALL_DIR\jflex-$JFLEX_VERSION\bin\jflex.bat"
+        $JFLEX_JAR_PATH = "$JFLEX_INSTALL_DIR\jflex-$JFLEX_VERSION\lib\jflex-full-$JFLEX_VERSION.jar"
+        if (-not (Test-Path $JFLEX_JAR_PATH)) {
+            Write-Error "JFlex JAR not found at $JFLEX_JAR_PATH"
             exit 1
         }
         # Update jflex.bat to use the correct Java and JAR path
         $BAT_CONTENT = @"
         @echo off
-        java -jar "$JAR_PATH" %*
+        java -jar "$JFLEX_JAR_PATH" %*
         "@
         Set-Content -Path $JFLEX_BAT -Value $BAT_CONTENT
         # Add JFlex bin directory to PATH
-        $JFLEX_BIN = "$INSTALL_DIR\bin"
+        $JFLEX_BIN = "$JFLEX_INSTALL_DIR\jflex-$JFLEX_VERSION\bin"
         $env:PATH = "$JFLEX_BIN;$env:PATH"
         [Environment]::SetEnvironmentVariable("PATH", $env:PATH, [System.EnvironmentVariableTarget]::Process)
         # Verify installation
         Write-Output "Verifying JFlex installation..."
         Start-Process -FilePath "$JFLEX_BIN\jflex.bat" -ArgumentList --version
         # Clean up
-        Remove-Item -Path $DOWNLOAD_PATH
+        Remove-Item -Path $JFLEX_DOWNLOAD_PATH
         Write-Output "$JFLEX_BIN" >> $env:GITHUB_PATH
         Write-Output "JFlex installed successfully at $JFLEX_BIN"
     - name: Verify protoc and BNFC
