@@ -73,13 +73,14 @@ jobs:
           [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
           iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
         }
-        choco install -y openjdk11 git sbt curl unzip cmake mingw protoc haskell-stack msys2
+        choco install -y openjdk --version 11.0
+        choco install -y git sbt curl unzip cmake mingw protoc haskell-stack msys2
         Write-Output "C:\tools\msys64\usr\bin;C:\tools\msys64\mingw64\bin" >> $env:GITHUB_PATH
         # Set JAVA_HOME for JDK 11
-        $JAVA_HOME = "C:\Program Files\OpenJDK\jdk-11"
-        $env:PATH = "$JAVA_HOME\bin;$env:PATH"
-        Write-Output "JAVA_HOME=$JAVA_HOME" >> $env:GITHUB_ENV
-        Write-Output "$JAVA_HOME\bin" >> $env:GITHUB_PATH
+        $env:JAVA_HOME = "C:\Program Files\OpenJDK\jdk-11"
+        $env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
+        Write-Output "JAVA_HOME=$env:JAVA_HOME" >> $env:GITHUB_ENV
+        Write-Output "$env:JAVA_HOME\bin" >> $env:GITHUB_PATH
         # Verify OpenJDK 11
         java -version
         if (-not (java -version 2>&1 | Select-String "11\.")) {
@@ -137,12 +138,14 @@ jobs:
         Remove-Item -Path $JFLEX_DOWNLOAD_PATH
         Write-Output "$JFLEX_BIN" >> $env:GITHUB_PATH
         Write-Output "JFlex installed successfully at $JFLEX_BIN"
-    - name: Verify protoc and BNFC
+    - name: Verify Dependencies
       run: |
+        protoc --version
         if ! command -v protoc >/dev/null 2>&1; then
           echo "Error: protoc not installed correctly." >&2
           exit 1
         fi
+        bnfc --version
         if ! bnfc --version >/dev/null 2>&1; then
           echo "Error: BNFC not installed correctly or not executable." >&2
           bnfc --version
@@ -150,16 +153,12 @@ jobs:
           exit 1
         fi
         # Verify JDK 11
+        java -version
         if ! java -version 2>&1 | grep -q "11\."; then
           echo "Error: JDK 11 is not being used." >&2
           java -version
           exit 1
         fi
-      shell: bash
-    - name: Java Info
-      run: |
-        which java
-        java -version
       shell: bash
     - name: Cache RNode artifacts
       uses: actions/cache@v4
