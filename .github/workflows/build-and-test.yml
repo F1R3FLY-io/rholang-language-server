@@ -80,6 +80,12 @@ jobs:
         $env:PATH = "$JAVA_HOME\bin;$env:PATH"
         Write-Output "JAVA_HOME=$JAVA_HOME" >> $env:GITHUB_ENV
         Write-Output "$JAVA_HOME\bin" >> $env:GITHUB_PATH
+        # Verify OpenJDK 11
+        java -version
+        if (-not (java -version 2>&1 | Select-String "11\.")) {
+          Write-Output "Error: OpenJDK 11 is not the default Java version."
+          exit 1
+        }
         # Install make and autoconf via MSYS2
         C:\tools\msys64\usr\bin\pacman.exe -S --noconfirm make autoconf
         # ------------------------- #
