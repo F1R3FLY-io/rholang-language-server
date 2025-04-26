@@ -28,7 +28,12 @@ use tower_lsp::lsp_types::{
 use serde_json::{self, json, Value};
 
 use crate::common::lsp_message_stream::LspMessageStream;
-use crate::common::lsp_document::{LspDocument, LspDocumentEvent, LspDocumentEventHandler};
+use crate::common::lsp_document::{
+    LspDocument,
+    LspDocumentEvent,
+    LspDocumentEventHandler,
+    LspDocumentEventManager,
+};
 
 type RequestHandler = fn(&LspClient, &Value) -> Result<Option<Value>, String>;
 type NotificationHandler = fn(&LspClient, &Value) -> Result<(), String>;
@@ -53,11 +58,7 @@ pub struct LspClient {
     stdin_thread: Mutex<Option<JoinHandle<()>>>,
     stdout_thread: Mutex<Option<JoinHandle<()>>>,
     stderr_thread: Mutex<Option<JoinHandle<()>>>,
-    // ---------------------------------------------------------------------
-    // TODO: Find a cleaner way to register with event handlers than passing
-    // them a self-reference:
-    pub self_ref: RwLock<Option<Arc<LspClient>>>,
-    // ---------------------------------------------------------------------
+    event_manager: Mutex<Option<Arc<LspDocumentEventManager>>>,
 }
 
 #[allow(dead_code)]
@@ -197,10 +198,18 @@ impl LspClient {
             stdin_thread: Mutex::new(Some(stdin_thread)),
             stdout_thread: Mutex::new(Some(stdout_thread)),
             stderr_thread: Mutex::new(Some(stderr_thread)),
-            self_ref: RwLock::new(None),
+            event_manager: Mutex::new(None),
         };
 
         Ok(client)
+    }
+
+    pub fn set_event_manager(
+        &self,
+        event_manager: Option<Arc<LspDocumentEventManager>>
+    ) {
+        let mut lock = self.event_manager.lock().unwrap();
+        *lock = event_manager;
     }
 
     fn next_request_id(&self) -> u64 {
@@ -211,7 +220,7 @@ impl LspClient {
         self.serial_document_id.fetch_add(1, Ordering::SeqCst)
     }
 
-    pub fn open_document(&self, path: &str, text: &str) -> Arc<LspDocument> {
+    pub fn open_document(&self, path: &str, text: &str) -> Result<Arc<LspDocument>, String> {
         let document_id = self.next_document_id();
         let document = LspDocument::from_path_and_text(
             document_id,
@@ -219,18 +228,18 @@ impl LspClient {
             path.to_string(),
             text.to_string(),
         );
-        if let Some(client) = &*self.self_ref.read().unwrap() {
-            document.on_event(client.clone());
+        if let Some(event_manager) = &*self.event_manager.lock().unwrap() {
+            document.set_event_manager(event_manager.clone());
         } else {
-            error!("self.self_ref has not been set!");
+            return Err("event_manager has not been set!".to_string());
         }
         let document = Arc::new(document);
         {
             let mut documents_by_uri = self.documents_by_uri.write().unwrap();
             documents_by_uri.insert(document.uri(), document.clone());
         }
-        document.open();
-        document
+        document.open()?;
+        Ok(document)
     }
 
     fn dispatch(&self, message: String) -> Result<(), String> {
@@ -828,20 +837,22 @@ macro_rules! with_lsp_client {
             ) {
                 Ok(client) => {
                     let client = Arc::new(client);
-                    {
-                        let mut locked = client.self_ref.write().unwrap();
-                        *locked = Some(client.clone());
-                    }
+                    let event_manager =
+                        crate::common::lsp_document::LspDocumentEventManager::new(
+                            client.clone()
+                        );
+                    client.set_event_manager(Some(event_manager));
                     assert!(client.initialize().is_ok());
                     assert!(client.initialized().is_ok());
                     $callback(&client);
                     assert!(client.shutdown().is_ok());
                     assert!(client.exit().is_ok());
                     assert!(client.stop().is_ok());
-                    {
-                        let mut locked = client.self_ref.write().unwrap();
-                        *locked = None;
-                    }
+                    // IMPORTANT: Release the reference to the event manager so
+                    // its and the client's memory can be freed. Otherwise,
+                    // since they reference each other, their reference counters
+                    // will never reach 0 and memory will leak:
+                    client.set_event_manager(None);
                 }
                 Err(e) => {
                     tracing::error!("Failed to start client: {}", e);

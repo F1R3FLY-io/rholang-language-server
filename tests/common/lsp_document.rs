@@ -1,4 +1,4 @@
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use url::Url;
@@ -33,6 +33,20 @@ pub trait LspDocumentEventHandler {
     fn handle_lsp_document_event(&self, event: &LspDocumentEvent);
 }
 
+pub struct LspDocumentEventManager {
+    handler: Arc<dyn LspDocumentEventHandler>,
+}
+
+impl LspDocumentEventManager {
+    pub fn new(handler: Arc<dyn LspDocumentEventHandler>) -> Arc<Self> {
+        Arc::new(LspDocumentEventManager { handler })
+    }
+
+    pub fn emit_lsp_document_event(&self, event: LspDocumentEvent) {
+        self.handler.handle_lsp_document_event(&event);
+    }
+}
+
 #[derive(Debug)]
 struct Cursor {
     line: usize,
@@ -47,7 +61,7 @@ pub struct LspDocument {
     text: RwLock<Rope>,
     pub version: AtomicI32,
     cursor: RwLock<Cursor>,
-    handler: RwLock<Option<Arc<dyn LspDocumentEventHandler>>>,
+    event_manager: Mutex<Option<Arc<LspDocumentEventManager>>>,
 }
 
 #[allow(dead_code)]
@@ -58,7 +72,12 @@ impl LspDocument {
         text.line_to_char(line) + column
     }
 
-    pub fn from_path_and_text(document_id: u64, language_id: String, path: String, text: String) -> Self {
+    pub fn from_path_and_text(
+        document_id: u64,
+        language_id: String,
+        path: String,
+        text: String,
+    ) -> Self {
         LspDocument {
             id: document_id,
             language_id,
@@ -69,8 +88,13 @@ impl LspDocument {
                 line: 0,
                 column: 0,
             }),
-            handler: RwLock::new(None),
+            event_manager: Mutex::new(None),
         }
+    }
+
+    pub fn set_event_manager(&self, event_manager: Arc<LspDocumentEventManager>) {
+        let mut lock = self.event_manager.lock().unwrap();
+        *lock = Some(event_manager);
     }
 
     pub fn uri(&self) -> String {
@@ -78,28 +102,21 @@ impl LspDocument {
         url.to_string()
     }
 
-    pub fn on_event(&self, handler: Arc<dyn LspDocumentEventHandler>)
-    {
-        let mut lock = self.handler.write().unwrap();
-        *lock = Some(handler);
-    }
-
     fn bump_version(&self) -> i32 {
         self.version.fetch_add(1, Ordering::SeqCst)
     }
 
-    pub fn open(&self) {
-        let full_text = self.text.read().unwrap().to_string();
-        self.emit(LspDocumentEvent::FileOpened{
-            document_id: self.id,
-            uri: self.uri(),
-            text: full_text,
-        });
-    }
-
-    fn emit(&self, event: LspDocumentEvent) {
-        if let Some(handler) = &*self.handler.read().unwrap() {
-            handler.handle_lsp_document_event(&event);
+    pub fn open(&self) -> Result<(), String> {
+        if let Some(event_manager) = &*self.event_manager.lock().unwrap() {
+            let full_text = self.text.read().unwrap().to_string();
+            event_manager.emit_lsp_document_event(LspDocumentEvent::FileOpened{
+                document_id: self.id,
+                uri: self.uri(),
+                text: full_text,
+            });
+            Ok(())
+        } else {
+            Err("event_manager has not been set!".to_string())
         }
     }
 
@@ -127,7 +144,7 @@ impl LspDocument {
         cursor.column = column - 1;
     }
 
-    pub fn insert_text(&self, text: String) {
+    pub fn insert_text(&self, text: String) -> Result<(), String> {
         let (from_line, from_column) = {
             let cursor = self.cursor.read().unwrap();
             (cursor.line, cursor.column)
@@ -147,16 +164,21 @@ impl LspDocument {
             cursor.column = position - self_text.line_to_char(cursor.line);
         }
         let version = self.bump_version();
-        self.emit(LspDocumentEvent::TextChanged{
-            document_id: self.id,
-            uri: self.uri(),
-            version,
-            from_line,
-            from_column,
-            to_line,
-            to_column,
-            text,
-        });
+        if let Some(event_manager) = &*self.event_manager.lock().unwrap() {
+            event_manager.emit_lsp_document_event(LspDocumentEvent::TextChanged {
+                document_id: self.id,
+                uri: self.uri(),
+                version,
+                from_line,
+                from_column,
+                to_line,
+                to_column,
+                text,
+            });
+            Ok(())
+        } else {
+            Err("event_manager has not been set!".to_string())
+        }
     }
 
     pub fn apply(&self, mut edits: Vec<TextEdit>) -> () {
