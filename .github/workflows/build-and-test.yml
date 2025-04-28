@@ -167,6 +167,12 @@ jobs:
           exit 1
         fi
       shell: bash
+    - name: Get RNode Commit Hash
+      id: rnode-hash
+      run: |
+        # Replace with your dependency's Git URL
+        COMMIT_HASH=$(git ls-remote $F1R3FLY_REPO_URL HEAD | awk '{ print $1 }')
+        echo "hash=$COMMIT_HASH" >> $GITHUB_OUTPUT
     - name: Cache RNode artifacts
       uses: actions/cache@v4
       id: cache-rnode
@@ -175,7 +181,7 @@ jobs:
           ~/.ivy2/cache
           ~/.sbt
           f1r3fly/node/target/universal/stage/
-        key: ${{ runner.os }}-rnode-${{ hashFiles('f1r3fly/build.sbt', 'f1r3fly/project/*.sbt', 'f1r3fly/project/build.properties') }}-${{ env.F1R3FLY_COMMIT_HASH }}
+        key: ${{ runner.os }}-rnode-${{ steps.dep-hash.outputs.hash }}
         restore-keys: |
           ${{ runner.os }}-rnode-
     - name: Clone F1R3FLY repository
