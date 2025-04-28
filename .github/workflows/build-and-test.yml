@@ -182,8 +182,8 @@ jobs:
           ~/.sbt
           f1r3fly/node/target/universal/stage/
         key: ${{ runner.os }}-rnode-${{ steps.dep-hash.outputs.hash }}
-        restore-keys: |
-          ${{ runner.os }}-rnode-
+        # restore-keys: |
+        #   ${{ runner.os }}-rnode-
     - name: Clone F1R3FLY repository
       if: steps.cache-rnode.outputs.cache-hit != 'true'
       run: |
