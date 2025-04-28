@@ -27,13 +27,9 @@ use tower_lsp::lsp_types::{
 
 use serde_json::{self, json, Value};
 
+use crate::common::lsp_document::LspDocument;
+use crate::common::lsp_event::LspEvent;
 use crate::common::lsp_message_stream::LspMessageStream;
-use crate::common::lsp_document::{
-    LspDocument,
-    LspDocumentEvent,
-    LspDocumentEventHandler,
-    LspDocumentEventManager,
-};
 
 type RequestHandler = fn(&LspClient, &Value) -> Result<Option<Value>, String>;
 type NotificationHandler = fn(&LspClient, &Value) -> Result<(), String>;
@@ -43,7 +39,7 @@ type ResponseHandler = fn(&LspClient, &Value) -> Result<(), String>;
 pub struct LspClient {
     server: Mutex<Child>,
     sender: Mutex<Option<Sender<String>>>,
-    receiver: Receiver<String>,
+    receiver: Mutex<Receiver<String>>,
     language_id: String,
     server_capabilities: RwLock<Option<ServerCapabilities>>,
     request_handlers: HashMap<String, RequestHandler>,
@@ -58,7 +54,7 @@ pub struct LspClient {
     stdin_thread: Mutex<Option<JoinHandle<()>>>,
     stdout_thread: Mutex<Option<JoinHandle<()>>>,
     stderr_thread: Mutex<Option<JoinHandle<()>>>,
-    event_manager: Mutex<Option<Arc<LspDocumentEventManager>>>,
+    event_sender: Sender<LspEvent>,
 }
 
 #[allow(dead_code)]
@@ -67,6 +63,7 @@ impl LspClient {
         language_id: String,
         server_path: String,
         server_args: Vec<String>,
+        event_sender: Sender<LspEvent>,
     ) -> std::io::Result<Self> {
         let mut server = Command::new(server_path)
             .args(&server_args)
@@ -97,7 +94,11 @@ impl LspClient {
                         server_stdin.flush().expect("Failed to flush stdin");
                     }
                     Err(e) => {
-                        error!("Failed to receive message for the server: {}", e);
+                        if e.to_string() == "receiving on a closed channel" {
+                            info!("Server stdin channel closed.");
+                        } else {
+                            error!("Failed to receive message for the server: {}", e);
+                        }
                         return;
                     }
                 }
@@ -114,7 +115,11 @@ impl LspClient {
                         tx.send(payload).expect("Failed to send message.");
                     }
                     Err(e) => {
-                        error!("Failed to read next message: {}", e);
+                        if e.as_str() == "Input stream closed" {
+                            info!("Server stdout closed.");
+                        } else {
+                            error!("Failed to read next message: {}", e);
+                        }
                         return;
                     }
                 }
@@ -128,7 +133,7 @@ impl LspClient {
             loop {
                 match server_stderr.read(&mut read_buffer) {
                     Ok(0) => {
-                        info!("Server stderr closed");
+                        info!("Server stderr closed.");
                         if let Err(e) = client_stdout.flush() {
                             error!("Error flushing client stdout: {}", e);
                         }
@@ -183,7 +188,7 @@ impl LspClient {
         let client = LspClient {
             server: Mutex::new(server),
             sender: Mutex::new(Some(sender)),
-            receiver,
+            receiver: Mutex::new(receiver),
             language_id,
             server_capabilities: RwLock::new(None),
             request_handlers,
@@ -198,18 +203,10 @@ impl LspClient {
             stdin_thread: Mutex::new(Some(stdin_thread)),
             stdout_thread: Mutex::new(Some(stdout_thread)),
             stderr_thread: Mutex::new(Some(stderr_thread)),
-            event_manager: Mutex::new(None),
+            event_sender,
         };
 
         Ok(client)
-    }
-
-    pub fn set_event_manager(
-        &self,
-        event_manager: Option<Arc<LspDocumentEventManager>>
-    ) {
-        let mut lock = self.event_manager.lock().unwrap();
-        *lock = event_manager;
     }
 
     fn next_request_id(&self) -> u64 {
@@ -227,12 +224,8 @@ impl LspClient {
             self.language_id.clone(),
             path.to_string(),
             text.to_string(),
+            self.event_sender.clone(),
         );
-        if let Some(event_manager) = &*self.event_manager.lock().unwrap() {
-            document.set_event_manager(event_manager.clone());
-        } else {
-            return Err("event_manager has not been set!".to_string());
-        }
         let document = Arc::new(document);
         {
             let mut documents_by_uri = self.documents_by_uri.write().unwrap();
@@ -469,7 +462,7 @@ impl LspClient {
         let start = Instant::now();
 
         while start.elapsed() < timeout {
-            if let Ok(message) = self.receiver.recv_timeout(Duration::from_millis(100)) {
+            if let Ok(message) = self.receiver.lock().unwrap().recv_timeout(Duration::from_millis(100)) {
                 match self.dispatch(message) {
                     Ok(_) => {
                         let responses_by_id = self.responses_by_id.read().unwrap();
@@ -499,7 +492,7 @@ impl LspClient {
         let start = Instant::now();
 
         while start.elapsed() < timeout {
-            if let Ok(message) = self.receiver.recv_timeout(Duration::from_millis(100)) {
+            if let Ok(message) = self.receiver.lock().unwrap().recv_timeout(Duration::from_millis(100)) {
                 match self.dispatch(message) {
                     Ok(_) => {
                         let diagnostics_by_id = self.diagnostics_by_id.read().unwrap();
@@ -615,14 +608,14 @@ impl LspClient {
         })
     }
 
-    fn send_text_document_did_open(&self, uri: &str, text: &str) {
+    fn send_text_document_did_open(&self, uri: String, text: String) {
         if !self.supports_text_document_sync() {
             warn!("Server does not support text document synchronization. Skipping didOpen.");
             return;
         }
         let params = DidOpenTextDocumentParams {
             text_document: TextDocumentItem {
-                uri: Url::parse(uri).expect("Invalid URI"),
+                uri: Url::parse(uri.as_str()).expect("Invalid URI"),
                 language_id: "plaintext".to_string(),
                 version: 1,
                 text: text.to_string(),
@@ -704,9 +697,16 @@ impl LspClient {
         Ok(())
     }
 
+    fn emit(&self, event: LspEvent) -> Result<(), String> {
+        self.event_sender.send(event)
+            .map_err(|e| format!("Failed to emit event: {}", e))
+    }
+
     pub fn shutdown(&self) -> Result<Arc<Value>, String> {
         let request_id = self.send_shutdown();
-        return self.await_response(request_id);
+        let result = self.await_response(request_id);
+        self.emit(LspEvent::Shutdown)?;
+        result
     }
 
     fn send_shutdown(&self) -> u64 {
@@ -726,7 +726,7 @@ impl LspClient {
 
     pub fn exit(&self) -> Result<(), String> {
         self.send_exit();
-        Ok(())
+        self.emit(LspEvent::Exit)
     }
 
     pub fn stop(&self) -> io::Result<()> {
@@ -760,19 +760,17 @@ impl LspClient {
         }
         Ok(())
     }
-}
 
-impl LspDocumentEventHandler for LspClient {
-    fn handle_lsp_document_event(&self, event: &LspDocumentEvent) {
+    pub fn handle_lsp_document_event(&self, event: LspEvent) {
         match event {
-            LspDocumentEvent::FileOpened {
+            LspEvent::FileOpened {
                 document_id: _,
                 uri,
                 text,
             } => {
                 self.send_text_document_did_open(uri, text);
             }
-            LspDocumentEvent::TextChanged {
+            LspEvent::TextChanged {
                 document_id: _,
                 uri,
                 version,
@@ -786,20 +784,21 @@ impl LspDocumentEventHandler for LspClient {
                     TextDocumentContentChangeEvent {
                         range: Some(Range{
                             start: Position{
-                                line: *from_line as u32,
-                                character: *from_column as u32,
+                                line: from_line as u32,
+                                character: from_column as u32,
                             },
                             end: Position{
-                                line: *to_line as u32,
-                                character: *to_column as u32,
+                                line: to_line as u32,
+                                character: to_column as u32,
                             },
                         }),
                         range_length: Some(text.chars().count() as u32),
                         text: text.to_string(),
                     },
                 ];
-                self.send_text_document_did_change(uri, *version, changes);
+                self.send_text_document_did_change(uri.as_str(), version, changes);
             }
+            _ => (),
         }
     }
 }
@@ -830,29 +829,39 @@ macro_rules! with_lsp_client {
         #[test]
         fn $test_name() {
             crate::common::lsp_client::setup();
-            match LspClient::start(
+            let (event_sender, event_receiver) =
+                std::sync::mpsc::channel::<
+                    crate::common::lsp_event::LspEvent
+                >();
+            match crate::common::lsp_client::LspClient::start(
                 "rholang".to_string(),
                 "target/debug/rholang-language-server".to_string(),
                 Vec::new(),
+                event_sender,
             ) {
                 Ok(client) => {
-                    let client = Arc::new(client);
-                    let event_manager =
-                        crate::common::lsp_document::LspDocumentEventManager::new(
-                            client.clone()
-                        );
-                    client.set_event_manager(Some(event_manager));
+                    let client = std::sync::Arc::new(client);
+                    let _event_thread = {
+                        let client = client.clone();
+                        std::thread::spawn(move || {
+                            for event in event_receiver {
+                                match event {
+                                    crate::common::lsp_event::LspEvent::FileOpened{..} =>
+                                        client.handle_lsp_document_event(event),
+                                    crate::common::lsp_event::LspEvent::TextChanged{..} =>
+                                        client.handle_lsp_document_event(event),
+                                    crate::common::lsp_event::LspEvent::Shutdown => break,
+                                    crate::common::lsp_event::LspEvent::Exit => break,
+                                }
+                            }
+                        })
+                    };
                     assert!(client.initialize().is_ok());
                     assert!(client.initialized().is_ok());
                     $callback(&client);
                     assert!(client.shutdown().is_ok());
                     assert!(client.exit().is_ok());
                     assert!(client.stop().is_ok());
-                    // IMPORTANT: Release the reference to the event manager so
-                    // its and the client's memory can be freed. Otherwise,
-                    // since they reference each other, their reference counters
-                    // will never reach 0 and memory will leak:
-                    client.set_event_manager(None);
                 }
                 Err(e) => {
                     tracing::error!("Failed to start client: {}", e);

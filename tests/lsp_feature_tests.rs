@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use indoc::indoc;
 
 pub mod common;

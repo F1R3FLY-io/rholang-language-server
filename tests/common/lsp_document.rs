@@ -1,5 +1,6 @@
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::mpsc::Sender;
 
 use url::Url;
 
@@ -10,42 +11,7 @@ use tower_lsp::lsp_types::{
     TextEdit,
 };
 
-#[derive(Debug)]
-pub enum LspDocumentEvent {
-    FileOpened {
-        document_id: u64,
-        uri: String,
-        text: String,
-    },
-    TextChanged {
-        document_id: u64,
-        uri: String,
-        version: i32,
-        from_line: usize,
-        from_column: usize,
-        to_line: usize,
-        to_column: usize,
-        text: String,
-    },
-}
-
-pub trait LspDocumentEventHandler {
-    fn handle_lsp_document_event(&self, event: &LspDocumentEvent);
-}
-
-pub struct LspDocumentEventManager {
-    handler: Arc<dyn LspDocumentEventHandler>,
-}
-
-impl LspDocumentEventManager {
-    pub fn new(handler: Arc<dyn LspDocumentEventHandler>) -> Arc<Self> {
-        Arc::new(LspDocumentEventManager { handler })
-    }
-
-    pub fn emit_lsp_document_event(&self, event: LspDocumentEvent) {
-        self.handler.handle_lsp_document_event(&event);
-    }
-}
+use crate::common::lsp_event::LspEvent;
 
 #[derive(Debug)]
 struct Cursor {
@@ -61,7 +27,7 @@ pub struct LspDocument {
     text: RwLock<Rope>,
     pub version: AtomicI32,
     cursor: RwLock<Cursor>,
-    event_manager: Mutex<Option<Arc<LspDocumentEventManager>>>,
+    event_sender: Sender<LspEvent>,
 }
 
 #[allow(dead_code)]
@@ -77,6 +43,7 @@ impl LspDocument {
         language_id: String,
         path: String,
         text: String,
+        event_sender: Sender<LspEvent>,
     ) -> Self {
         LspDocument {
             id: document_id,
@@ -88,13 +55,8 @@ impl LspDocument {
                 line: 0,
                 column: 0,
             }),
-            event_manager: Mutex::new(None),
+            event_sender,
         }
-    }
-
-    pub fn set_event_manager(&self, event_manager: Arc<LspDocumentEventManager>) {
-        let mut lock = self.event_manager.lock().unwrap();
-        *lock = Some(event_manager);
     }
 
     pub fn uri(&self) -> String {
@@ -106,18 +68,19 @@ impl LspDocument {
         self.version.fetch_add(1, Ordering::SeqCst)
     }
 
+    fn emit(&self, event: LspEvent) -> Result<(), String> {
+        self.event_sender.send(event)
+            .map_err(|e| format!("Failed to emit event: {}", e))?;
+        Ok(())
+    }
+
     pub fn open(&self) -> Result<(), String> {
-        if let Some(event_manager) = &*self.event_manager.lock().unwrap() {
-            let full_text = self.text.read().unwrap().to_string();
-            event_manager.emit_lsp_document_event(LspDocumentEvent::FileOpened{
-                document_id: self.id,
-                uri: self.uri(),
-                text: full_text,
-            });
-            Ok(())
-        } else {
-            Err("event_manager has not been set!".to_string())
-        }
+        let full_text = self.text.read().unwrap().to_string();
+        self.emit(LspEvent::FileOpened {
+            document_id: self.id,
+            uri: self.uri(),
+            text: full_text,
+        })
     }
 
     pub fn path(&self) -> String {
@@ -164,21 +127,16 @@ impl LspDocument {
             cursor.column = position - self_text.line_to_char(cursor.line);
         }
         let version = self.bump_version();
-        if let Some(event_manager) = &*self.event_manager.lock().unwrap() {
-            event_manager.emit_lsp_document_event(LspDocumentEvent::TextChanged {
-                document_id: self.id,
-                uri: self.uri(),
-                version,
-                from_line,
-                from_column,
-                to_line,
-                to_column,
-                text,
-            });
-            Ok(())
-        } else {
-            Err("event_manager has not been set!".to_string())
-        }
+        self.emit(LspEvent::TextChanged {
+            document_id: self.id,
+            uri: self.uri(),
+            version,
+            from_line,
+            from_column,
+            to_line,
+            to_column,
+            text,
+        })
     }
 
     pub fn apply(&self, mut edits: Vec<TextEdit>) -> () {
