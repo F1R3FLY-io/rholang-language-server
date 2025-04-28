@@ -170,7 +170,6 @@ jobs:
     - name: Get RNode Commit Hash
       id: rnode-hash
       run: |
-        # Replace with your dependency's Git URL
         COMMIT_HASH=$(git ls-remote $F1R3FLY_REPO_URL HEAD | awk '{ print $1 }')
         echo "hash=$COMMIT_HASH" >> $GITHUB_OUTPUT
     - name: Cache RNode artifacts
@@ -187,6 +186,9 @@ jobs:
     - name: Clone F1R3FLY repository
       if: steps.cache-rnode.outputs.cache-hit != 'true'
       run: |
+        if [ -d f1r3fly ]; then
+          rm -rf f1r3fly
+        fi
         git clone --single-branch --branch main --depth 1 ${{ env.F1R3FLY_REPO_URL }} f1r3fly
         if [ $? -ne 0 ]; then
           echo "Error: Failed to clone F1R3FLY repository." >&2
