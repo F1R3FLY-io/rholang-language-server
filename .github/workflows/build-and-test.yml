@@ -38,8 +38,6 @@ jobs:
           ~/.cargo/git/db/
           target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-        # restore-keys: |
-        #   ${{ runner.os }}-cargo-
     - name: Install RNode dependencies (Ubuntu)
       if: startsWith(matrix.os, 'ubuntu')
       run: |
@@ -52,6 +50,7 @@ jobs:
         cabal update
         cabal install alex happy
         cabal install BNFC
+        echo "$HOME/.cabal/bin" >> $GITHUB_PATH
         # Set JAVA_HOME for JDK 11
         echo "JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64" >> $GITHUB_ENV
         echo "/usr/lib/jvm/java-11-openjdk-amd64/bin" >> $GITHUB_PATH
@@ -181,8 +180,6 @@ jobs:
           ~/.sbt
           f1r3fly/node/target/universal/stage/
         key: ${{ runner.os }}-rnode-${{ steps.dep-hash.outputs.hash }}
-        # restore-keys: |
-        #   ${{ runner.os }}-rnode-
     - name: Clone F1R3FLY repository
       if: steps.cache-rnode.outputs.cache-hit != 'true'
       run: |
@@ -206,7 +203,9 @@ jobs:
         sbt -mem 8192 -Dsbt.supershell=false -java-home "${JAVA_HOME}" -J-Xmx8G -J-Xms2G -J-XX:MaxMetaspaceSize=1G -J-XX:+UseG1GC "set scalaVersion := \"2.12.15\"" clean bnfc:generate compile stage
         cd ..
       shell: bash
-    - name: Start RNode in standalone mode
+    - name: Build
+      run: cargo build --verbose
+    - name: Run tests
       run: |
         RNODE_BIN="$PWD/f1r3fly/node/target/universal/stage/bin/rnode"
         if [ ! -x "$RNODE_BIN" ]; then
@@ -229,17 +228,7 @@ jobs:
           echo "Error: RNode failed to start." >&2
           exit 1
         fi
-      shell: bash
-      env:
-        RNODE_PID: ""
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
-    - name: Stop RNode
-      if: always()
-      run: |
+        cargo test --verbose
         if [ -n "${RNODE_PID}" ]; then
           kill $RNODE_PID || true
         fi
-      shell: bash
