@@ -60,7 +60,8 @@ impl LspDocument {
     }
 
     pub fn uri(&self) -> String {
-        let url = self.url.read().unwrap();
+        let url = self.url.read()
+            .expect("Failed to acquire read lock on url");
         url.to_string()
     }
 
@@ -75,7 +76,9 @@ impl LspDocument {
     }
 
     pub fn open(&self) -> Result<(), String> {
-        let full_text = self.text.read().unwrap().to_string();
+        let full_text = self.text.read()
+            .expect("Failed to acquire read lock on text")
+            .to_string();
         self.emit(LspEvent::FileOpened {
             document_id: self.id,
             uri: self.uri(),
@@ -84,45 +87,54 @@ impl LspDocument {
     }
 
     pub fn path(&self) -> String {
-        let url = self.url.read().unwrap();
+        let url = self.url.read()
+            .expect("Failed to acquire read lock on url");
         url.path().to_string()
     }
 
     pub fn position(&self) -> usize {
-        let cursor = self.cursor.read().unwrap();
-        let text = self.text.read().unwrap();
+        let cursor = self.cursor.read()
+            .expect("Failed to acquire read lock on cursor");
+        let text = self.text.read()
+            .expect("Failed to acquire read lock on text");
         text.line_to_char(cursor.line) + cursor.column
     }
 
     pub fn cursor(&self) -> (usize, usize) {
         // Translate index conventions from 0-index to 1-index:
-        let cursor = self.cursor.read().unwrap();
+        let cursor = self.cursor.read()
+            .expect("Failed to acquire read lock on cursor");
         (cursor.line + 1, cursor.column + 1)
     }
 
     pub fn move_cursor(&self, line: usize, column: usize) {
         // Translate index conventions from 1-index to 0-index
-        let mut cursor = self.cursor.write().unwrap();
+        let mut cursor = self.cursor.write()
+            .expect("Failed to acquire write lock on cursor");
         cursor.line = line - 1;
         cursor.column = column - 1;
     }
 
     pub fn insert_text(&self, text: String) -> Result<(), String> {
         let (from_line, from_column) = {
-            let cursor = self.cursor.read().unwrap();
+            let cursor = self.cursor.read()
+                .expect("Failed to acquire read lock on cursor");
             (cursor.line, cursor.column)
         };
         let to_line = from_line;
         let to_column = from_column;
         let mut position = self.position();
         {
-            let mut self_text = self.text.write().unwrap();
+            let mut self_text = self.text.write()
+                .expect("Failed to acquire write lock on text");
             self_text.insert(position, &text);
         }
         position += text.chars().count();
         {
-            let mut cursor = self.cursor.write().unwrap();
-            let self_text = self.text.read().unwrap();
+            let mut cursor = self.cursor.write()
+                .expect("Failed to acquire write lock on cursor");
+            let self_text = self.text.read()
+                .expect("Failed to acquire read lock on text");
             cursor.line = self_text.char_to_line(position);
             cursor.column = position - self_text.line_to_char(cursor.line);
         }
@@ -147,7 +159,8 @@ impl LspDocument {
             let pos_b = b.range.start;
             pos_b.line.cmp(&pos_a.line).then(pos_b.character.cmp(&pos_a.character))
         });
-        let mut text = self.text.write().unwrap();
+        let mut text = self.text.write()
+            .expect("Failed to acquire write lock on text");
         for edit in edits {
             let range = edit.range;
             let start_position = &range.start;
