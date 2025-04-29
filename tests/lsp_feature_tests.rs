@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use indoc::indoc;
 
 pub mod common;
@@ -10,7 +8,7 @@ with_lsp_client!(test_diagnostics, (|client: &LspClient|{
         new x {
             x!("Hello World!")
         }
-    "#});
+    "#}).expect("Failed to open document");
     let diagnostic_params = client.await_diagnostics(&doc).unwrap();
     assert!(diagnostic_params.uri.to_string() == doc.uri());
     assert!(diagnostic_params.diagnostics.len() == 1);

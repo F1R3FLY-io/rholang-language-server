@@ -27,8 +27,9 @@ use tower_lsp::lsp_types::{
 
 use serde_json::{self, json, Value};
 
+use crate::common::lsp_document::LspDocument;
+use crate::common::lsp_event::LspEvent;
 use crate::common::lsp_message_stream::LspMessageStream;
-use crate::common::lsp_document::{LspDocument, LspDocumentEvent, LspDocumentEventHandler};
 
 type RequestHandler = fn(&LspClient, &Value) -> Result<Option<Value>, String>;
 type NotificationHandler = fn(&LspClient, &Value) -> Result<(), String>;
@@ -38,7 +39,7 @@ type ResponseHandler = fn(&LspClient, &Value) -> Result<(), String>;
 pub struct LspClient {
     server: Mutex<Child>,
     sender: Mutex<Option<Sender<String>>>,
-    receiver: Receiver<String>,
+    receiver: Mutex<Receiver<String>>,
     language_id: String,
     server_capabilities: RwLock<Option<ServerCapabilities>>,
     request_handlers: HashMap<String, RequestHandler>,
@@ -53,11 +54,7 @@ pub struct LspClient {
     stdin_thread: Mutex<Option<JoinHandle<()>>>,
     stdout_thread: Mutex<Option<JoinHandle<()>>>,
     stderr_thread: Mutex<Option<JoinHandle<()>>>,
-    // ---------------------------------------------------------------------
-    // TODO: Find a cleaner way to register with event handlers than passing
-    // them a self-reference:
-    pub self_ref: RwLock<Option<Arc<LspClient>>>,
-    // ---------------------------------------------------------------------
+    event_sender: Sender<LspEvent>,
 }
 
 #[allow(dead_code)]
@@ -66,6 +63,7 @@ impl LspClient {
         language_id: String,
         server_path: String,
         server_args: Vec<String>,
+        event_sender: Sender<LspEvent>,
     ) -> std::io::Result<Self> {
         let mut server = Command::new(server_path)
             .args(&server_args)
@@ -96,7 +94,11 @@ impl LspClient {
                         server_stdin.flush().expect("Failed to flush stdin");
                     }
                     Err(e) => {
-                        error!("Failed to receive message for the server: {}", e);
+                        if e.to_string() == "receiving on a closed channel" {
+                            info!("Server stdin channel closed.");
+                        } else {
+                            error!("Failed to receive message for the server: {}", e);
+                        }
                         return;
                     }
                 }
@@ -113,7 +115,11 @@ impl LspClient {
                         tx.send(payload).expect("Failed to send message.");
                     }
                     Err(e) => {
-                        error!("Failed to read next message: {}", e);
+                        if e.as_str() == "Input stream closed" {
+                            info!("Server stdout closed.");
+                        } else {
+                            error!("Failed to read next message: {}", e);
+                        }
                         return;
                     }
                 }
@@ -127,7 +133,7 @@ impl LspClient {
             loop {
                 match server_stderr.read(&mut read_buffer) {
                     Ok(0) => {
-                        info!("Server stderr closed");
+                        info!("Server stderr closed.");
                         if let Err(e) = client_stdout.flush() {
                             error!("Error flushing client stdout: {}", e);
                         }
@@ -182,7 +188,7 @@ impl LspClient {
         let client = LspClient {
             server: Mutex::new(server),
             sender: Mutex::new(Some(sender)),
-            receiver,
+            receiver: Mutex::new(receiver),
             language_id,
             server_capabilities: RwLock::new(None),
             request_handlers,
@@ -197,7 +203,7 @@ impl LspClient {
             stdin_thread: Mutex::new(Some(stdin_thread)),
             stdout_thread: Mutex::new(Some(stdout_thread)),
             stderr_thread: Mutex::new(Some(stderr_thread)),
-            self_ref: RwLock::new(None),
+            event_sender,
         };
 
         Ok(client)
@@ -211,26 +217,23 @@ impl LspClient {
         self.serial_document_id.fetch_add(1, Ordering::SeqCst)
     }
 
-    pub fn open_document(&self, path: &str, text: &str) -> Arc<LspDocument> {
+    pub fn open_document(&self, path: &str, text: &str) -> Result<Arc<LspDocument>, String> {
         let document_id = self.next_document_id();
         let document = LspDocument::from_path_and_text(
             document_id,
             self.language_id.clone(),
             path.to_string(),
             text.to_string(),
+            self.event_sender.clone(),
         );
-        if let Some(client) = &*self.self_ref.read().unwrap() {
-            document.on_event(client.clone());
-        } else {
-            error!("self.self_ref has not been set!");
-        }
         let document = Arc::new(document);
         {
-            let mut documents_by_uri = self.documents_by_uri.write().unwrap();
+            let mut documents_by_uri = self.documents_by_uri.write()
+                .expect("Failed to acquire write lock on documents_by_uri");
             documents_by_uri.insert(document.uri(), document.clone());
         }
-        document.open();
-        document
+        document.open()?;
+        Ok(document)
     }
 
     fn dispatch(&self, message: String) -> Result<(), String> {
@@ -313,10 +316,12 @@ impl LspClient {
             if let Some(request_id) = response["id"].as_u64() {
                 let response = Arc::new(response);
                 {
-                    let mut responses_by_id = self.responses_by_id.write().unwrap();
+                    let mut responses_by_id = self.responses_by_id.write()
+                        .expect("Failed to acquire write lock on responses_by_id");
                     responses_by_id.insert(request_id, response.clone());
                 }
-                let requests_by_id = self.requests_by_id.read().unwrap();
+                let requests_by_id = self.requests_by_id.read()
+                    .expect("Failed to acquire read lock on requests_by_id");
                 if let Some(request) = requests_by_id.get(&request_id) {
                     let method = request["method"].as_str()
                         .expect("Missing required attribute: method");
@@ -336,7 +341,8 @@ impl LspClient {
             }
         } else if response.get("error").is_some() {
             if let Some(id) = response["id"].as_u64() {
-                self.responses_by_id.write().unwrap()
+                self.responses_by_id.write()
+                    .expect("Failed to acquire write lock on responses_by_id")
                     .insert(id, Arc::new(response));
             }
         } else {
@@ -382,7 +388,7 @@ impl LspClient {
         let message_str = serde_json::to_string(&message).expect("Failed to serialize message");
         self.sender
             .lock()
-            .unwrap()
+            .expect("Failed to acquire lock on sender")
             .as_ref()
             .expect("Sender dropped")
             .send(message_str)
@@ -399,7 +405,7 @@ impl LspClient {
             .expect("Failed to serialize message");
         self.sender
             .lock()
-            .unwrap()
+            .expect("Failed to acquire lock on sender")
             .as_ref()
             .expect("Sender dropped")
             .send(message_str)
@@ -414,17 +420,18 @@ impl LspClient {
             "method": method
         });
         if params.is_some() {
-            message["params"] = params.unwrap();
+            message["params"] = params.expect("Failed to unwrap params");
         }
         let message_str = serde_json::to_string(&message)
             .expect("Failed to serialize message");
         {
-            let mut requests_by_id = self.requests_by_id.write().unwrap();
+            let mut requests_by_id = self.requests_by_id.write()
+                .expect("Failed to acquire write lock on requests_by_id");
             requests_by_id.insert(request_id, Arc::new(message));
         }
         self.sender
             .lock()
-            .unwrap()
+            .expect("Failed to acquire lock on sender")
             .as_ref()
             .expect("Sender dropped")
             .send(message_str)
@@ -441,7 +448,7 @@ impl LspClient {
             .expect("Failed to serialize message");
         self.sender
             .lock()
-            .unwrap()
+            .expect("Failed to acquire lock on sender")
             .as_ref()
             .expect("Sender dropped")
             .send(message_str)
@@ -450,7 +457,8 @@ impl LspClient {
 
     fn await_response(&self, request_id: u64) -> Result<Arc<Value>, String> {
         {
-            let responses_by_id = self.responses_by_id.read().unwrap();
+            let responses_by_id = self.responses_by_id.read()
+                .expect("Failed to acquire read lock on responses_by_id");
             if let Some(response) = responses_by_id.get(&request_id) {
                 return Ok(response.clone());
             }
@@ -460,10 +468,13 @@ impl LspClient {
         let start = Instant::now();
 
         while start.elapsed() < timeout {
-            if let Ok(message) = self.receiver.recv_timeout(Duration::from_millis(100)) {
+            if let Ok(message) = self.receiver.lock()
+                .expect("Failed to acquire lock on receiver")
+                .recv_timeout(Duration::from_millis(100)) {
                 match self.dispatch(message) {
                     Ok(_) => {
-                        let responses_by_id = self.responses_by_id.read().unwrap();
+                        let responses_by_id = self.responses_by_id.read()
+                            .expect("Failed to acquire read lock on responses_by_id");
                         if let Some(response) = responses_by_id.get(&request_id) {
                             return Ok(response.clone());
                         }
@@ -480,7 +491,8 @@ impl LspClient {
 
     pub fn await_diagnostics(&self, doc: &LspDocument) -> Result<Arc<PublishDiagnosticsParams>, String> {
         {
-            let diagnostics_by_id = self.diagnostics_by_id.read().unwrap();
+            let diagnostics_by_id = self.diagnostics_by_id.read()
+                .expect("Failed to acquire read lock on diagnostics_by_id");
             if let Some(diagnostics) = diagnostics_by_id.get(&doc.id) {
                 return Ok(diagnostics.clone());
             }
@@ -490,10 +502,13 @@ impl LspClient {
         let start = Instant::now();
 
         while start.elapsed() < timeout {
-            if let Ok(message) = self.receiver.recv_timeout(Duration::from_millis(100)) {
+            if let Ok(message) = self.receiver.lock()
+                .expect("Failed to acquire lock on receiver")
+                .recv_timeout(Duration::from_millis(100)) {
                 match self.dispatch(message) {
                     Ok(_) => {
-                        let diagnostics_by_id = self.diagnostics_by_id.read().unwrap();
+                        let diagnostics_by_id = self.diagnostics_by_id.read()
+                            .expect("Failed to acquire read lock on diagnostics_by_id");
                         if let Some(diagnostics) = diagnostics_by_id.get(&doc.id) {
                             return Ok(diagnostics.clone());
                         }
@@ -541,7 +556,8 @@ impl LspClient {
         let request_id = self.next_request_id();
         self.send_request(
             request_id, "initialize",
-            Some(serde_json::to_value(params).unwrap())
+            Some(serde_json::to_value(params)
+                 .expect("Failed to serialize params to JSON"))
         );
         return request_id;
     }
@@ -551,7 +567,8 @@ impl LspClient {
             let init_result: InitializeResult =
                 serde_json::from_value(result.clone()).expect("Failed to parse InitializeResult");
             {
-                let mut server_capabilities = self.server_capabilities.write().unwrap();
+                let mut server_capabilities = self.server_capabilities.write()
+                    .expect("Failed to acquire write lock on server_capabilities");
                 *server_capabilities = Some(init_result.capabilities);
             }
         } else {
@@ -566,7 +583,8 @@ impl LspClient {
 
     fn send_initialized(&self) {
         let params = InitializedParams {};
-        self.send_notification("initialized", serde_json::to_value(params).unwrap());
+        self.send_notification("initialized", serde_json::to_value(params)
+                               .expect("Failed to serialize params to JSON"));
     }
 
     pub fn initialized(&self) -> Result<(), String> {
@@ -591,29 +609,32 @@ impl LspClient {
     fn supports_text_document_sync(&self) -> bool {
         self.server_capabilities
             .read()
-            .unwrap()
+            .expect("Failed to acquire read lock on server_capabilities")
             .as_ref()
             .map(|caps| caps.text_document_sync.is_some())
             .unwrap_or(false)
     }
 
     fn get_text_document_sync_kind(&self) -> Option<TextDocumentSyncKind> {
-        self.server_capabilities.read().unwrap().as_ref().and_then(|caps| {
-            caps.text_document_sync.as_ref().and_then(|sync| match sync {
-                TextDocumentSyncCapability::Kind(kind) => Some(*kind),
-                TextDocumentSyncCapability::Options(options) => options.change,
+        self.server_capabilities.read()
+            .expect("Failed to acquire read lock on server_capabilities")
+            .as_ref()
+            .and_then(|caps| {
+                caps.text_document_sync.as_ref().and_then(|sync| match sync {
+                    TextDocumentSyncCapability::Kind(kind) => Some(*kind),
+                    TextDocumentSyncCapability::Options(options) => options.change,
+                })
             })
-        })
     }
 
-    fn send_text_document_did_open(&self, uri: &str, text: &str) {
+    fn send_text_document_did_open(&self, uri: String, text: String) {
         if !self.supports_text_document_sync() {
             warn!("Server does not support text document synchronization. Skipping didOpen.");
             return;
         }
         let params = DidOpenTextDocumentParams {
             text_document: TextDocumentItem {
-                uri: Url::parse(uri).expect("Invalid URI"),
+                uri: Url::parse(uri.as_str()).expect("Invalid URI"),
                 language_id: "plaintext".to_string(),
                 version: 1,
                 text: text.to_string(),
@@ -621,7 +642,8 @@ impl LspClient {
         };
         self.send_notification(
             "textDocument/didOpen",
-            serde_json::to_value(params).unwrap()
+            serde_json::to_value(params)
+                .expect("Failed to serialize params to JSON")
         );
     }
 
@@ -640,7 +662,11 @@ impl LspClient {
                     },
                     content_changes: changes,
                 };
-                self.send_notification("textDocument/didChange", serde_json::to_value(params).unwrap());
+                self.send_notification(
+                    "textDocument/didChange",
+                    serde_json::to_value(params)
+                        .expect("Failed to serialize params to JSON")
+                );
             }
             _ => {
                 println!("Server does not support text document changes. Skipping didChange.");
@@ -661,7 +687,8 @@ impl LspClient {
         };
         self.send_notification(
             "textDocument/didClose",
-            serde_json::to_value(params).unwrap()
+            serde_json::to_value(params)
+                .expect("Failed to serialize params to JSON")
         );
         Ok(())
     }
@@ -675,12 +702,14 @@ impl LspClient {
             .expect("Failed to parse PublishDiagnosticsParams");
         let uri = params.uri.to_string();
         if let Some(version) = params.version {
-            let documents_by_uri = self.documents_by_uri.read().unwrap();
+            let documents_by_uri = self.documents_by_uri.read()
+                .expect("Failed to acquire read lock on documents_by_uri");
             if let Some(document) = documents_by_uri.get(&uri) {
                 let latest_version = document.version.load(Ordering::Relaxed);
                 if latest_version == version {
                     let params = Arc::new(params.clone());
-                    let mut diagnostics_by_id = self.diagnostics_by_id.write().unwrap();
+                    let mut diagnostics_by_id = self.diagnostics_by_id.write()
+                        .expect("Failed to acquire write lock on diagnostics_by_id");
                     diagnostics_by_id.insert(document.id, params);
                 } else {
                     warn!(
@@ -695,9 +724,16 @@ impl LspClient {
         Ok(())
     }
 
+    fn emit(&self, event: LspEvent) -> Result<(), String> {
+        self.event_sender.send(event)
+            .map_err(|e| format!("Failed to emit event: {}", e))
+    }
+
     pub fn shutdown(&self) -> Result<Arc<Value>, String> {
         let request_id = self.send_shutdown();
-        return self.await_response(request_id);
+        let result = self.await_response(request_id);
+        self.emit(LspEvent::Shutdown)?;
+        result
     }
 
     fn send_shutdown(&self) -> u64 {
@@ -717,53 +753,59 @@ impl LspClient {
 
     pub fn exit(&self) -> Result<(), String> {
         self.send_exit();
-        Ok(())
+        self.emit(LspEvent::Exit)
     }
 
     pub fn stop(&self) -> io::Result<()> {
         // Drop sender to close the rx channel and terminate stdin thread
         {
-            let mut sender = self.sender.lock().unwrap();
+            let mut sender = self.sender.lock()
+                .expect("Failed to acquire lock on sender");
             *sender = None;
         }
         // Join stderr thread first to ensure all stderr output is written
-        if let Some(stderr_thread) = self.stderr_thread.lock().unwrap().take() {
+        if let Some(stderr_thread) = self.stderr_thread.lock()
+            .expect("Failed to acquire lock on stderr_thread")
+            .take() {
             if let Err(e) = stderr_thread.join() {
                 error!("Error joining stderr thread: {:?}", e);
             }
         }
         // Join stdout and stdin threads
-        if let Some(stdout_thread) = self.stdout_thread.lock().unwrap().take() {
+        if let Some(stdout_thread) = self.stdout_thread.lock()
+            .expect("Failed to acquire lock on stdout_thread")
+            .take() {
             if let Err(e) = stdout_thread.join() {
                 error!("Error joining stdout thread: {:?}", e);
             }
         }
-        if let Some(stdin_thread) = self.stdin_thread.lock().unwrap().take() {
+        if let Some(stdin_thread) = self.stdin_thread.lock()
+            .expect("Failed to acquire lock on stdin_thread")
+            .take() {
             if let Err(e) = stdin_thread.join() {
                 error!("Error joining stdin thread: {:?}", e);
             }
         }
         // Kill and wait for the server process
         {
-            let mut server = self.server.lock().unwrap();
+            let mut server = self.server.lock()
+                .expect("Failed to acquire lock on server");
             server.kill()?;
             server.wait()?;
         }
         Ok(())
     }
-}
 
-impl LspDocumentEventHandler for LspClient {
-    fn handle_lsp_document_event(&self, event: &LspDocumentEvent) {
+    pub fn handle_lsp_document_event(&self, event: LspEvent) {
         match event {
-            LspDocumentEvent::FileOpened {
+            LspEvent::FileOpened {
                 document_id: _,
                 uri,
                 text,
             } => {
                 self.send_text_document_did_open(uri, text);
             }
-            LspDocumentEvent::TextChanged {
+            LspEvent::TextChanged {
                 document_id: _,
                 uri,
                 version,
@@ -777,20 +819,21 @@ impl LspDocumentEventHandler for LspClient {
                     TextDocumentContentChangeEvent {
                         range: Some(Range{
                             start: Position{
-                                line: *from_line as u32,
-                                character: *from_column as u32,
+                                line: from_line as u32,
+                                character: from_column as u32,
                             },
                             end: Position{
-                                line: *to_line as u32,
-                                character: *to_column as u32,
+                                line: to_line as u32,
+                                character: to_column as u32,
                             },
                         }),
                         range_length: Some(text.chars().count() as u32),
                         text: text.to_string(),
                     },
                 ];
-                self.send_text_document_did_change(uri, *version, changes);
+                self.send_text_document_did_change(uri.as_str(), version, changes);
             }
+            _ => (),
         }
     }
 }
@@ -821,27 +864,39 @@ macro_rules! with_lsp_client {
         #[test]
         fn $test_name() {
             crate::common::lsp_client::setup();
-            match LspClient::start(
+            let (event_sender, event_receiver) =
+                std::sync::mpsc::channel::<
+                    crate::common::lsp_event::LspEvent
+                >();
+            match crate::common::lsp_client::LspClient::start(
                 "rholang".to_string(),
                 "target/debug/rholang-language-server".to_string(),
                 Vec::new(),
+                event_sender,
             ) {
                 Ok(client) => {
-                    let client = Arc::new(client);
-                    {
-                        let mut locked = client.self_ref.write().unwrap();
-                        *locked = Some(client.clone());
-                    }
+                    let client = std::sync::Arc::new(client);
+                    let _event_thread = {
+                        let client = client.clone();
+                        std::thread::spawn(move || {
+                            for event in event_receiver {
+                                match event {
+                                    crate::common::lsp_event::LspEvent::FileOpened{..} =>
+                                        client.handle_lsp_document_event(event),
+                                    crate::common::lsp_event::LspEvent::TextChanged{..} =>
+                                        client.handle_lsp_document_event(event),
+                                    crate::common::lsp_event::LspEvent::Shutdown => break,
+                                    crate::common::lsp_event::LspEvent::Exit => break,
+                                }
+                            }
+                        })
+                    };
                     assert!(client.initialize().is_ok());
                     assert!(client.initialized().is_ok());
                     $callback(&client);
                     assert!(client.shutdown().is_ok());
                     assert!(client.exit().is_ok());
                     assert!(client.stop().is_ok());
-                    {
-                        let mut locked = client.self_ref.write().unwrap();
-                        *locked = None;
-                    }
                 }
                 Err(e) => {
                     tracing::error!("Failed to start client: {}", e);
