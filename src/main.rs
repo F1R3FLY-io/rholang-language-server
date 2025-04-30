@@ -34,10 +34,10 @@ use tower_lsp::lsp_types::{
 
 use ropey::Rope;
 
-use repl::ReplResponse;
+use lsp::{ValidateRequest, ValidateResponse};
 
-pub mod repl {
-    tonic::include_proto!("repl");
+pub mod lsp {
+    tonic::include_proto!("lsp");
 }
 
 #[derive(Debug)]
@@ -188,9 +188,7 @@ fn parse_u32(capture: &str) -> u32 {
 }
 
 lazy_static! {
-    static ref RE_SUCCESS: Regex = Regex::new(
-        r"^Deployment cost: .+"
-    ).expect("Invalid regex");
+    static ref RE_SUCCESS: Regex = Regex::new(r"^$").expect("Invalid regex");
     static ref RE_ERROR_RANGE: Regex = Regex::new(
         r"^.+ at (\d+):(\d+)-(\d+):(\d+)\.?$"
     ).expect("Invalid regex");
@@ -217,7 +215,7 @@ struct RholangBackend {
     documents_by_uri: RwLock<HashMap<Url, Arc<LspDocument>>>,
     documents_by_id: RwLock<HashMap<u32, Arc<LspDocument>>>,
     serial_document_id: AtomicU32,
-    rnode_client: Mutex<repl::repl_client::ReplClient<Channel>>,
+    rnode_client: Mutex<lsp::lsp_client::LspClient<Channel>>,
 }
 
 impl RholangBackend {
@@ -228,18 +226,17 @@ impl RholangBackend {
     async fn validate(&self, document: Arc<LspDocument>, text: &str, version: i32) -> Option<Vec<Diagnostic>> {
         let mut client = self.rnode_client.lock().await.clone();
         if document.version().await == version {
-            let request = Request::new(repl::EvalRequest {
-                program: text.to_string(),
-                print_unmatched_sends_only: false,
+            let request = Request::new(ValidateRequest {
+                text: text.to_string(),
             });
-            let response: ReplResponse = match client.eval(request).await {
+            let response: ValidateResponse = match client.validate(request).await {
                 Ok(response) => response.into_inner(),
                 Err(e) => {
-                    eprintln!("Failed to evaluate Rholang: {}", e);
+                    eprintln!("Failed to validate Rholang: {}", e);
                     return None;
                 }
             };
-            let message = &response.output;
+            let message = &response.message;
             if let Some(_captures) = RE_SUCCESS.captures(message) {
                 return Some(vec![]);
             } else if let Some(captures) = RE_ERROR_RANGE.captures(message) {
@@ -531,7 +528,7 @@ impl LanguageServer for RholangBackend {
 #[tokio::main]
 async fn main() -> () {
     // Connect to rnode gRPC service
-    let rnode_client = match repl::repl_client::ReplClient::connect("http://localhost:40402").await {
+    let rnode_client = match lsp::lsp_client::LspClient::connect("http://localhost:40402").await {
         Ok(client) => client,
         Err(e) => {
             eprintln!("Failed to connect to rnode: {}", e);

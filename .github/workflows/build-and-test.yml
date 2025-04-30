@@ -179,7 +179,7 @@ jobs:
           ~/.ivy2/cache
           ~/.sbt
           f1r3fly/node/target/universal/stage/
-        key: ${{ runner.os }}-rnode-${{ steps.dep-hash.outputs.hash }}
+        key: ${{ runner.os }}-rnode-${{ steps.rnode-hash.outputs.hash }}
     - name: Clone F1R3FLY repository
       if: steps.cache-rnode.outputs.cache-hit != 'true'
       run: |
