@@ -885,18 +885,30 @@ macro_rules! with_lsp_client {
                                         client.handle_lsp_document_event(event),
                                     crate::common::lsp_event::LspEvent::TextChanged{..} =>
                                         client.handle_lsp_document_event(event),
-                                    crate::common::lsp_event::LspEvent::Shutdown => break,
                                     crate::common::lsp_event::LspEvent::Exit => break,
+                                    _ => (),
                                 }
                             }
                         })
                     };
-                    assert!(client.initialize().is_ok());
-                    assert!(client.initialized().is_ok());
+
+                    // Step 1: Request `initialize`
+                    let result = client.initialize();
+                    assert!(result.is_ok(), "{}", result.unwrap_err());
+                    // Step 2: Notify `initialized`
+                    let result = client.initialized();
+                    assert!(result.is_ok(), "{}", result.unwrap_err());
+                    // Step 3: Run test
                     $callback(&client);
-                    assert!(client.shutdown().is_ok());
-                    assert!(client.exit().is_ok());
-                    assert!(client.stop().is_ok());
+                    // Step 4: Request `shutdown`
+                    let result = client.shutdown();
+                    assert!(result.is_ok(), "{}", result.unwrap_err());
+                    // Step 5: Notify `exit`
+                    let result = client.exit();
+                    assert!(result.is_ok(), "{}", result.unwrap_err());
+                    // Step 6: Stop the client
+                    let result = client.stop();
+                    assert!(result.is_ok(), "{}", result.unwrap_err());
                 }
                 Err(e) => {
                     tracing::error!("Failed to start client: {}", e);
