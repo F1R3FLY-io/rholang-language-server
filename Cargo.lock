@@ -1004,10 +1004,8 @@ name = "rholang-language-server"
 version = "0.1.0"
 dependencies = [
  "indoc",
- "lazy_static",
  "log",
  "prost",
- "regex",
  "ropey",
  "serde",
  "serde_json",
