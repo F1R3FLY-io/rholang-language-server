@@ -2,17 +2,20 @@ use std::collections::{BinaryHeap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use lazy_static::lazy_static;
-
-use regex::Regex;
-
 use tokio::sync::{Mutex, RwLock};
+
+use tracing::error;
+
+use tracing_subscriber::{self, fmt, prelude::*};
+
+use time::macros::format_description;
+use time::UtcOffset;
 
 use tonic::Request;
 use tonic::transport::Channel;
 
 use tower_lsp::{Client, LanguageServer, LspService, Server};
-use tower_lsp::jsonrpc::Result;
+use tower_lsp::jsonrpc;
 use tower_lsp::lsp_types::{
     Diagnostic,
     DiagnosticSeverity,
@@ -34,11 +37,11 @@ use tower_lsp::lsp_types::{
 
 use ropey::Rope;
 
-use lsp::{ValidateRequest, ValidateResponse};
-
 pub mod lsp {
     tonic::include_proto!("lsp");
 }
+
+use lsp as rnode_lsp;
 
 #[derive(Debug)]
 struct PendingChanges {
@@ -183,32 +186,6 @@ impl LspDocument {
     }
 }
 
-fn parse_u32(capture: &str) -> u32 {
-    capture.parse().expect("Failed to parse u32")
-}
-
-lazy_static! {
-    static ref RE_SUCCESS: Regex = Regex::new(r"^$").expect("Invalid regex");
-    static ref RE_ERROR_RANGE: Regex = Regex::new(
-        r"^.+ at (\d+):(\d+)-(\d+):(\d+)\.?$"
-    ).expect("Invalid regex");
-    static ref RE_ERROR_CONTEXT: Regex = Regex::new(
-        r"^.+ (\w+) at \d+:\d+ used in \w+ context at (\d+):(\d+)$"
-    ).expect("Invalid regex");
-    static ref RE_ERROR_UNBOUND: Regex = Regex::new(
-        r"^Variable reference: =(\S+) at (\d+):(\d+) is unbound\.$"
-    ).expect("Invalid regex");
-    static ref RE_ERROR_TWICE_BOUND: Regex = Regex::new(
-        r"^Free variable (\S+) is used twice as a binder \(at (\d+):(\d+) and (\d+):(\d+)\) in \S+ context\.$"
-    ).expect("Invalid regex");
-    static ref RE_ERROR_POSITION_AT_END: Regex = Regex::new(
-        r"^.+ at (\d+):(\d+)\.?$"
-    ).expect("Invalid regex");
-    static ref RE_ERROR_POSITION_IN_MIDDLE: Regex = Regex::new(
-        r"^.+ at (\d+):(\d+) .+$"
-    ).expect("Invalid regex");
-}
-
 #[derive(Debug)]
 struct RholangBackend {
     client: Client,
@@ -223,206 +200,71 @@ impl RholangBackend {
         self.serial_document_id.fetch_add(1, Ordering::SeqCst)
     }
 
-    async fn validate(&self, document: Arc<LspDocument>, text: &str, version: i32) -> Option<Vec<Diagnostic>> {
+    async fn validate(&self, document: Arc<LspDocument>, text: &str, version: i32) -> Result<Vec<Diagnostic>, String> {
         let mut client = self.rnode_client.lock().await.clone();
         if document.version().await == version {
-            let request = Request::new(ValidateRequest {
+            let request = Request::new(rnode_lsp::ValidateRequest {
                 text: text.to_string(),
             });
-            let response: ValidateResponse = match client.validate(request).await {
-                Ok(response) => response.into_inner(),
-                Err(e) => {
-                    eprintln!("Failed to validate Rholang: {}", e);
-                    return None;
+            match client.validate(request).await {
+                Ok(response) => match response.into_inner().result {
+                    Some(result) => match result {
+                        rnode_lsp::validate_response::Result::Success(diagnostic_list) => {
+                            Ok(diagnostic_list.diagnostics.into_iter().map(|diagnostic| {
+                                let range = diagnostic.range.expect("Missing required field for lsp::Diagnostic: range");
+                                let start = range.start.expect("Missing required field for lsp::Range: start");
+                                let end = range.end.expect("Missing required field for lsp::Range: end");
+                                let severity = match rnode_lsp::DiagnosticSeverity::try_from(diagnostic.severity) {
+                                    Ok(severity) => match severity {
+                                        rnode_lsp::DiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
+                                        rnode_lsp::DiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
+                                        rnode_lsp::DiagnosticSeverity::Information => DiagnosticSeverity::INFORMATION,
+                                        rnode_lsp::DiagnosticSeverity::Hint => DiagnosticSeverity::HINT,
+                                    }
+                                    Err(e) => {
+                                        error!("Invalid lsp::DiagnosticSeverity: {}", e);
+                                        DiagnosticSeverity::ERROR
+                                    }
+                                };
+                                Diagnostic {
+                                    range: Range {
+                                        start: Position {
+                                            line: start.line as u32,
+                                            character: start.column as u32
+                                        },
+                                        end: Position {
+                                            line: end.line as u32,
+                                            character: end.column as u32
+                                        }
+                                    },
+                                    severity: Some(severity),
+                                    source: Some(diagnostic.source),
+                                    message: diagnostic.message,
+                                    ..Default::default()
+                                }
+                            }).collect())
+                        }
+                        rnode_lsp::validate_response::Result::Error(message) => Err(format!(
+                            "Failed to validate document with ID={}, URI={}: {}",
+                            document.id, document.uri().await, message
+                        ))
+                    }
+                    None => Err("RNode did not return a response".to_string()),
                 }
-            };
-            let message = &response.message;
-            if let Some(_captures) = RE_SUCCESS.captures(message) {
-                return Some(vec![]);
-            } else if let Some(captures) = RE_ERROR_RANGE.captures(message) {
-                let start_line: u32 = parse_u32(&captures[1]);
-                let start_column: u32 = parse_u32(&captures[2]);
-                let end_line: u32 = parse_u32(&captures[3]);
-                let end_column: u32 = parse_u32(&captures[4]);
-                return Some(vec![Diagnostic {
-                    range: Range {
-                        start: Position {
-                            line: start_line - 1,
-                            character: start_column - 1,
-                        },
-                        end: Position {
-                            line: end_line - 1,
-                            character: end_column - 1,
-                        },
-                    },
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    message: captures[0].to_string(),
-                    source: Some("rholang".to_string()),
-                    ..Default::default()
-                }]);
-            } else if let Some(captures) = RE_ERROR_CONTEXT.captures(message) {
-                let variable_name = &captures[1];
-                let start_line: u32 = parse_u32(&captures[2]);
-                let start_column: u32 = parse_u32(&captures[3]);
-                let end_line: u32 = start_line;
-                let end_column: u32 = start_column + variable_name.chars().count() as u32;
-                return Some(vec![Diagnostic {
-                    range: Range {
-                        start: Position {
-                            line: start_line - 1,
-                            character: start_column - 1,
-                        },
-                        end: Position {
-                            line: end_line - 1,
-                            character: end_column - 1,
-                        },
-                    },
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    message: captures[0].to_string(),
-                    source: Some("rholang".to_string()),
-                    ..Default::default()
-                }]);
-            } else if let Some(captures) = RE_ERROR_UNBOUND.captures(message) {
-                let variable_name = &captures[1];
-                let start_line: u32 = parse_u32(&captures[2]);
-                let start_column: u32 = parse_u32(&captures[3]);
-                let end_line = start_line;
-                let end_column = start_column + variable_name.chars().count() as u32;
-                return Some(vec![Diagnostic {
-                    range: Range {
-                        start: Position {
-                            line: start_line - 1,
-                            character: start_column - 1,
-                        },
-                        end: Position {
-                            line: end_line - 1,
-                            character: end_column - 1,
-                        },
-                    },
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    message: captures[0].to_string(),
-                    source: Some("rholang".to_string()),
-                    ..Default::default()
-                }]);
-            } else if let Some(captures) = RE_ERROR_TWICE_BOUND.captures(message) {
-                let variable_name = &captures[1];
-                let len: u32 = variable_name.chars().count() as u32;
-
-                let start_line_1: u32 = parse_u32(&captures[2]);
-                let start_column_1: u32 = parse_u32(&captures[3]);
-                let end_line_1 = start_line_1;
-                let end_column_1 = start_column_1 + len;
-
-                let start_line_2: u32 = parse_u32(&captures[4]);
-                let start_column_2: u32 = parse_u32(&captures[5]);
-                let end_line_2 = start_line_2;
-                let end_column_2 = start_column_2 + len;
-
-                return Some(vec![
-                    Diagnostic {
-                        range: Range {
-                            start: Position {
-                                line: start_line_1 - 1,
-                                character: start_column_1 - 1,
-                            },
-                            end: Position {
-                                line: end_line_1 - 1,
-                                character: end_column_1 - 1,
-                            },
-                        },
-                        severity: Some(DiagnosticSeverity::ERROR),
-                        message: captures[0].to_string(),
-                        source: Some("rholang".to_string()),
-                        ..Default::default()
-                    },
-                    Diagnostic {
-                        range: Range {
-                            start: Position {
-                                line: start_line_2 - 1,
-                                character: start_column_2 - 1,
-                            },
-                            end: Position {
-                                line: end_line_2 - 1,
-                                character: end_column_2 - 1,
-                            },
-                        },
-                        severity: Some(DiagnosticSeverity::ERROR),
-                        message: captures[0].to_string(),
-                        source: Some("rholang".to_string()),
-                        ..Default::default()
-                    },
-                ]);
-            } else if let Some(captures) = RE_ERROR_POSITION_AT_END.captures(message) {
-                let start_line: u32 = parse_u32(&captures[1]);
-                let start_column: u32 = parse_u32(&captures[2]);
-                let end_line = start_line;
-                let end_column = start_column;
-                return Some(vec![Diagnostic {
-                    range: Range {
-                        start: Position {
-                            line: start_line - 1,
-                            character: start_column - 1,
-                        },
-                        end: Position {
-                            line: end_line - 1,
-                            character: end_column - 1,
-                        },
-                    },
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    message: captures[0].to_string(),
-                    source: Some("rholang".to_string()),
-                    ..Default::default()
-                }]);
-            } else if let Some(captures) = RE_ERROR_POSITION_IN_MIDDLE.captures(message) {
-                let start_line: u32 = parse_u32(&captures[1]);
-                let start_column: u32 = parse_u32(&captures[2]);
-                let end_line = start_line;
-                let end_column = start_column;
-                return Some(vec![Diagnostic {
-                    range: Range {
-                        start: Position {
-                            line: start_line - 1,
-                            character: start_column - 1,
-                        },
-                        end: Position {
-                            line: end_line - 1,
-                            character: end_column - 1,
-                        },
-                    },
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    message: captures[0].to_string(),
-                    source: Some("rholang".to_string()),
-                    ..Default::default()
-                }]);
-            } else {
-                let start_line: u32 = 0;
-                let start_column: u32 = 0;
-                let (end_line, end_column) = document.last_linecol().await;
-                return Some(vec![Diagnostic {
-                    range: Range {
-                        start: Position {
-                            line: start_line,
-                            character: start_column,
-                        },
-                        end: Position {
-                            line: end_line as u32,
-                            character: end_column as u32,
-                        },
-                    },
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    message: message.to_string(),
-                    source: Some("rholang".to_string()),
-                    ..Default::default()
-                }]);
+                Err(e) => Err(format!(
+                    "Failed to validate document with ID={}, URI={}: {}",
+                    document.id, document.uri().await, e
+                ))
             }
+        } else {
+            Ok(Vec::new())
         }
-        None
     }
 }
 
 #[tower_lsp::async_trait]
 impl LanguageServer for RholangBackend {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, _: InitializeParams) -> jsonrpc::Result<InitializeResult> {
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -441,7 +283,7 @@ impl LanguageServer for RholangBackend {
         ).await;
     }
 
-    async fn shutdown(&self) -> Result<()> {
+    async fn shutdown(&self) -> jsonrpc::Result<()> {
         self.client.log_message(
             MessageType::INFO,
             "Shutting server down."
@@ -478,14 +320,14 @@ impl LanguageServer for RholangBackend {
                 uri, document_id, version
             ),
         ).await;
-        if let Some(diagnostics) = self.validate(Arc::clone(&document), &text, version).await {
-            if document.state.read().await.version == version {
-                self.client.publish_diagnostics(
-                    uri,
-                    diagnostics,
-                    Some(version)
-                ).await;
+        match self.validate(Arc::clone(&document), &text, version).await {
+            Ok(diagnostics) => if document.state.read().await.version == version {
+                self.client.publish_diagnostics(uri, diagnostics, Some(version)).await;
             }
+            Err(e) => error!(
+                "Failed to validate document with ID={}, URI={}: {}",
+                document.id, document.uri().await, e
+            )
         }
     }
 
@@ -494,10 +336,14 @@ impl LanguageServer for RholangBackend {
         let version = params.text_document.version;
         if let Some(document) = self.documents_by_uri.read().await.get(&uri) {
             if let Some(text) = document.apply(params.content_changes, version).await {
-                if let Some(diagnostics) = self.validate(Arc::clone(&document), &text, version).await {
-                    if document.version().await == version {
+                match self.validate(Arc::clone(&document), &text, version).await {
+                    Ok(diagnostics) => if document.state.read().await.version == version {
                         self.client.publish_diagnostics(uri, diagnostics, Some(version)).await;
                     }
+                    Err(e) => error!(
+                        "Failed to validate document with ID={}, URI={}: {}",
+                        document.id, document.uri().await, e
+                    )
                 }
             }
         }
@@ -525,13 +371,33 @@ impl LanguageServer for RholangBackend {
     }
 }
 
+fn init_logger() {
+    let timer = fmt::time::OffsetTime::new(
+        UtcOffset::UTC,
+        format_description!("[[[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z]"),
+    );
+    tracing_subscriber::registry()
+        .with(
+            fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_timer(timer)
+        )
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug"))
+        )
+        .init();
+}
+
 #[tokio::main]
 async fn main() -> () {
+    init_logger();
+
     // Connect to rnode gRPC service
     let rnode_client = match lsp::lsp_client::LspClient::connect("http://localhost:40402").await {
         Ok(client) => client,
         Err(e) => {
-            eprintln!("Failed to connect to rnode: {}", e);
+            error!("Failed to connect to rnode: {}", e);
             return;
         }
     };

@@ -24,5 +24,5 @@ with_lsp_client!(test_diagnostics, (|client: &LspClient|{
     assert!(start_column == 6);
     assert!(end_line == 0);
     assert!(end_column == 7);
-    assert!(diagnostic.message == "Error: coop.rchain.rholang.interpreter.errors$SyntaxError: syntax error(): { at 1:7-1:8".to_string());
+    assert!(diagnostic.message == "syntax error(): { at 1:7-1:8".to_string());
 }));
