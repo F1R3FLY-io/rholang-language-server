@@ -1,419 +1,729 @@
-use std::collections::{BinaryHeap, HashMap};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::io;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use tokio::sync::{Mutex, RwLock};
+#[cfg(unix)]
+use std::fs;
 
-use tracing::error;
+use futures_util::sink::SinkExt;
+use futures_util::stream::TryStreamExt;
+#[allow(unused_imports)]
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, DuplexStream, Stdout};
+use tokio::net::{TcpListener, UnixListener};
+use tokio::sync::{Notify, oneshot};
+use tokio::task::JoinHandle;
 
-use tracing_subscriber::{self, fmt, prelude::*};
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::NamedPipeServer;
 
-use time::macros::format_description;
-use time::UtcOffset;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{accept_async, WebSocketStream};
 
-use tonic::Request;
-use tonic::transport::Channel;
+use tower_lsp::{LspService, Server};
 
-use tower_lsp::{Client, LanguageServer, LspService, Server};
-use tower_lsp::jsonrpc;
-use tower_lsp::lsp_types::{
-    Diagnostic,
-    DiagnosticSeverity,
-    DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams,
-    InitializedParams,
-    InitializeParams,
-    InitializeResult,
-    MessageType,
-    Position,
-    Range,
-    ServerCapabilities,
-    TextDocumentContentChangeEvent,
-    TextDocumentSyncCapability,
-    TextDocumentSyncKind,
-    Url,
-};
+use tracing::{debug, error, info, trace};
 
-use ropey::Rope;
+use clap::Parser;
 
-pub mod lsp {
-    tonic::include_proto!("lsp");
+use rholang_language_server::backend::RholangBackend;
+use rholang_language_server::logging::init_logger;
+use rholang_language_server::rnode_apis::lsp::lsp_client::LspClient;
+
+// Define communication mode enum for ServerConfig
+#[derive(Debug, Clone, PartialEq)]
+enum CommMode {
+    Stdio,
+    Socket(u16),
+    Pipe(String),
+    WebSocket(u16),
 }
 
-use lsp as rnode_lsp;
-
+// Server configuration struct
 #[derive(Debug)]
-struct PendingChanges {
-    version: i32,
-    changes: Vec<TextDocumentContentChangeEvent>,
+struct ServerConfig {
+    log_level: String,
+    no_color: bool,
+    comm_mode: CommMode,
+    rnode_address: String,
+    rnode_port: u16,
+    client_process_id: Option<u32>,
 }
 
-impl PartialEq for PendingChanges {
-    fn eq(&self, other: &Self) -> bool {
-        self.version == other.version
-    }
-}
-
-impl Eq for PendingChanges {}
-
-impl PartialOrd for PendingChanges {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(other.version.cmp(&self.version))
-    }
-}
-
-impl Ord for PendingChanges {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        other.version.cmp(&self.version)
-    }
-}
-
-#[derive(Debug)]
-struct LspDocumentState {
-    uri: Url,
-    text: Rope,
-    version: i32,
-    pending: BinaryHeap<PendingChanges>,
-}
-
-#[derive(Debug)]
-struct LspDocument {
-    id: u32,
-    state: RwLock<LspDocumentState>,
-}
-
-fn lsp_range_to_offset(position: &Position, text: &Rope) -> usize {
-    let line = position.line as usize;
-    let char = position.character as usize;
-    text.line_to_char(line) + char
-}
-
-impl LspDocumentState {
-    fn apply(
-        &mut self,
-        mut changes: Vec<TextDocumentContentChangeEvent>,
-        version: i32
-    ) -> bool {
-        // Re-order the changes so they will be applied in reverse in case there
-        // are more than one:
-        changes.sort_by(|a, b| {
-            match (a.range, b.range) {
-                (Some(range_a), Some(range_b)) => {
-                    let pos_a = range_a.start;
-                    let pos_b = range_b.start;
-                    pos_b.line.cmp(&pos_a.line).then(pos_b.character.cmp(&pos_a.character))
-                }
-                // Handle cases where range is None
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, None) => std::cmp::Ordering::Equal,
-            }
-        });
-        self.pending.push(PendingChanges { version, changes });
-        while let Some(pending) = self.pending.peek() {
-            if pending.version == self.version + 1 {
-                for change in &pending.changes {
-                    if let Some(range) = change.range {
-                        let start = lsp_range_to_offset(&range.start, &self.text);
-                        let end = lsp_range_to_offset(&range.end, &self.text);
-                        self.text.remove(start..end);
-                        self.text.insert(start, &change.text);
-                    } else {
-                        self.text = Rope::from_str(&change.text);
-                    }
-                }
-                self.version = pending.version;
-                self.pending.pop(); // Remove the processed change
-            } else {
-                // Next change is not sequential, wait for the correct version
-                break;
-            }
+impl ServerConfig {
+    fn from_args() -> io::Result<Self> {
+        #[derive(Parser, Debug)]
+        #[command(
+            version = "1.0",
+            about = "Rholang Language Server",
+            long_about = "LSP-based language server for Rholang."
+        )]
+        struct Args {
+            #[arg(
+                long,
+                default_value = "debug",
+                help = "Set the logging level for the server",
+                value_parser = ["error", "warn", "info", "debug", "trace"]
+            )]
+            log_level: String,
+            #[arg(long, help = "Disable ANSI color output")]
+            no_color: bool,
+            #[arg(
+                long,
+                help = "Use stdin/stdout for communication (mutually exclusive with --socket, --pipe, --websocket)",
+                conflicts_with_all = ["socket", "websocket", "pipe"]
+            )]
+            stdio: bool,
+            #[arg(
+                long,
+                requires = "port",
+                help = "Use TCP socket for communication (requires --port; mutually exclusive with --stdio, --pipe, --websocket)",
+                conflicts_with_all = ["stdio", "pipe", "websocket"]
+            )]
+            socket: bool,
+            #[arg(
+                long,
+                requires = "port",
+                help = "Use WebSocket for communication (requires --port; mutually exclusive with --stdio, --socket, --pipe)",
+                conflicts_with_all = ["stdio", "socket", "pipe"]
+            )]
+            websocket: bool,
+            #[arg(long, help = "Port number for socket or WebSocket communication")]
+            port: Option<u16>,
+            #[arg(
+                long,
+                help = "Address of the RNode server (e.g., '127.0.0.1'). Can be set via RHOLANG_ADDRESS_NODE env variable.",
+                default_value = "localhost"
+            )]
+            rnode_address: String,
+            #[arg(
+                long,
+                help = "Port of the RNode server. Can be set via RHOLANG_PORT_NODE env variable.",
+                default_value_t = 40402
+            )]
+            rnode_port: u16,
+            #[arg(
+                long,
+                alias = "clientProcessId",
+                help = "Process ID of the client for monitoring (optional)"
+            )]
+            client_process_id: Option<u32>,
+            #[arg(
+                long,
+                help = "Path to named pipe or Unix socket (e.g., '\\\\.\\pipe\\rholang-lsp' on Windows or '/tmp/rholang.socket' on Unix; mutually exclusive with --stdio, --socket, --websocket)",
+                conflicts_with_all = ["stdio", "socket", "websocket"]
+            )]
+            pipe: Option<String>,
         }
-        self.version == version
-    }
-}
 
-#[allow(dead_code)]
-impl LspDocument {
-    async fn uri(&self) -> Url {
-        self.state.read().await.uri.clone()
-    }
+        let args = Args::parse();
 
-    async fn text(&self) -> String {
-        self.state.read().await.text.to_string()
-    }
+        let rnode_address = std::env::var("RHOLANG_ADDRESS_NODE").unwrap_or(args.rnode_address);
+        let rnode_port = match std::env::var("RHOLANG_PORT_NODE") {
+            Ok(port_str) => port_str.parse::<u16>().map_err(|e| {
+                error!("Invalid RHOLANG_PORT_NODE environment variable: {}", e);
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Invalid port in RHOLANG_PORT_NODE: {}", e),
+                )
+            })?,
+            Err(_) => args.rnode_port,
+        };
 
-    async fn version(&self) -> i32 {
-        self.state.read().await.version
-    }
-
-    async fn num_lines(&self) -> usize {
-        self.state.read().await.text.len_lines()
-    }
-
-    async fn last_line(&self) -> usize {
-        self.num_lines().await - 1
-    }
-
-    async fn num_columns(&self, line: usize) -> usize {
-        self.state.read().await.text.line(line).len_chars()
-    }
-
-    async fn last_column(&self, line: usize) -> usize {
-        self.state.read().await.text.line(line).len_chars() - 1
-    }
-
-    async fn last_linecol(&self) -> (usize, usize) {
-        let state = self.state.read().await;
-        let text = &state.text;
-        let last_line = text.len_lines() - 1;
-        let last_column = text.line(last_line).len_chars() - 1;
-        (last_line, last_column)
-    }
-
-    async fn apply(
-        &self,
-        changes: Vec<TextDocumentContentChangeEvent>,
-        version: i32
-    ) -> Option<String> {
-        let mut state = self.state.write().await;
-        if state.apply(changes, version) {
-            Some(state.text.to_string())
-        } else {
-            None
-        }
-    }
-}
-
-#[derive(Debug)]
-struct RholangBackend {
-    client: Client,
-    documents_by_uri: RwLock<HashMap<Url, Arc<LspDocument>>>,
-    documents_by_id: RwLock<HashMap<u32, Arc<LspDocument>>>,
-    serial_document_id: AtomicU32,
-    rnode_client: Mutex<lsp::lsp_client::LspClient<Channel>>,
-}
-
-impl RholangBackend {
-    fn next_document_id(&self) -> u32 {
-        self.serial_document_id.fetch_add(1, Ordering::SeqCst)
-    }
-
-    async fn validate(&self, document: Arc<LspDocument>, text: &str, version: i32) -> Result<Vec<Diagnostic>, String> {
-        let mut client = self.rnode_client.lock().await.clone();
-        if document.version().await == version {
-            let request = Request::new(rnode_lsp::ValidateRequest {
-                text: text.to_string(),
-            });
-            match client.validate(request).await {
-                Ok(response) => match response.into_inner().result {
-                    Some(result) => match result {
-                        rnode_lsp::validate_response::Result::Success(diagnostic_list) => {
-                            Ok(diagnostic_list.diagnostics.into_iter().map(|diagnostic| {
-                                let range = diagnostic.range.expect("Missing required field for lsp::Diagnostic: range");
-                                let start = range.start.expect("Missing required field for lsp::Range: start");
-                                let end = range.end.expect("Missing required field for lsp::Range: end");
-                                let severity = match rnode_lsp::DiagnosticSeverity::try_from(diagnostic.severity) {
-                                    Ok(severity) => match severity {
-                                        rnode_lsp::DiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
-                                        rnode_lsp::DiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
-                                        rnode_lsp::DiagnosticSeverity::Information => DiagnosticSeverity::INFORMATION,
-                                        rnode_lsp::DiagnosticSeverity::Hint => DiagnosticSeverity::HINT,
-                                    }
-                                    Err(e) => {
-                                        error!("Invalid lsp::DiagnosticSeverity: {}", e);
-                                        DiagnosticSeverity::ERROR
-                                    }
-                                };
-                                Diagnostic {
-                                    range: Range {
-                                        start: Position {
-                                            line: start.line as u32,
-                                            character: start.column as u32
-                                        },
-                                        end: Position {
-                                            line: end.line as u32,
-                                            character: end.column as u32
-                                        }
-                                    },
-                                    severity: Some(severity),
-                                    source: Some(diagnostic.source),
-                                    message: diagnostic.message,
-                                    ..Default::default()
-                                }
-                            }).collect())
-                        }
-                        rnode_lsp::validate_response::Result::Error(message) => Err(format!(
-                            "Failed to validate document with ID={}, URI={}: {}",
-                            document.id, document.uri().await, message
-                        ))
-                    }
-                    None => Err("RNode did not return a response".to_string()),
-                }
-                Err(e) => Err(format!(
-                    "Failed to validate document with ID={}, URI={}: {}",
-                    document.id, document.uri().await, e
-                ))
+        let comm_mode = match (args.stdio, args.socket, args.websocket, args.pipe) {
+            (true, false, false, None) => CommMode::Stdio,
+            (false, true, false, None) => {
+                let port = args.port.ok_or_else(|| {
+                    error!("The --port option is required when --socket is used.");
+                    io::Error::new(io::ErrorKind::InvalidInput, "Port required for socket mode")
+                })?;
+                CommMode::Socket(port)
             }
-        } else {
-            Ok(Vec::new())
-        }
-    }
-}
+            (false, false, true, None) => {
+                let port = args.port.ok_or_else(|| {
+                    error!("The --port option is required when --websocket is used.");
+                    io::Error::new(io::ErrorKind::InvalidInput, "Port required for websocket mode")
+                })?;
+                CommMode::WebSocket(port)
+            }
+            (false, false, false, Some(pipe)) => {
+                #[cfg(windows)]
+                if !pipe.starts_with(r"\\.\pipe\") {
+                    error!("Invalid named pipe path: {}. Must start with '\\\\.\\pipe\\'.", pipe);
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Invalid named pipe path: {}", pipe),
+                    ));
+                }
+                CommMode::Pipe(pipe)
+            }
+            _ => {
+                error!("Exactly one of --stdio, --socket, --websocket, --pipe must be specified.");
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Invalid communication mode",
+                ));
+            }
+        };
 
-#[tower_lsp::async_trait]
-impl LanguageServer for RholangBackend {
-    async fn initialize(&self, _: InitializeParams) -> jsonrpc::Result<InitializeResult> {
-        Ok(InitializeResult {
-            capabilities: ServerCapabilities {
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::INCREMENTAL,
-                )),
-                ..Default::default()
-            },
-            ..Default::default()
+        Ok(ServerConfig {
+            log_level: args.log_level,
+            no_color: args.no_color,
+            comm_mode,
+            rnode_address,
+            rnode_port,
+            client_process_id: args.client_process_id,
         })
     }
+}
 
-    async fn initialized(&self, _: InitializedParams) {
-        self.client.log_message(
-            MessageType::INFO,
-            "Server initialized!"
-        ).await;
+// WebSocketStreamAdapter
+struct WebSocketStreamAdapter<S> {
+    inner: WebSocketStream<S>,
+    read_buffer: Vec<u8>,
+}
+
+impl<S> WebSocketStreamAdapter<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    fn new(inner: WebSocketStream<S>) -> Self {
+        WebSocketStreamAdapter {
+            inner,
+            read_buffer: Vec::new(),
+        }
     }
 
-    async fn shutdown(&self) -> jsonrpc::Result<()> {
-        self.client.log_message(
-            MessageType::INFO,
-            "Shutting server down."
-        ).await;
+    #[allow(dead_code)]
+    async fn close(&mut self) -> io::Result<()> {
+        self.inner
+            .send(Message::Close(None))
+            .await
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        self.inner
+            .flush()
+            .await
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         Ok(())
-    }
-
-    async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        let uri = params.text_document.uri.clone();
-        let text = &params.text_document.text;
-        let version = params.text_document.version;
-        let document_id = self.next_document_id();
-        let document = Arc::new(LspDocument {
-            id: document_id,
-            state: RwLock::new(LspDocumentState {
-                uri: uri.clone(),
-                text: Rope::from_str(text),
-                version,
-                pending: BinaryHeap::new()
-            })
-        });
-        self.documents_by_uri.write().await.insert(
-            uri.clone(),
-            Arc::clone(&document)
-        );
-        self.documents_by_id.write().await.insert(
-            document_id,
-            Arc::clone(&document)
-        );
-        self.client.log_message(
-            MessageType::INFO,
-            format!(
-                "Opened document: {}, id: {}, version: {}",
-                uri, document_id, version
-            ),
-        ).await;
-        match self.validate(Arc::clone(&document), &text, version).await {
-            Ok(diagnostics) => if document.state.read().await.version == version {
-                self.client.publish_diagnostics(uri, diagnostics, Some(version)).await;
-            }
-            Err(e) => error!(
-                "Failed to validate document with ID={}, URI={}: {}",
-                document.id, document.uri().await, e
-            )
-        }
-    }
-
-    async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let uri = params.text_document.uri.clone();
-        let version = params.text_document.version;
-        if let Some(document) = self.documents_by_uri.read().await.get(&uri) {
-            if let Some(text) = document.apply(params.content_changes, version).await {
-                match self.validate(Arc::clone(&document), &text, version).await {
-                    Ok(diagnostics) => if document.state.read().await.version == version {
-                        self.client.publish_diagnostics(uri, diagnostics, Some(version)).await;
-                    }
-                    Err(e) => error!(
-                        "Failed to validate document with ID={}, URI={}: {}",
-                        document.id, document.uri().await, e
-                    )
-                }
-            }
-        }
-    }
-
-    async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        let uri = params.text_document.uri;
-        if let Some(document) = self.documents_by_uri.write().await.remove(&uri) {
-            self.documents_by_id.write().await.remove(&document.id);
-            self.client
-                .log_message(
-                    MessageType::INFO,
-                    format!("Closed document: {}, id: {}", uri, document.id),
-                )
-                .await;
-        } else {
-            self.client
-                .log_message(
-                    MessageType::WARNING,
-                    format!("Closed document not found: {}", uri),
-                )
-                .await;
-        }
-        self.client.publish_diagnostics(uri, Vec::new(), None).await;
     }
 }
 
-fn init_logger() {
-    let timer = fmt::time::OffsetTime::new(
-        UtcOffset::UTC,
-        format_description!("[[[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z]"),
-    );
-    tracing_subscriber::registry()
-        .with(
-            fmt::layer()
-                .with_writer(std::io::stderr)
-                .with_timer(timer)
+impl<S> AsyncRead for WebSocketStreamAdapter<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        let this = self.get_mut();
+        if !this.read_buffer.is_empty() {
+            info!("Using buffered data: {} bytes", this.read_buffer.len());
+            let to_copy = std::cmp::min(buf.remaining(), this.read_buffer.len());
+            buf.put_slice(&this.read_buffer[..to_copy]);
+            this.read_buffer.drain(..to_copy);
+            return std::task::Poll::Ready(Ok(()));
+        }
+
+        match this.inner.try_poll_next_unpin(cx) {
+            std::task::Poll::Ready(Some(Ok(Message::Text(text)))) => {
+                trace!("Received WebSocket text message: {}", text);
+                this.read_buffer.extend_from_slice(text.as_bytes());
+                let to_copy = std::cmp::min(buf.remaining(), this.read_buffer.len());
+                buf.put_slice(&this.read_buffer[..to_copy]);
+                this.read_buffer.drain(..to_copy);
+                std::task::Poll::Ready(Ok(()))
+            }
+            std::task::Poll::Ready(Some(Ok(Message::Binary(data)))) => {
+                trace!("Received WebSocket binary message: {:?}", data);
+                this.read_buffer.extend_from_slice(&data);
+                let to_copy = std::cmp::min(buf.remaining(), this.read_buffer.len());
+                buf.put_slice(&this.read_buffer[..to_copy]);
+                this.read_buffer.drain(..to_copy);
+                std::task::Poll::Ready(Ok(()))
+            }
+            std::task::Poll::Ready(Some(Ok(Message::Ping(_)))) => {
+                trace!("Received WebSocket ping message");
+                std::task::Poll::Ready(Ok(()))
+            }
+            std::task::Poll::Ready(Some(Ok(Message::Pong(_)))) => {
+                trace!("Received WebSocket pong message");
+                std::task::Poll::Ready(Ok(()))
+            }
+            std::task::Poll::Ready(Some(Ok(Message::Frame(_)))) => {
+                trace!("Received WebSocket frame message");
+                std::task::Poll::Ready(Ok(()))
+            }
+            std::task::Poll::Ready(Some(Ok(Message::Close(_)))) => {
+                trace!("Received WebSocket close message");
+                std::task::Poll::Ready(Ok(()))
+            }
+            std::task::Poll::Ready(Some(Err(e))) => {
+                trace!("WebSocket error: {}", e);
+                std::task::Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e)))
+            }
+            std::task::Poll::Ready(None) => {
+                trace!("WebSocket stream closed");
+                std::task::Poll::Ready(Ok(()))
+            }
+            std::task::Poll::Pending => {
+                trace!("WebSocket poll pending");
+                std::task::Poll::Pending
+            }
+        }
+    }
+}
+
+impl<S> AsyncWrite for WebSocketStreamAdapter<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        match this.inner.poll_ready_unpin(cx) {
+            std::task::Poll::Ready(Ok(())) => match this.inner.start_send_unpin(Message::Binary(buf.to_vec())) {
+                Ok(()) => std::task::Poll::Ready(Ok(buf.len())),
+                Err(e) => std::task::Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
+            },
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        let this = self.get_mut();
+        match this.inner.poll_flush_unpin(cx) {
+            std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(Ok(())),
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        let this = self.get_mut();
+        match this.inner.poll_close_unpin(cx) {
+            std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(Ok(())),
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+}
+
+// ConnectionManager
+#[derive(Clone)]
+struct ConnectionManager {
+    shutdown_notify: Arc<Notify>,
+    connections: Arc<Mutex<Vec<oneshot::Sender<()>>>>,
+    tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
+}
+
+impl ConnectionManager {
+    fn new() -> Self {
+        ConnectionManager {
+            shutdown_notify: Arc::new(Notify::new()),
+            connections: Arc::new(Mutex::new(Vec::new())),
+            tasks: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    async fn add_connection(&self, tx: oneshot::Sender<()>) {
+        let mut conns = self.connections.lock().unwrap();
+        conns.push(tx);
+        info!("Added connection, total: {}", conns.len());
+    }
+
+    fn add_task(&self, task: JoinHandle<()>) {
+        let mut tasks = self.tasks.lock().unwrap();
+        tasks.push(task);
+        info!("Added task, total: {}", tasks.len());
+    }
+
+    async fn remove_closed_connections(&self) {
+        let mut conns = self.connections.lock().unwrap();
+        conns.retain(|tx| !tx.is_closed());
+        info!("Remaining connections: {}", conns.len());
+    }
+
+    async fn shutdown_all(&self) {
+        info!("Initiating shutdown of all connections and tasks");
+        // Remove closed connections first
+        self.remove_closed_connections().await;
+        // Signal remaining connections
+        let mut conns = self.connections.lock().unwrap();
+        for tx in conns.drain(..) {
+            if tx.send(()).is_err() {
+                debug!("Failed to send shutdown signal to a connection; likely already closed");
+            }
+        }
+        self.shutdown_notify.notify_waiters();
+
+        let mut tasks = self.tasks.lock().unwrap();
+        for task in tasks.drain(..) {
+            task.abort();
+        }
+        info!("All tasks canceled");
+    }
+
+    async fn wait_for_tasks(&self) {
+        let tasks: Vec<JoinHandle<()>> = {
+            let mut tasks = self.tasks.lock().unwrap();
+            tasks.drain(..).collect()
+        };
+        for task in tasks {
+            if let Err(e) = tokio::time::timeout(Duration::from_secs(5), task).await {
+                error!("Task did not complete in time: {:?}", e);
+            }
+        }
+        info!("All tasks completed or timed out");
+    }
+}
+
+async fn serve_connection<R, W>(
+    read: R,
+    write: W,
+    addr: impl std::fmt::Display + Send + 'static,
+    rnode_client: LspClient<tonic::transport::Channel>,
+    conn_manager: &ConnectionManager,
+    client_process_id: Option<u32>,
+) where
+    R: tokio::io::AsyncRead + Send + Unpin + 'static,
+    W: tokio::io::AsyncWrite + Send + Unpin + 'static,
+{
+    info!("Accepted connection from {}", addr);
+    let (service, socket) = LspService::new(|client| {
+        Arc::new(RholangBackend::new(client, rnode_client, client_process_id))
+    });
+    let (conn_tx, conn_rx) = oneshot::channel::<()>();
+    conn_manager.add_connection(conn_tx).await;
+
+    let shutdown_notify = conn_manager.shutdown_notify.clone();
+    let task = tokio::spawn(async move {
+        let server = Server::new(read, write, socket);
+        tokio::select! {
+            _ = server.serve(service) => {
+                info!("Connection from {} closed normally", addr);
+            }
+            _ = conn_rx => {
+                info!("Shutdown signal received for connection from {}", addr);
+                shutdown_notify.notified().await;
+                info!("Exit processed for connection from {}", addr);
+            }
+        }
+    });
+    conn_manager.add_task(task);
+}
+
+#[cfg(unix)]
+async fn monitor_client_process(client_pid: u32, conn_manager: ConnectionManager) {
+    use nix::unistd::Pid;
+    use tokio::time::{sleep, Duration};
+
+    let pid = Pid::from_raw(client_pid as i32);
+    loop {
+        match nix::sys::signal::kill(pid, None) {
+            Ok(()) => {
+                sleep(Duration::from_secs(1)).await;
+            }
+            Err(nix::Error::ESRCH) => {
+                info!("Client process (PID: {}) no longer exists, shutting down server", client_pid);
+                conn_manager.shutdown_notify.notify_waiters(); // Signal main to shut down
+                break;
+            }
+            Err(e) => {
+                error!("Error checking client process (PID: {}): {}", client_pid, e);
+                sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+async fn monitor_client_process(client_pid: u32, conn_manager: ConnectionManager) {
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, WaitForSingleObject};
+    use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
+    use std::ptr;
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_INFORMATION, false, client_pid);
+        if handle == HANDLE(ptr::null_mut()) {
+            error!("Failed to open client process (PID: {})", client_pid);
+            return;
+        }
+        let result = WaitForSingleObject(handle, 0xFFFFFFFF);
+        if result == WAIT_OBJECT_0 {
+            info!("Client process (PID: {}) terminated, shutting down server", client_pid);
+            conn_manager.shutdown_notify.notify_waiters(); // Signal main to shut down
+        } else {
+            error!("Error waiting for client process (PID: {}): {:?}", client_pid, result);
+        }
+    }
+}
+
+async fn run_server(config: ServerConfig, conn_manager: ConnectionManager) -> io::Result<()> {
+    init_logger(config.no_color, Some(&config.log_level))?;
+    info!("Initializing rholang-language-server with log level {} ...", config.log_level);
+
+    let rnode_endpoint = format!("http://{}:{}", config.rnode_address, config.rnode_port);
+    let rnode_uri = tonic::transport::Uri::try_from(&rnode_endpoint).map_err(|e| {
+        error!("Invalid RNode endpoint {}: {}", rnode_endpoint, e);
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Invalid RNode endpoint: {}", rnode_endpoint),
         )
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug"))
-        )
-        .init();
+    })?;
+    let rnode_client = LspClient::connect(tonic::transport::Endpoint::from(rnode_uri))
+        .await
+        .map_err(|e| {
+            error!("Failed to connect to rnode at {}: {}", rnode_endpoint, e);
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("Failed to connect to rnode at {}", rnode_endpoint),
+            )
+        })?;
+    info!("RNode client initialized at {}.", rnode_endpoint);
+
+    if let Some(client_pid) = config.client_process_id {
+        let conn_manager_clone = conn_manager.clone();
+        let monitor_task = tokio::spawn(async move {
+            monitor_client_process(client_pid, conn_manager_clone).await;
+        });
+        conn_manager.add_task(monitor_task);
+    }
+
+    match config.comm_mode {
+        CommMode::Stdio => {
+            info!("Starting server with stdin/stdout communication.");
+            let (service, socket) = LspService::build(|client| {
+                RholangBackend::new(client, rnode_client.clone(), config.client_process_id)
+            })
+            .finish();
+            let stdin = BufReader::new(tokio::io::stdin()); // Wrap stdin in BufReader
+            let stdout = tokio::io::stdout();
+
+            let shutdown_notify = conn_manager.shutdown_notify.clone();
+            let server_task = tokio::spawn(async move {
+                let server = Server::new(stdin, stdout, socket);
+                tokio::select! {
+                    _ = server.serve(service) => {
+                        info!("Stdio server terminated normally");
+                    }
+                    _ = shutdown_notify.notified() => {
+                        info!("Shutdown signal received, stopping stdio server");
+                    }
+                }
+            });
+            conn_manager.add_task(server_task);
+
+            // Wait for shutdown signal (from client monitor or signal)
+            conn_manager.shutdown_notify.notified().await;
+            conn_manager.shutdown_all().await;
+            conn_manager.wait_for_tasks().await;
+        }
+        CommMode::Socket(port) => {
+            info!("Starting server with TCP socket communication on port {}.", port);
+            let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
+            info!("TCP server listening on 127.0.0.1:{}", port);
+
+            loop {
+                tokio::select! {
+                    result = listener.accept() => {
+                        match result {
+                            Ok((stream, addr)) => {
+                                let (read, write) = tokio::io::split(stream);
+                                serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id).await;
+                                conn_manager.remove_closed_connections().await;
+                            }
+                            Err(e) => {
+                                error!("Failed to accept TCP connection: {}", e);
+                            }
+                        }
+                    }
+                    _ = conn_manager.shutdown_notify.notified() => {
+                        info!("Main shutdown signal received, closing TCP server");
+                        break;
+                    }
+                }
+            }
+            conn_manager.shutdown_all().await;
+            conn_manager.wait_for_tasks().await;
+        }
+        CommMode::WebSocket(port) => {
+            info!("Starting server with WebSocket communication on port {}.", port);
+            let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
+            info!("WebSocket server listening on 127.0.0.1:{}", port);
+
+            loop {
+                tokio::select! {
+                    result = listener.accept() => {
+                        match result {
+                            Ok((stream, addr)) => {
+                                match accept_async(stream).await {
+                                    Ok(ws_stream) => {
+                                        let ws_adapter = WebSocketStreamAdapter::new(ws_stream);
+                                        let (read, write) = tokio::io::split(ws_adapter);
+                                        serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id).await;
+                                        conn_manager.remove_closed_connections().await;
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to accept WebSocket connection from {}: {}", addr, e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to accept TCP connection: {}", e);
+                            }
+                        }
+                    }
+                    _ = conn_manager.shutdown_notify.notified() => {
+                        info!("Main shutdown signal received, closing WebSocket server");
+                        break;
+                    }
+                }
+            }
+            conn_manager.shutdown_all().await;
+            conn_manager.wait_for_tasks().await;
+        }
+        CommMode::Pipe(pipe_path) => {
+            #[cfg(windows)]
+            {
+                info!("Starting server with named pipe communication at {}.", pipe_path);
+                loop {
+                    let server = NamedPipeServer::new(&pipe_path).await?;
+                    tokio::select! {
+                        _ = server.connect() => {
+                            let addr = format!("named_pipe:{}", pipe_path);
+                            let (read, write) = tokio::io::split(server);
+                            serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id).await;
+                            conn_manager.remove_closed_connections().await;
+                        }
+                        _ = conn_manager.shutdown_notify.notified() => {
+                            info!("Main shutdown signal received, closing named pipe server");
+                            break;
+                        }
+                    }
+                }
+                conn_manager.shutdown_all().await;
+                conn_manager.wait_for_tasks().await;
+            }
+            #[cfg(unix)]
+            {
+                info!("Starting server with Unix domain socket communication at {}.", pipe_path);
+                if std::path::Path::new(&pipe_path).exists() {
+                    fs::remove_file(&pipe_path)?;
+                }
+                let listener = UnixListener::bind(&pipe_path)?;
+                let cleanup = scopeguard::guard(pipe_path.clone(), |path| {
+                    if let Err(e) = fs::remove_file(&path) {
+                        error!("Failed to clean up Unix socket file {}: {}", path, e);
+                    } else {
+                        info!("Cleaned up Unix socket file {}.", path);
+                    }
+                });
+                loop {
+                    tokio::select! {
+                        result = listener.accept() => {
+                            match result {
+                                Ok((stream, addr)) => {
+                                    let addr = format!("unix_socket:{:?}", addr);
+                                    let (read, write) = tokio::io::split(stream);
+                                    serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id).await;
+                                    conn_manager.remove_closed_connections().await;
+                                }
+                                Err(e) => {
+                                    error!("Failed to accept Unix socket connection: {}", e);
+                                }
+                            }
+                        }
+                        _ = conn_manager.shutdown_notify.notified() => {
+                            info!("Main shutdown signal received, closing Unix socket server");
+                            break;
+                        }
+                    }
+                }
+                drop(cleanup);
+                conn_manager.shutdown_all().await;
+                conn_manager.wait_for_tasks().await;
+            }
+            #[cfg(not(any(windows, unix)))]
+            {
+                error!("Named pipe/Unix domain socket communication is not supported on this platform.");
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Named pipe/Unix domain socket communication is not supported on this platform.",
+                ));
+            }
+        }
+    }
+
+    info!("Server terminated.");
+    Ok(())
 }
 
 #[tokio::main]
-async fn main() -> () {
-    init_logger();
+async fn main() -> io::Result<()> {
+    let config = ServerConfig::from_args()?;
+    let conn_manager = ConnectionManager::new();
 
-    // Connect to rnode gRPC service
-    let rnode_client = match lsp::lsp_client::LspClient::connect("http://localhost:40402").await {
-        Ok(client) => client,
-        Err(e) => {
-            error!("Failed to connect to rnode: {}", e);
-            return;
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigint = signal(SignalKind::interrupt())?;
+        let mut sigterm = signal(SignalKind::terminate())?;
+
+        tokio::select! {
+            result = run_server(config, conn_manager.clone()) => {
+                conn_manager.shutdown_all().await;
+                conn_manager.wait_for_tasks().await;
+                result
+            }
+            _ = sigint.recv() => {
+                info!("Received SIGINT, initiating shutdown");
+                conn_manager.shutdown_all().await;
+                conn_manager.wait_for_tasks().await;
+                Ok(())
+            }
+            _ = sigterm.recv() => {
+                info!("Received SIGTERM, initiating shutdown");
+                conn_manager.shutdown_all().await;
+                conn_manager.wait_for_tasks().await;
+                Ok(())
+            }
         }
-    };
+    }
 
-    let stdin = tokio::io::stdin();
-    let stdout = tokio::io::stdout();
+    #[cfg(windows)]
+    {
+        use tokio::signal::ctrl_c;
+        tokio::select! {
+            result = run_server(config, conn_manager.clone()) => {
+                conn_manager.shutdown_all().await;
+                conn_manager.wait_for_tasks().await;
+                result
+            }
+            _ = ctrl_c() => {
+                info!("Received Ctrl+C, initiating shutdown");
+                conn_manager.shutdown_all().await;
+                conn_manager.wait_for_tasks().await;
+                Ok(())
+            }
+        }
+    }
 
-    let (service, socket) = LspService::new(|client| RholangBackend {
-        client,
-        documents_by_uri: RwLock::new(HashMap::new()),
-        documents_by_id: RwLock::new(HashMap::new()),
-        serial_document_id: AtomicU32::new(0),
-        rnode_client: Mutex::new(rnode_client),
-    });
-
-    Server::new(stdin, stdout, socket)
-        .serve(service)
-        .await;
+    #[cfg(not(any(unix, windows)))]
+    {
+        run_server(config, conn_manager.clone()).await?;
+        conn_manager.shutdown_all().await;
+        conn_manager.wait_for_tasks().await;
+        Ok(())
+    }
 }
