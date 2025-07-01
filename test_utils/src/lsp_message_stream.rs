@@ -4,7 +4,7 @@ pub trait LspReader {
 }
 
 // Implement LspReader for BufReader wrapping Box<dyn LspStream>
-impl LspReader for std::io::BufReader<Box<dyn crate::common::lsp_client::LspStream>> {
+impl LspReader for std::io::BufReader<Box<dyn crate::lsp_client::LspStream>> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.get_mut().read(buf)
     }

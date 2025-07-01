@@ -5,6 +5,10 @@ pub enum LspEvent {
         uri: String,
         text: String,
     },
+    FileClosed {
+        document_id: u64,
+        uri: String,
+    },
     TextChanged {
         document_id: u64,
         uri: String,

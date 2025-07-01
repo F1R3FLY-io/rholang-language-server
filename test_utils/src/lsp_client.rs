@@ -44,18 +44,19 @@ use tower_lsp::lsp_types::{
     ClientCapabilities, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, InitializedParams, InitializeParams,
     InitializeResult, LogMessageParams, MessageType, Position,
-    PublishDiagnosticsParams, Range, ServerCapabilities,
-    TextDocumentClientCapabilities, TextDocumentContentChangeEvent,
-    TextDocumentIdentifier, TextDocumentItem, TextDocumentSyncCapability,
-    TextDocumentSyncClientCapabilities, TextDocumentSyncKind, Url,
-    VersionedTextDocumentIdentifier,
+    PublishDiagnosticsParams, Range, ServerCapabilities, SemanticTokensParams,
+    SemanticTokens, SemanticTokensResult, SemanticTokensDeltaParams,
+    SemanticTokensFullDeltaResult, TextDocumentClientCapabilities,
+    TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
+    TextDocumentSyncCapability, TextDocumentSyncClientCapabilities,
+    TextDocumentSyncKind, Url, VersionedTextDocumentIdentifier,
 };
 
 use serde_json::{self, json, Value};
 
-use crate::common::lsp_document::LspDocument;
-use crate::common::lsp_event::LspEvent;
-use crate::common::lsp_message_stream::LspMessageStream;
+use crate::lsp_document::LspDocument;
+use crate::lsp_event::LspEvent;
+use crate::lsp_message_stream::LspMessageStream;
 
 // WebSocket Stream Adapter for LspStream
 struct WebSocketStreamAdapter {
@@ -316,9 +317,10 @@ pub struct LspClient {
     requests_by_id: RwLock<HashMap<u64, Arc<Value>>>,
     responses_by_id: RwLock<HashMap<u64, Arc<Value>>>,
     diagnostics_by_id: RwLock<HashMap<u64, Arc<PublishDiagnosticsParams>>>,
+    semantic_tokens_by_uri: RwLock<HashMap<String, Arc<Option<SemanticTokensResult>>>>,
     serial_request_id: AtomicU64,
     serial_document_id: AtomicU64,
-    documents_by_uri: RwLock<HashMap<String, Arc<LspDocument>>>,
+    pub documents_by_uri: RwLock<HashMap<String, Arc<LspDocument>>>,
     output_thread: Mutex<Option<JoinHandle<()>>>,
     input_thread: Mutex<Option<JoinHandle<()>>>,
     logger_thread: Mutex<Option<JoinHandle<()>>>,
@@ -563,7 +565,7 @@ impl LspClient {
                         Some(server),
                         None,
                         None,
-                        Some(ws_sink), // Store sink instead of stream
+                        Some(ws_sink),
                         None,
                     )
                 }
@@ -693,6 +695,14 @@ impl LspClient {
             "shutdown".to_string(),
             LspClient::receive_shutdown as ResponseHandler,
         );
+        response_handlers.insert(
+            "textDocument/semanticTokens/full".to_string(),
+            LspClient::receive_semantic_tokens_full as ResponseHandler,
+        );
+        response_handlers.insert(
+            "textDocument/semanticTokens/full/delta".to_string(),
+            LspClient::receive_semantic_tokens_full_delta as ResponseHandler,
+        );
 
         let client = LspClient {
             server: Mutex::new(server),
@@ -707,6 +717,7 @@ impl LspClient {
             requests_by_id: RwLock::new(HashMap::new()),
             responses_by_id: RwLock::new(HashMap::new()),
             diagnostics_by_id: RwLock::new(HashMap::new()),
+            semantic_tokens_by_uri: RwLock::new(HashMap::new()),
             serial_request_id: AtomicU64::new(0),
             serial_document_id: AtomicU64::new(0),
             documents_by_uri: RwLock::new(HashMap::new()),
@@ -915,7 +926,16 @@ impl LspClient {
         Ok(document)
     }
 
-    pub fn dispatch(&self, message: String) -> Result<(), String> {
+    pub fn close_document(&self, document: &Arc<LspDocument>) -> Result<(), String> {
+        document.close()?;
+        self.documents_by_uri
+            .write()
+            .expect("Failed to acquire write lock on documents_by_uri")
+            .remove(&document.uri());
+        Ok(())
+    }
+
+    fn dispatch(&self, message: String) -> Result<(), String> {
         match serde_json::from_str::<Value>(&message) {
             Ok(json) => {
                 if json.get("method").is_some() {
@@ -1045,7 +1065,7 @@ impl LspClient {
         let mut message = json!({
             "jsonrpc": "2.0",
             "id": request_id,
-            "method": method
+            "method": method,
         });
         if let Some(params) = params {
             message["params"] = params;
@@ -1064,7 +1084,7 @@ impl LspClient {
         let message = json!({
             "jsonrpc": "2.0",
             "method": method,
-            "params": params
+            "params": params,
         });
         let message_str = serde_json::to_string(&message).expect("Failed to serialize message");
         if let Err(e) = self.sender.lock().expect("Failed to lock sender").as_ref().expect("Sender dropped").send(message_str) {
@@ -1103,7 +1123,11 @@ impl LspClient {
         {
             let diagnostics_by_id = self.diagnostics_by_id.read().expect("Failed to acquire read lock on diagnostics_by_id");
             if let Some(diagnostics) = diagnostics_by_id.get(&doc.id) {
-                return Ok(diagnostics.clone());
+                if let Some(version) = diagnostics.version {
+                    if version == doc.version.load(Ordering::Relaxed) {
+                        return Ok(diagnostics.clone());
+                    }
+                }
             }
         }
 
@@ -1117,7 +1141,11 @@ impl LspClient {
                 }
                 let diagnostics_by_id = self.diagnostics_by_id.read().expect("Failed to acquire read lock on diagnostics_by_id");
                 if let Some(diagnostics) = diagnostics_by_id.get(&doc.id) {
-                    return Ok(diagnostics.clone());
+                    if let Some(version) = diagnostics.version {
+                        if version == doc.version.load(Ordering::Relaxed) {
+                            return Ok(diagnostics.clone());
+                        }
+                    }
                 }
             }
         }
@@ -1199,6 +1227,107 @@ impl LspClient {
         Ok(())
     }
 
+    fn receive_semantic_tokens_full(&self, json: Arc<Value>) -> Result<(), String> {
+        let uri = {
+            let requests_by_id = self.requests_by_id.read().expect("Failed to acquire read lock on requests_by_id");
+            let request_id = json["id"].as_u64().ok_or("Missing id in response")?;
+            let request = requests_by_id.get(&request_id).ok_or("No request found for response id")?;
+            request["params"]["textDocument"]["uri"]
+                .as_str()
+                .ok_or("Missing URI in request params")?
+                .to_string()
+        };
+        if json.get("result").is_some() {
+            let result: Option<SemanticTokensResult> = serde_json::from_value(json["result"].clone())
+                .map_err(|e| format!("Failed to parse SemanticTokensResult: {}", e))?;
+            debug!("Received semanticTokens/full response for URI {}: {:?}", uri, result);
+            self.semantic_tokens_by_uri
+                .write()
+                .expect("Failed to acquire write lock on semantic_tokens_by_uri")
+                .insert(uri, Arc::new(result));
+            Ok(())
+        } else {
+            let id = json["id"].as_u64();
+            self.send_invalid_request("textDocument/semanticTokens/full", "Missing result", id);
+            Err("Missing result in semanticTokens/full response".to_string())
+        }
+    }
+
+    fn receive_semantic_tokens_full_delta(&self, json: Arc<Value>) -> Result<(), String> {
+        let uri = {
+            let requests_by_id = self.requests_by_id.read().expect("Failed to acquire read lock on requests_by_id");
+            let request_id = json["id"].as_u64().ok_or("Missing id in response")?;
+            let request = requests_by_id.get(&request_id).ok_or("No request found for response id")?;
+            request["params"]["textDocument"]["uri"]
+                .as_str()
+                .ok_or("Missing URI in request params")?
+                .to_string()
+        };
+        if let Some(result) = json.get("result") {
+            let result: Option<SemanticTokensFullDeltaResult> = serde_json::from_value(result.clone())
+                .map_err(|e| format!("Failed to parse SemanticTokensFullDeltaResult: {}", e))?;
+            let semantic_tokens_result = result.map(|r| match r {
+                SemanticTokensFullDeltaResult::Tokens(tokens) => {
+                    debug!("Received full tokens for URI {}", uri);
+                    SemanticTokensResult::Tokens(tokens)
+                }
+                SemanticTokensFullDeltaResult::TokensDelta(delta) => {
+                    debug!("Received delta edits for URI {}, count: {}", uri, delta.edits.len());
+                    // Get previous tokens from cache
+                    let previous_tokens = self
+                        .semantic_tokens_by_uri
+                        .read()
+                        .expect("Failed to acquire read lock on semantic_tokens_by_uri")
+                        .get(&uri)
+                        .and_then(|r| r.as_ref().as_ref())
+                        .map(|r| match r {
+                            SemanticTokensResult::Tokens(t) => t.data.clone(),
+                            _ => vec![],
+                        })
+                        .unwrap_or_default();
+                    let mut current_tokens = previous_tokens;
+                    // Apply delta edits
+                    for edit in delta.edits {
+                        let start = edit.start as usize;
+                        let delete_count = edit.delete_count as usize;
+                        if start <= current_tokens.len() {
+                            current_tokens.drain(start..start.saturating_add(delete_count));
+                            if let Some(data) = edit.data {
+                                current_tokens.splice(start..start, data);
+                            }
+                        } else {
+                            warn!(
+                                "Invalid edit for URI {}: start={}, delete_count={}, token_count={}",
+                                uri, start, delete_count, current_tokens.len()
+                            );
+                        }
+                    }
+                    debug!("Reconstructed {} tokens for URI {}", current_tokens.len(), uri);
+                    SemanticTokensResult::Tokens(SemanticTokens {
+                        result_id: delta.result_id,
+                        data: current_tokens,
+                    })
+                }
+                SemanticTokensFullDeltaResult::PartialTokensDelta { .. } => {
+                    warn!("Received partial delta edits for URI {}, not supported; storing empty tokens", uri);
+                    SemanticTokensResult::Tokens(SemanticTokens {
+                        result_id: None,
+                        data: vec![],
+                    })
+                }
+            });
+            self.semantic_tokens_by_uri
+                .write()
+                .expect("Failed to acquire write lock on semantic_tokens_by_uri")
+                .insert(uri, Arc::new(semantic_tokens_result));
+            Ok(())
+        } else {
+            let id = json["id"].as_u64();
+            self.send_invalid_request("textDocument/semanticTokens/full/delta", "Missing result", id);
+            Err("Missing result in semanticTokens/full/delta response".to_string())
+        }
+    }
+
     fn supports_text_document_sync(&self) -> bool {
         self.server_capabilities
             .read()
@@ -1234,6 +1363,7 @@ impl LspClient {
                 text,
             },
         };
+        debug!("Sending textDocument/didOpen notification for URI: {}", uri);
         self.send_notification("textDocument/didOpen", serde_json::to_value(params).expect("Failed to serialize params"));
     }
 
@@ -1254,17 +1384,15 @@ impl LspClient {
         }
     }
 
-    pub fn send_text_document_did_close(&self, uri: &str) -> Result<(), String> {
-        if !self.supports_text_document_sync() {
-            return Err("Server does not support text document synchronization.".to_string());
+    pub fn send_text_document_did_close(&self, uri: &str) {
+        if self.supports_text_document_sync() {
+            let params = DidCloseTextDocumentParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Url::parse(uri).expect("Invalid URI"),
+                },
+            };
+            self.send_notification("textDocument/didClose", serde_json::to_value(params).expect("Failed to serialize params"));
         }
-        let params = DidCloseTextDocumentParams {
-            text_document: TextDocumentIdentifier {
-                uri: Url::parse(uri).expect("Invalid URI"),
-            },
-        };
-        self.send_notification("textDocument/didClose", serde_json::to_value(params).expect("Failed to serialize params"));
-        Ok(())
     }
 
     fn receive_text_document_publish_diagnostics(&self, json: &Value) -> Result<(), String> {
@@ -1330,6 +1458,9 @@ impl LspClient {
             LspEvent::FileOpened { document_id: _, uri, text } => {
                 self.send_text_document_did_open(uri, text);
             }
+            LspEvent::FileClosed { document_id: _, uri } => {
+                self.send_text_document_did_close(&uri);
+            }
             LspEvent::TextChanged {
                 document_id: _,
                 uri,
@@ -1354,9 +1485,50 @@ impl LspClient {
                     range_length: Some(text.chars().count() as u32),
                     text,
                 }];
+                debug!(
+                    "Sending textDocument/didChange for URI={} with version={} and text='{}'",
+                    uri, version, changes[0].text
+                );
                 self.send_text_document_did_change(&uri, version, changes);
             }
             _ => (),
+        }
+    }
+
+    pub fn semantic_tokens_full(&self, params: SemanticTokensParams) -> Result<Option<SemanticTokensResult>, String> {
+        let request_id = self.next_request_id();
+        self.send_request(
+            request_id,
+            "textDocument/semanticTokens/full",
+            Some(serde_json::to_value(params).map_err(|e| format!("Failed to serialize params: {}", e))?),
+        );
+        let response = self.await_response(request_id)?;
+        if response.get("result").is_some() {
+            let result = serde_json::from_value(response["result"].clone())
+                .map_err(|e| format!("Failed to parse SemanticTokensResult: {}", e))?;
+            Ok(result)
+        } else {
+            Err("No result in semanticTokens/full response".to_string())
+        }
+    }
+
+    pub fn semantic_tokens_full_delta(
+        &self,
+        params: SemanticTokensDeltaParams,
+    ) -> Result<Option<SemanticTokensFullDeltaResult>, String> {
+        let request_id = self.next_request_id();
+        self.send_request(
+            request_id,
+            "textDocument/semanticTokens/full/delta",
+            Some(serde_json::to_value(params).map_err(|e| format!("Failed to serialize params: {}", e))?),
+        );
+        let response = self.await_response(request_id)?;
+        if response.get("result").is_some() {
+            let result = serde_json::from_value(response["result"].clone())
+                .map_err(|e| format!("Failed to parse SemanticTokensFullDeltaResult: {}", e))?;
+            Ok(result)
+        } else {
+            Err("No result in semanticTokens/full/delta response".to_string())
         }
     }
 }
@@ -1380,26 +1552,26 @@ macro_rules! with_lsp_client {
     ($test_name:ident, $comm_type:expr, $callback:expr) => {
         #[test]
         fn $test_name() {
-            crate::common::lsp_client::setup();
-            let (event_sender, event_receiver) = std::sync::mpsc::channel::<crate::common::lsp_event::LspEvent>();
+            test_utils::lsp_client::setup();
+            let (event_sender, event_receiver) = std::sync::mpsc::channel::<test_utils::lsp_event::LspEvent>();
 
             // Determine communication type
             let comm_type = match $comm_type {
-                crate::common::lsp_client::CommType::Stdio => {
-                    crate::common::lsp_client::CommType::Stdio
+                test_utils::lsp_client::CommType::Stdio => {
+                    test_utils::lsp_client::CommType::Stdio
                 }
-                crate::common::lsp_client::CommType::Tcp { port } => {
-                    crate::common::lsp_client::CommType::Tcp { port }
+                test_utils::lsp_client::CommType::Tcp { port } => {
+                    test_utils::lsp_client::CommType::Tcp { port }
                 }
-                crate::common::lsp_client::CommType::Pipe { path } => {
-                    crate::common::lsp_client::CommType::Pipe { path }
+                test_utils::lsp_client::CommType::Pipe { path } => {
+                    test_utils::lsp_client::CommType::Pipe { path }
                 }
-                crate::common::lsp_client::CommType::WebSocket { port } => {
-                    crate::common::lsp_client::CommType::WebSocket { port }
+                test_utils::lsp_client::CommType::WebSocket { port } => {
+                    test_utils::lsp_client::CommType::WebSocket { port }
                 }
             };
 
-            match crate::common::lsp_client::LspClient::start(
+            match test_utils::lsp_client::LspClient::start(
                 String::from("rholang"),
                 env!("CARGO_BIN_EXE_rholang-language-server").to_string(),
                 comm_type,
@@ -1412,13 +1584,13 @@ macro_rules! with_lsp_client {
                         std::thread::spawn(move || {
                             for event in event_receiver {
                                 match event {
-                                    crate::common::lsp_event::LspEvent::FileOpened { .. } => {
+                                    test_utils::lsp_event::LspEvent::FileOpened { .. } => {
                                         client.handle_lsp_document_event(event)
                                     }
-                                    crate::common::lsp_event::LspEvent::TextChanged { .. } => {
+                                    test_utils::lsp_event::LspEvent::TextChanged { .. } => {
                                         client.handle_lsp_document_event(event)
                                     }
-                                    crate::common::lsp_event::LspEvent::Exit => break,
+                                    test_utils::lsp_event::LspEvent::Exit => break,
                                     _ => {},
                                 }
                             }

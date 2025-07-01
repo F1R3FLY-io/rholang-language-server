@@ -469,6 +469,194 @@ async fn monitor_client_process(client_pid: u32, conn_manager: ConnectionManager
     }
 }
 
+async fn run_stdio_server(
+    rnode_client: LspClient<tonic::transport::Channel>,
+    config: ServerConfig,
+    conn_manager: ConnectionManager
+) -> io::Result<()> {
+    info!("Starting server with stdin/stdout communication.");
+    let (service, socket) = LspService::build(|client| {
+        RholangBackend::new(client, rnode_client, config.client_process_id)
+    }).finish();
+    let stdin = BufReader::new(tokio::io::stdin()); // Wrap stdin in BufReader
+    let stdout = tokio::io::stdout();
+
+    let shutdown_notify = conn_manager.shutdown_notify.clone();
+    let server_task = tokio::spawn(async move {
+        let server = Server::new(stdin, stdout, socket);
+        tokio::select! {
+            _ = server.serve(service) => {
+                info!("Stdio server terminated normally");
+            }
+            _ = shutdown_notify.notified() => {
+                info!("Shutdown signal received, stopping stdio server");
+            }
+        }
+    });
+    conn_manager.add_task(server_task);
+
+    // Wait for shutdown signal (from client monitor or signal)
+    conn_manager.shutdown_notify.notified().await;
+    conn_manager.shutdown_all().await;
+    conn_manager.wait_for_tasks().await;
+    Ok(())
+}
+
+async fn run_socket_server(
+    rnode_client: LspClient<tonic::transport::Channel>,
+    config: ServerConfig,
+    conn_manager: ConnectionManager,
+    port: u16
+) -> io::Result<()> {
+    info!("Starting server with TCP socket communication on port {}.", port);
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
+    info!("TCP server listening on 127.0.0.1:{}", port);
+
+    loop {
+        tokio::select! {
+            result = listener.accept() => {
+                match result {
+                    Ok((stream, addr)) => {
+                        let (read, write) = tokio::io::split(stream);
+                        serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id).await;
+                        conn_manager.remove_closed_connections().await;
+                    }
+                    Err(e) => {
+                        error!("Failed to accept TCP connection: {}", e);
+                    }
+                }
+            }
+            _ = conn_manager.shutdown_notify.notified() => {
+                info!("Main shutdown signal received, closing TCP server");
+                break;
+            }
+        }
+    }
+    conn_manager.shutdown_all().await;
+    conn_manager.wait_for_tasks().await;
+    Ok(())
+}
+
+async fn run_websocket_server(
+    rnode_client: LspClient<tonic::transport::Channel>,
+    config: ServerConfig,
+    conn_manager: ConnectionManager,
+    port: u16
+) -> io::Result<()> {
+    info!("Starting server with WebSocket communication on port {}.", port);
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
+    info!("WebSocket server listening on 127.0.0.1:{}", port);
+
+    loop {
+        tokio::select! {
+            result = listener.accept() => {
+                match result {
+                    Ok((stream, addr)) => {
+                        match accept_async(stream).await {
+                            Ok(ws_stream) => {
+                                let ws_adapter = WebSocketStreamAdapter::new(ws_stream);
+                                let (read, write) = tokio::io::split(ws_adapter);
+                                serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id).await;
+                                conn_manager.remove_closed_connections().await;
+                            }
+                            Err(e) => {
+                                error!("Failed to accept WebSocket connection from {}: {}", addr, e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to accept TCP connection: {}", e);
+                    }
+                }
+            }
+            _ = conn_manager.shutdown_notify.notified() => {
+                info!("Main shutdown signal received, closing WebSocket server");
+                break;
+            }
+        }
+    }
+    conn_manager.shutdown_all().await;
+    conn_manager.wait_for_tasks().await;
+    Ok(())
+}
+
+async fn run_named_pipe_server(
+    rnode_client: LspClient<tonic::transport::Channel>,
+    config: &ServerConfig,
+    conn_manager: ConnectionManager,
+    pipe_path: &String
+) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        info!("Starting server with named pipe communication at {}.", pipe_path);
+        loop {
+            let server = NamedPipeServer::new(&pipe_path).await?;
+            tokio::select! {
+                _ = server.connect() => {
+                    let addr = format!("named_pipe:{}", pipe_path);
+                    let (read, write) = tokio::io::split(server);
+                    serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id).await;
+                    conn_manager.remove_closed_connections().await;
+                }
+                _ = conn_manager.shutdown_notify.notified() => {
+                    info!("Main shutdown signal received, closing named pipe server");
+                    break;
+                }
+            }
+        }
+        conn_manager.shutdown_all().await;
+        conn_manager.wait_for_tasks().await;
+    }
+    #[cfg(unix)]
+    {
+        info!("Starting server with Unix domain socket communication at {}.", pipe_path);
+        if std::path::Path::new(&pipe_path).exists() {
+            fs::remove_file(&pipe_path)?;
+        }
+        let listener = UnixListener::bind(&pipe_path)?;
+        let cleanup = scopeguard::guard(pipe_path.clone(), |path| {
+            if let Err(e) = fs::remove_file(&path) {
+                error!("Failed to clean up Unix socket file {}: {}", path, e);
+            } else {
+                info!("Cleaned up Unix socket file {}.", path);
+            }
+        });
+        loop {
+            tokio::select! {
+                result = listener.accept() => {
+                    match result {
+                        Ok((stream, addr)) => {
+                            let addr = format!("unix_socket:{:?}", addr);
+                            let (read, write) = tokio::io::split(stream);
+                            serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id).await;
+                            conn_manager.remove_closed_connections().await;
+                        }
+                        Err(e) => {
+                            error!("Failed to accept Unix socket connection: {}", e);
+                        }
+                    }
+                }
+                _ = conn_manager.shutdown_notify.notified() => {
+                    info!("Main shutdown signal received, closing Unix socket server");
+                    break;
+                }
+            }
+        }
+        drop(cleanup);
+        conn_manager.shutdown_all().await;
+        conn_manager.wait_for_tasks().await;
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        error!("Named pipe/Unix domain socket communication is not supported on this platform.");
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Named pipe/Unix domain socket communication is not supported on this platform.",
+        ));
+    }
+    Ok(())
+}
+
 async fn run_server(config: ServerConfig, conn_manager: ConnectionManager) -> io::Result<()> {
     init_logger(config.no_color, Some(&config.log_level))?;
     info!("Initializing rholang-language-server with log level {} ...", config.log_level);
@@ -501,168 +689,10 @@ async fn run_server(config: ServerConfig, conn_manager: ConnectionManager) -> io
     }
 
     match config.comm_mode {
-        CommMode::Stdio => {
-            info!("Starting server with stdin/stdout communication.");
-            let (service, socket) = LspService::build(|client| {
-                RholangBackend::new(client, rnode_client.clone(), config.client_process_id)
-            })
-            .finish();
-            let stdin = BufReader::new(tokio::io::stdin()); // Wrap stdin in BufReader
-            let stdout = tokio::io::stdout();
-
-            let shutdown_notify = conn_manager.shutdown_notify.clone();
-            let server_task = tokio::spawn(async move {
-                let server = Server::new(stdin, stdout, socket);
-                tokio::select! {
-                    _ = server.serve(service) => {
-                        info!("Stdio server terminated normally");
-                    }
-                    _ = shutdown_notify.notified() => {
-                        info!("Shutdown signal received, stopping stdio server");
-                    }
-                }
-            });
-            conn_manager.add_task(server_task);
-
-            // Wait for shutdown signal (from client monitor or signal)
-            conn_manager.shutdown_notify.notified().await;
-            conn_manager.shutdown_all().await;
-            conn_manager.wait_for_tasks().await;
-        }
-        CommMode::Socket(port) => {
-            info!("Starting server with TCP socket communication on port {}.", port);
-            let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
-            info!("TCP server listening on 127.0.0.1:{}", port);
-
-            loop {
-                tokio::select! {
-                    result = listener.accept() => {
-                        match result {
-                            Ok((stream, addr)) => {
-                                let (read, write) = tokio::io::split(stream);
-                                serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id).await;
-                                conn_manager.remove_closed_connections().await;
-                            }
-                            Err(e) => {
-                                error!("Failed to accept TCP connection: {}", e);
-                            }
-                        }
-                    }
-                    _ = conn_manager.shutdown_notify.notified() => {
-                        info!("Main shutdown signal received, closing TCP server");
-                        break;
-                    }
-                }
-            }
-            conn_manager.shutdown_all().await;
-            conn_manager.wait_for_tasks().await;
-        }
-        CommMode::WebSocket(port) => {
-            info!("Starting server with WebSocket communication on port {}.", port);
-            let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
-            info!("WebSocket server listening on 127.0.0.1:{}", port);
-
-            loop {
-                tokio::select! {
-                    result = listener.accept() => {
-                        match result {
-                            Ok((stream, addr)) => {
-                                match accept_async(stream).await {
-                                    Ok(ws_stream) => {
-                                        let ws_adapter = WebSocketStreamAdapter::new(ws_stream);
-                                        let (read, write) = tokio::io::split(ws_adapter);
-                                        serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id).await;
-                                        conn_manager.remove_closed_connections().await;
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to accept WebSocket connection from {}: {}", addr, e);
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!("Failed to accept TCP connection: {}", e);
-                            }
-                        }
-                    }
-                    _ = conn_manager.shutdown_notify.notified() => {
-                        info!("Main shutdown signal received, closing WebSocket server");
-                        break;
-                    }
-                }
-            }
-            conn_manager.shutdown_all().await;
-            conn_manager.wait_for_tasks().await;
-        }
-        CommMode::Pipe(pipe_path) => {
-            #[cfg(windows)]
-            {
-                info!("Starting server with named pipe communication at {}.", pipe_path);
-                loop {
-                    let server = NamedPipeServer::new(&pipe_path).await?;
-                    tokio::select! {
-                        _ = server.connect() => {
-                            let addr = format!("named_pipe:{}", pipe_path);
-                            let (read, write) = tokio::io::split(server);
-                            serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id).await;
-                            conn_manager.remove_closed_connections().await;
-                        }
-                        _ = conn_manager.shutdown_notify.notified() => {
-                            info!("Main shutdown signal received, closing named pipe server");
-                            break;
-                        }
-                    }
-                }
-                conn_manager.shutdown_all().await;
-                conn_manager.wait_for_tasks().await;
-            }
-            #[cfg(unix)]
-            {
-                info!("Starting server with Unix domain socket communication at {}.", pipe_path);
-                if std::path::Path::new(&pipe_path).exists() {
-                    fs::remove_file(&pipe_path)?;
-                }
-                let listener = UnixListener::bind(&pipe_path)?;
-                let cleanup = scopeguard::guard(pipe_path.clone(), |path| {
-                    if let Err(e) = fs::remove_file(&path) {
-                        error!("Failed to clean up Unix socket file {}: {}", path, e);
-                    } else {
-                        info!("Cleaned up Unix socket file {}.", path);
-                    }
-                });
-                loop {
-                    tokio::select! {
-                        result = listener.accept() => {
-                            match result {
-                                Ok((stream, addr)) => {
-                                    let addr = format!("unix_socket:{:?}", addr);
-                                    let (read, write) = tokio::io::split(stream);
-                                    serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id).await;
-                                    conn_manager.remove_closed_connections().await;
-                                }
-                                Err(e) => {
-                                    error!("Failed to accept Unix socket connection: {}", e);
-                                }
-                            }
-                        }
-                        _ = conn_manager.shutdown_notify.notified() => {
-                            info!("Main shutdown signal received, closing Unix socket server");
-                            break;
-                        }
-                    }
-                }
-                drop(cleanup);
-                conn_manager.shutdown_all().await;
-                conn_manager.wait_for_tasks().await;
-            }
-            #[cfg(not(any(windows, unix)))]
-            {
-                error!("Named pipe/Unix domain socket communication is not supported on this platform.");
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Named pipe/Unix domain socket communication is not supported on this platform.",
-                ));
-            }
-        }
+        CommMode::Stdio => run_stdio_server(rnode_client, config, conn_manager).await?,
+        CommMode::Socket(port) => run_socket_server(rnode_client, config, conn_manager, port).await?,
+        CommMode::WebSocket(port) => run_websocket_server(rnode_client, config, conn_manager, port).await?,
+        CommMode::Pipe(ref pipe_path) => run_named_pipe_server(rnode_client, &config, conn_manager, pipe_path).await?,
     }
 
     info!("Server terminated.");

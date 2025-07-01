@@ -126,3 +126,82 @@ impl LspDocument {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::LspDocumentHistory;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+    use tower_lsp::lsp_types::{Range, TextDocumentContentChangeEvent};
+
+    /// Helper to create a test LspDocument.
+    fn create_test_document(uri: &str, text: &str) -> Arc<LspDocument> {
+        Arc::new(LspDocument {
+            id: 1,
+            state: RwLock::new(LspDocumentState {
+                uri: Url::parse(uri).unwrap(),
+                text: Rope::from_str(text),
+                version: 0,
+                history: LspDocumentHistory {
+                    text: text.to_string(),
+                    changes: vec![],
+                },
+            }),
+        })
+    }
+
+    #[tokio::test]
+    async fn test_apply_full_change() {
+        // Test replacing entire document text
+        let doc = create_test_document("file:///test.rho", "initial text");
+        let changes = vec![TextDocumentContentChangeEvent {
+            range: None,
+            range_length: None,
+            text: "new text".to_string(),
+        }];
+
+        let result = doc.apply(changes, 1).await;
+        assert!(result.is_some(), "Apply should succeed");
+        assert_eq!(result.unwrap(), "new text", "Text should be updated");
+        assert_eq!(doc.version().await, 1, "Version should be updated");
+    }
+
+    #[tokio::test]
+    async fn test_apply_incremental_change() {
+        // Test replacing a portion of the document text
+        let doc = create_test_document("file:///test.rho", "hello world");
+        let changes = vec![TextDocumentContentChangeEvent {
+            range: Some(Range {
+                start: Position { line: 0, character: 6 },
+                end: Position { line: 0, character: 11 },
+            }),
+            range_length: None,
+            text: "there".to_string(),
+        }];
+
+        let result = doc.apply(changes, 1).await;
+        assert!(result.is_some(), "Apply should succeed");
+        assert_eq!(result.unwrap(), "hello there", "Text should be updated");
+        assert_eq!(doc.version().await, 1, "Version should be updated");
+    }
+
+    #[tokio::test]
+    async fn test_apply_outdated_version() {
+        // Test applying changes with an outdated version (should fail)
+        let doc = create_test_document("file:///test.rho", "initial text");
+        let changes = vec![TextDocumentContentChangeEvent {
+            range: None,
+            range_length: None,
+            text: "new text".to_string(),
+        }];
+
+        // Apply with version 0 (current version), should succeed
+        let _ = doc.apply(changes.clone(), 1).await;
+        // Apply again with version -1 (outdated), should do nothing
+        let result = doc.apply(changes, -1).await;
+        assert!(result.is_some(), "Apply should succeed but not change text");
+        assert_eq!(doc.text().await, "new text", "Text should remain from previous change");
+        assert_eq!(doc.version().await, 1, "Version should not revert");
+    }
+}

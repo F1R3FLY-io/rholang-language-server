@@ -30,10 +30,21 @@ pub fn init_logger(no_color: bool, log_level: Option<&str>) -> io::Result<()> {
     };
 
     // Combine the layers using a registry
-    tracing_subscriber::registry()
+    let result = tracing_subscriber::registry()
         .with(env_filter)
         .with(stderr_layer)
-        .init();
+        .try_init();
 
-    Ok(())
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Ignore errors due to the subscriber or logger already being set
+            if e.to_string().contains("already been set") || e.to_string().contains("SetLoggerError") {
+                Ok(())
+            } else {
+                // Propagate unexpected errors
+                Err(io::Error::new(io::ErrorKind::Other, e))
+            }
+        }
+    }
 }

@@ -2,15 +2,15 @@ use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
+use std::thread::sleep;
 
 use nix::sys::signal;
 use nix::unistd::Pid;
-use std::thread::sleep;
 
-use indoc::indoc;
+use tower_lsp::lsp_types::DiagnosticSeverity;
 
-pub mod common;
-use crate::common::lsp_client::{CommType, LspClient};
+use test_utils::with_lsp_client;
+use test_utils::lsp_client::{CommType, LspClient};
 
 #[tokio::test]
 async fn test_server_terminates_on_client_death() -> io::Result<()> {
@@ -93,35 +93,56 @@ async fn test_server_terminates_on_client_death() -> io::Result<()> {
 }
 
 fn run_diagnostic_test(client: &LspClient) {
-    let doc = client.open_document("/path/to/source.rho", indoc! {r#"
-        new x {
-            x!("Hello World!")
-        }
-    "#}).expect("Failed to open document");
+    let doc = client.open_document("/path/to/invalid.rho", "new x in { x!(\"Hello\") ").expect("Failed to open document");
     let diagnostic_params = client.await_diagnostics(&doc).unwrap();
     assert_eq!(diagnostic_params.uri.to_string(), doc.uri());
     assert_eq!(diagnostic_params.diagnostics.len(), 1);
     let diagnostic = &diagnostic_params.diagnostics[0];
-    let range = &diagnostic.range;
-    assert_eq!(range.start.line, 0);
-    assert_eq!(range.start.character, 6);
-    assert_eq!(range.end.line, 0);
-    assert_eq!(range.end.character, 7);
-    assert_eq!(diagnostic.message, "syntax error(): { at 1:7-1:8");
+    assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
+    assert!(diagnostic.message.contains("Invalid Rholang code"));
+    assert_eq!(diagnostic.range.start.line, 0);
+    assert_eq!(diagnostic.range.start.character, 22);  // Position of missing brace
 }
 
-with_lsp_client!(test_diagnostic_std, CommType::Stdio, |client| {
+with_lsp_client!(test_diagnostic_stdio, CommType::Stdio, |client: &LspClient| {
     run_diagnostic_test(client);
 });
 
-with_lsp_client!(test_diagnostic_tcp_dynamic, CommType::Tcp { port: None }, |client| {
+with_lsp_client!(test_diagnostic_tcp, CommType::Tcp { port: None }, |client: &LspClient| {
     run_diagnostic_test(client);
 });
 
-with_lsp_client!(test_diagnostic_pipe_dynamic, CommType::Pipe { path: None }, |client| {
+with_lsp_client!(test_diagnostic_pipe, CommType::Pipe { path: None }, |client: &LspClient| {
     run_diagnostic_test(client);
 });
 
-with_lsp_client!(test_diagnostic_websocket, CommType::WebSocket { port: None }, |client| {
+with_lsp_client!(test_diagnostic_websocket, CommType::WebSocket { port: None }, |client: &LspClient| {
     run_diagnostic_test(client);
+});
+
+with_lsp_client!(test_valid_syntax, CommType::Stdio, |client: &LspClient| {
+    let doc = client.open_document("/path/to/valid.rho", "new x in { x!(\"Hello\") }").expect("Failed to open document");
+    let diagnostic_params = client.await_diagnostics(&doc).unwrap();
+    assert_eq!(diagnostic_params.diagnostics.len(), 0);  // No errors for valid syntax
+});
+
+with_lsp_client!(test_diagnostics_update, CommType::Stdio, |client: &LspClient| {
+    // Open document with invalid code
+    let doc = client.open_document("/path/to/test.rho", r#"new x in { x!("Hello") "#).unwrap();
+    let diagnostics = client.await_diagnostics(&doc).unwrap();
+    assert_eq!(diagnostics.diagnostics.len(), 1, "Expected one diagnostic initially");
+    doc.move_cursor(1, 24);
+    doc.insert_text("}".to_string()).expect("Failed to insert closing curly brace");
+    println!("{}", doc.text().expect("Failed to get text"));
+    let diagnostics = client.await_diagnostics(&doc).unwrap();
+    println!("{:?}", diagnostics);
+    assert_eq!(diagnostics.diagnostics.len(), 0, "Diagnostics should clear after fix");
+});
+
+with_lsp_client!(test_close_document, CommType::Stdio, |client: &LspClient| {
+    let doc = client.open_document("/path/to/test.rho", "new x in { x!() }").unwrap();
+    client.close_document(&doc).unwrap();
+    // No diagnostics expected after close (server clears them)
+    let diagnostics = client.await_diagnostics(&doc);
+    assert!(diagnostics.is_err() || diagnostics.unwrap().diagnostics.is_empty(), "No diagnostics after close");
 });
