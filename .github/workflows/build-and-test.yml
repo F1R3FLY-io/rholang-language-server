@@ -171,7 +171,7 @@ jobs:
         if [ -d ../rholang-rs ]; then
           rm -rf ../rholang-rs
         fi
-        git clone https://github.com/F1R3FLY-io/rholang-rs.git ../rholang-rs
+        git clone --branch dylon/comments https://github.com/dylon/rholang-rs.git ../rholang-rs
       shell: bash
     - name: Get RNode Commit Hash
       id: rnode-hash
