@@ -11,7 +11,7 @@ use tower_lsp::lsp_types::{
     TextEdit,
 };
 
-use crate::common::lsp_event::LspEvent;
+use crate::lsp_event::LspEvent;
 
 #[derive(Debug)]
 struct Cursor {
@@ -23,7 +23,7 @@ struct Cursor {
 pub struct LspDocument {
     pub id: u64,
     language_id: String,
-    url: RwLock<Url>,
+    pub url: RwLock<Url>,
     text: RwLock<Rope>,
     pub version: AtomicI32,
     cursor: RwLock<Cursor>,
@@ -66,7 +66,7 @@ impl LspDocument {
     }
 
     fn bump_version(&self) -> i32 {
-        self.version.fetch_add(1, Ordering::SeqCst)
+        self.version.fetch_add(1, Ordering::SeqCst) + 1
     }
 
     fn emit(&self, event: LspEvent) -> Result<(), String> {
@@ -83,6 +83,13 @@ impl LspDocument {
             document_id: self.id,
             uri: self.uri(),
             text: full_text,
+        })
+    }
+
+    pub fn close(&self) -> Result<(), String> {
+        self.emit(LspEvent::FileClosed {
+            document_id: self.id,
+            uri: self.uri(),
         })
     }
 
@@ -115,6 +122,8 @@ impl LspDocument {
         cursor.column = column - 1;
     }
 
+    /// Inserts text at the current cursor position and notifies the server.
+    /// The document version is incremented, and the new version is used in the event.
     pub fn insert_text(&self, text: String) -> Result<(), String> {
         let (from_line, from_column) = {
             let cursor = self.cursor.read()
@@ -174,5 +183,12 @@ impl LspDocument {
             text.remove(start..end);
             text.insert(start, &edit.new_text);
         }
+    }
+
+    pub fn text(&self) -> Result<String, String> {
+        let full_text = self.text.read()
+            .expect("Failed to acquire read lock on text")
+            .to_string();
+        Ok(full_text)
     }
 }

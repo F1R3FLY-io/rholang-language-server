@@ -1,8 +1,8 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex as AsyncMutex, RwLock};
 
 use tonic::Request;
 use tonic::transport::Channel;
@@ -16,10 +16,11 @@ use tower_lsp::lsp_types::{
     TextDocumentSyncCapability, TextDocumentSyncKind, Url,
 };
 
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use ropey::Rope;
 
+use crate::parser::Parser;  // Import the new parser module
 use crate::rnode_apis::lsp::{
     lsp_client::LspClient,
     DiagnosticSeverity as LspDiagnosticSeverity,
@@ -34,8 +35,9 @@ pub struct RholangBackend {
     documents_by_uri: Arc<RwLock<HashMap<Url, Arc<LspDocument>>>>,
     documents_by_id: Arc<RwLock<HashMap<u32, Arc<LspDocument>>>>,
     serial_document_id: Arc<AtomicU32>,
-    rnode_client: Arc<Mutex<LspClient<Channel>>>,
+    rnode_client: Arc<AsyncMutex<LspClient<Channel>>>,
     client_process_id: Arc<Mutex<Option<u32>>>,
+    parser: Arc<AsyncMutex<Parser>>,
 }
 
 impl RholangBackend {
@@ -45,8 +47,9 @@ impl RholangBackend {
             documents_by_uri: Arc::new(RwLock::new(HashMap::new())),
             documents_by_id: Arc::new(RwLock::new(HashMap::new())),
             serial_document_id: Arc::new(AtomicU32::new(0)),
-            rnode_client: Arc::new(Mutex::new(rnode_client)),
+            rnode_client: Arc::new(AsyncMutex::new(rnode_client)),
             client_process_id: Arc::new(Mutex::new(client_process_id)),
+            parser: Arc::new(AsyncMutex::new(Parser::new().expect("Failed to create parser"))),
         }
     }
 
@@ -60,81 +63,114 @@ impl RholangBackend {
         text: &str,
         version: i32,
     ) -> Result<Vec<Diagnostic>, String> {
-        let mut client = self.rnode_client.lock().await.clone();
         let state = document.state.read().await;
-        if state.version == version {
-            let request = Request::new(ValidateRequest {
-                text: text.to_string(),
-            });
-            match client.validate(request).await {
-                Ok(response) => match response.into_inner().result {
-                    Some(result) => match result {
-                        validate_response::Result::Success(diagnostic_list) => {
-                            let diagnostics = diagnostic_list
-                                .diagnostics
-                                .into_iter()
-                                .map(|diagnostic| {
-                                    let range = diagnostic
-                                        .range
-                                        .expect("Missing required field for lsp::Diagnostic: range");
-                                    let start = range
-                                        .start
-                                        .expect("Missing required field for lsp::Range: start");
-                                    let end = range
-                                        .end
-                                        .expect("Missing required field for lsp::Range: end");
-                                    let severity = match LspDiagnosticSeverity::try_from(
-                                        diagnostic.severity,
-                                    ) {
-                                        Ok(severity) => match severity {
-                                            LspDiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
-                                            LspDiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
-                                            LspDiagnosticSeverity::Information => {
-                                                DiagnosticSeverity::INFORMATION
-                                            }
-                                            LspDiagnosticSeverity::Hint => DiagnosticSeverity::HINT,
-                                        },
-                                        Err(e) => {
-                                            error!("Invalid lsp::DiagnosticSeverity: {}", e);
-                                            DiagnosticSeverity::ERROR
-                                        }
-                                    };
-                                    Diagnostic {
-                                        range: Range {
-                                            start: Position {
-                                                line: start.line as u32,
-                                                character: start.column as u32,
-                                            },
-                                            end: Position {
-                                                line: end.line as u32,
-                                                character: end.column as u32,
-                                            },
-                                        },
-                                        severity: Some(severity),
-                                        source: Some(diagnostic.source),
-                                        message: diagnostic.message,
-                                        ..Default::default()
-                                    }
-                                })
-                                .collect();
-                            info!("Publishing diagnostics for document with URI={}, version={}: {:?}",
-                                  state.uri, version, diagnostics);
-                            Ok(diagnostics)
-                        }
-                        validate_response::Result::Error(message) => Err(format!(
-                            "Failed to validate document with ID={}, URI={}: {}",
-                            document.id, state.uri, message
-                        )),
+        if state.version != version {
+            debug!("Skipping validation for outdated version {} (current: {})", version, state.version);
+            return Ok(Vec::new());
+        }
+
+        // Local syntax validation using rholang-parser
+        let mut parser = self.parser.lock().await;
+        let diagnostics = match parser.validate(text) {
+            Ok(()) => Vec::new(),
+            Err(parse_error) => {
+                let position = parse_error.position; // May be None if parser can't locate error
+                let (line, character) = if let Some(pos) = position {
+                    // Ensure position is valid (1-based, so > 0)
+                    if pos.line > 0 && pos.column > 0 {
+                        // Convert to 0-based indexing safely
+                        (pos.line as u32 - 1, pos.column as u32 - 1)
+                    } else {
+                        // Log invalid position and default to end
+                        debug!("Invalid error position from parser: {:?}", pos);
+                        let (line, character) = document.last_linecol().await; // Use document's last position
+                        (line as u32, character as u32)
+                    }
+                } else {
+                    // No position provided, default to end of document
+                    debug!("No error position provided by parser, using end of document");
+                    let (line, character) = document.last_linecol().await; // Use document's last position
+                    (line as u32, character as u32)
+                };
+                // Create diagnostic at the calculated position
+                vec![Diagnostic {
+                    range: Range {
+                        start: Position { line, character },
+                        end: Position { line, character },
                     },
-                    None => Err("RNode did not return a response".to_string()),
-                },
-                Err(e) => Err(format!(
-                    "Failed to validate document with ID={}, URI={}: {}",
-                    document.id, state.uri, e
-                )),
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    source: Some("rholang-parser".to_string()),
+                    message: parse_error.message,
+                    ..Default::default()
+                }]
             }
-        } else {
-            Ok(Vec::new())
+        };
+
+        if !diagnostics.is_empty() {
+            info!("Local syntax errors found for URI={} (version={}): {:?}", state.uri, version, diagnostics);
+            return Ok(diagnostics);
+        }
+
+        // RNode validation if syntax is valid
+        let mut client = self.rnode_client.lock().await.clone();
+        let request = Request::new(ValidateRequest {
+            text: text.to_string(),
+        });
+        match client.validate(request).await {
+            Ok(response) => match response.into_inner().result {
+                Some(result) => match result {
+                    validate_response::Result::Success(diagnostic_list) => {
+                        let diagnostics = diagnostic_list
+                            .diagnostics
+                            .into_iter()
+                            .map(|diagnostic| {
+                                let range = diagnostic.range.expect("Missing range in diagnostic");
+                                let start = range.start.expect("Missing start position");
+                                let end = range.end.expect("Missing end position");
+                                let severity = match LspDiagnosticSeverity::try_from(diagnostic.severity) {
+                                    Ok(severity) => match severity {
+                                        LspDiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
+                                        LspDiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
+                                        LspDiagnosticSeverity::Information => DiagnosticSeverity::INFORMATION,
+                                        LspDiagnosticSeverity::Hint => DiagnosticSeverity::HINT,
+                                    },
+                                    Err(e) => {
+                                        error!("Invalid DiagnosticSeverity: {}", e);
+                                        DiagnosticSeverity::ERROR
+                                    }
+                                };
+                                Diagnostic {
+                                    range: Range {
+                                        start: Position {
+                                            line: start.line as u32,
+                                            character: start.column as u32,
+                                        },
+                                        end: Position {
+                                            line: end.line as u32,
+                                            character: end.column as u32,
+                                        },
+                                    },
+                                    severity: Some(severity),
+                                    source: Some(diagnostic.source),
+                                    message: diagnostic.message,
+                                    ..Default::default()
+                                }
+                            })
+                            .collect();
+                        info!("RNode validation diagnostics for URI={} (version={}): {:?}", state.uri, version, diagnostics);
+                        Ok(diagnostics)
+                    }
+                    validate_response::Result::Error(message) => Err(format!(
+                        "RNode validation failed for URI={}: {}",
+                        state.uri, message
+                    )),
+                },
+                None => Err("RNode returned no response".to_string()),
+            },
+            Err(e) => Err(format!(
+                "Failed to communicate with RNode for URI={}: {}",
+                state.uri, e
+            )),
         }
     }
 }
@@ -144,14 +180,18 @@ impl LanguageServer for RholangBackend {
     async fn initialize(&self, params: InitializeParams) -> jsonrpc::Result<InitializeResult> {
         info!("Received initialize: {:?}", params);
 
-        // Store client process ID from InitializeParams if provided
-        if let Some(cmdline_pid) = *self.client_process_id.lock().await {
-            if let Some(lsp_pid) = params.process_id {
-                if cmdline_pid != lsp_pid {
-                    warn!("Client process ID from command line ({}) differs from LSP initialize process ID ({})",
-                          cmdline_pid, lsp_pid);
+        // Update client process ID if provided
+        if let Some(client_pid) = params.process_id {
+            let mut locked_pid = self.client_process_id.lock().unwrap();
+            if let Some(cmdline_pid) = *locked_pid {
+                if cmdline_pid != client_pid {
+                    warn!(
+                        "Client process ID from command line ({}) differs from LSP initialize process ID ({})",
+                        cmdline_pid, client_pid
+                    );
                 }
             }
+            *locked_pid = Some(client_pid);
         }
 
         Ok(InitializeResult {
@@ -175,7 +215,7 @@ impl LanguageServer for RholangBackend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        info!("textDocument/didOpen: {:?}", params);
+        info!("Opening document: URI={}, version={}", params.text_document.uri, params.text_document.version);
         let uri = params.text_document.uri.clone();
         let text = params.text_document.text;
         let version = params.text_document.version;
@@ -200,8 +240,15 @@ impl LanguageServer for RholangBackend {
             .write()
             .await
             .insert(document_id, Arc::clone(&document));
-        info!("Opened document: {}, id: {}, version: {}",
-              uri, document_id, version);
+        info!("Opened document: URI={}, id={}, version={}", uri, document_id, version);
+
+        if tracing::level_enabled!(tracing::Level::DEBUG) {
+            let mut parser = self.parser.lock().await;
+            if let Ok(pretty_tree) = parser.get_pretty_tree(&text) {
+                debug!("Parse tree for URI={}:\n{}", uri, pretty_tree);
+            }
+        }
+
         match self.validate(Arc::clone(&document), &text, version).await {
             Ok(diagnostics) => {
                 if document.version().await == version {
@@ -210,12 +257,7 @@ impl LanguageServer for RholangBackend {
                         .await;
                 }
             }
-            Err(e) => error!(
-                "Failed to validate document with ID={}, URI={}: {}",
-                document.id,
-                document.uri().await,
-                e
-            ),
+            Err(e) => error!("Validation failed for URI={}: {}", uri, e),
         }
     }
 
