@@ -672,7 +672,6 @@ impl<'a> Visitor for PrettyPrinter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::super::node::RelativePosition;
     use indoc::indoc;
 
     #[test]

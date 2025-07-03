@@ -1,12 +1,10 @@
 use rholang_language_server::ir::node::{
     BinOperator, BundleType, CommentKind, Metadata, Node, NodeBase, Position,
-    SendType, UnaryOperator, VarRefKind, compute_absolute_positions,
-    compute_end_position,
+    SendType, UnaryOperator, VarRefKind
 };
 use rholang_language_server::ir::visitor::Visitor;
 use rholang_language_server::ir::pipeline::{Pipeline, Transform};
 use rholang_language_server::tree_sitter::{parse_code, parse_to_ir};
-use rholang_language_server::ir::transforms::pretty_printer::format as pp;
 use quickcheck::{QuickCheck, TestResult};
 use std::sync::Arc;
 use tracing::{debug, info};

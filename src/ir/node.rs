@@ -196,6 +196,7 @@ pub fn compute_absolute_positions<'a>(root: &Arc<Node<'a>>) -> HashMap<usize, (P
 ///
 /// # Returns
 /// The absolute end position of the current node.
+#[allow(unused_assignments)]
 fn compute_positions_helper<'a>(
     node: &Arc<Node<'a>>,
     prev_end: Position,
@@ -235,7 +236,7 @@ fn compute_positions_helper<'a>(
                 compute_positions_helper(cont, current_end, positions)
             }
             Node::Send { channel, inputs, send_type_end, .. } => {
-                current_end = compute_positions_helper(channel, start, positions);
+                compute_positions_helper(channel, start, positions);
                 inputs.iter().fold(*send_type_end, |prev, input| {
                     compute_positions_helper(input, prev, positions)
                 })
@@ -414,7 +415,7 @@ fn compute_positions_helper<'a>(
                 compute_positions_helper(cont, inputs_end, positions)
             }
             Node::Send { channel, inputs, send_type_end, .. } => {
-                let chan_end = compute_positions_helper(channel, start, positions);
+                let _chan_end = compute_positions_helper(channel, start, positions);
                 inputs.iter().fold(*send_type_end, |prev, input| {
                     compute_positions_helper(input, prev, positions)
                 })
