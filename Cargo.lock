@@ -1325,7 +1325,8 @@ dependencies = [
 
 [[package]]
 name = "rholang-parser"
-version = "0.1.2"
+version = "0.1.0"
+source = "git+https://github.com/dylon/rholang-rs.git?branch=dylon%2Fcomments#9f4199d7bc5a2fd8e176393df1260ff6cf337ceb"
 dependencies = [
  "anyhow",
  "rholang-tree-sitter",
@@ -1336,7 +1337,8 @@ dependencies = [
 
 [[package]]
 name = "rholang-tree-sitter"
-version = "0.1.2"
+version = "0.1.0"
+source = "git+https://github.com/dylon/rholang-rs.git?branch=dylon%2Fcomments#9f4199d7bc5a2fd8e176393df1260ff6cf337ceb"
 dependencies = [
  "cc",
  "tree-sitter-language",

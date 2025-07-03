@@ -100,14 +100,16 @@ impl LspDocument {
     }
 
     pub async fn last_column(&self, line: usize) -> usize {
-        self.state.read().await.text.line(line).len_chars() - 1
+        let num_chars = self.state.read().await.text.line(line).len_chars();
+        if num_chars > 0 { num_chars - 1 } else { 0 }
     }
 
     pub async fn last_linecol(&self) -> (usize, usize) {
         let state = self.state.read().await;
         let text = &state.text;
         let last_line = text.len_lines() - 1;
-        let last_column = text.line(last_line).len_chars() - 1;
+        let num_chars = text.line(last_line).len_chars();
+        let last_column = if num_chars > 0 { num_chars - 1 } else { 0 };
         (last_line, last_column)
     }
 

@@ -9,8 +9,8 @@ clap = { version = "4.5", features = ["derive"] }
 futures-util = "0.3"
 petgraph = "0.8.2"
 prost = "0.13"
-rholang-parser = { path = "../rholang-rs/rholang-parser" }
-rholang-tree-sitter = { path = "../rholang-rs/rholang-tree-sitter" }
+rholang-tree-sitter = { git = "https://github.com/dylon/rholang-rs.git", branch = "dylon/comments" }
+rholang-parser = { git = "https://github.com/dylon/rholang-rs.git", branch = "dylon/comments" }
 ropey = "1.6"
 rpds = "1.0"
 scopeguard = "1.2"

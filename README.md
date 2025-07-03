@@ -15,8 +15,6 @@ sbt clean bnfc:generate compile stage
 export PATH="$PWD/node/target/universal/stage/bin:$PATH"
 ```
 
-The language server also uses the `rholang-parser` crate from the `rholang-rs` repository at `../rholang-rs/rholang-parser` for local syntax validation.
-
 ## Installing
 
 Clone [rholang-language-server](https://github.com/F1R3FLY-io/rholang-language-server) and compile it:

@@ -166,13 +166,6 @@ jobs:
           exit 1
         fi
       shell: bash
-    - name: Clone rholang-rs repository
-      run: |
-        if [ -d ../rholang-rs ]; then
-          rm -rf ../rholang-rs
-        fi
-        git clone --branch dylon/comments https://github.com/dylon/rholang-rs.git ../rholang-rs
-      shell: bash
     - name: Get RNode Commit Hash
       id: rnode-hash
       run: |
