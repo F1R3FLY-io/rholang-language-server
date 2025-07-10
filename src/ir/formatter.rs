@@ -1,6 +1,15 @@
 use super::node::{Node, BinOperator, SendType, BundleType, UnaryOperator, VarRefKind, CommentKind};
 use std::sync::Arc;
 
+/// Formats an IR node into a string representation, with optional indentation.
+///
+/// # Arguments
+/// * `node` - The IR node to format.
+/// * `indent` - Whether to apply indentation.
+/// * `indent_size` - Optional size of each indentation level (defaults to 2 if not provided).
+///
+/// # Returns
+/// A string representing the formatted node.
 pub fn format_node(node: &Arc<Node>, indent: bool, indent_size: Option<usize>) -> String {
     if indent {
         let size = indent_size.unwrap_or(2);
@@ -14,6 +23,15 @@ pub fn format_node(node: &Arc<Node>, indent: bool, indent_size: Option<usize>) -
     }
 }
 
+/// Helper function to recursively format nodes with indentation.
+///
+/// # Arguments
+/// * `node` - The IR node to format.
+/// * `level` - Current indentation level.
+/// * `indent_size` - Size of each indentation level (0 for no indentation).
+///
+/// # Returns
+/// A string representing the formatted node with appropriate indentation.
 fn format_node_helper(node: &Arc<Node>, level: usize, indent_size: usize) -> String {
     let indent = if indent_size > 0 { " ".repeat(level * indent_size) } else { "".to_string() };
     match &**node {
@@ -118,15 +136,17 @@ fn format_node_helper(node: &Arc<Node>, level: usize, indent_size: usize) -> Str
             }).collect::<Vec<_>>().join("\n");
             format!("select {{\n{}\n{}}}", branches_str, indent)
         }
-        Node::Contract { name, formals, proc, .. } => {
+        Node::Contract { name, formals, formals_remainder, proc, .. } => {
             let formals_str = formals.iter().map(|f| format_node_helper(f, level, indent_size)).collect::<Vec<_>>().join(", ");
+            let remainder_str = formals_remainder.as_ref().map(|r| format!("...{}", format_node_helper(r, level, indent_size))).unwrap_or_default();
+            let formals_with_rem = if formals_remainder.is_some() { format!("{}{}", formals_str, if !formals_str.is_empty() { "," } else { "" }) } else { formals_str };
             let proc_text = format_node_helper(proc, level + 1, indent_size);
             let indented_proc = if indent_size > 0 {
                 proc_text.lines().map(|line| format!("{}{}", " ".repeat((level + 1) * indent_size), line)).collect::<Vec<_>>().join("\n")
             } else {
                 proc_text
             };
-            format!("contract {}({}) = {{\n{}\n{}}}", format_node_helper(name, level, indent_size), formals_str, indented_proc, indent)
+            format!("contract {}({}{}) = {{\n{}\n{}}}", format_node_helper(name, level, indent_size), formals_with_rem, remainder_str, indented_proc, indent)
         }
         Node::Input { receipts, proc, .. } => {
             let receipts_str = receipts.iter().map(|binds| binds.iter().map(|b| format_node_helper(b, level, indent_size)).collect::<Vec<_>>().join(" & ")).collect::<Vec<_>>().join("; ");
@@ -146,6 +166,10 @@ fn format_node_helper(node: &Arc<Node>, level: usize, indent_size: usize) -> Str
                 proc_text
             };
             format!("{{\n{}\n{}}}", indented_proc, indent)
+        }
+        Node::Parenthesized { expr, .. } => {
+            let expr_text = format_node_helper(expr, level, indent_size);
+            format!("({})", expr_text)
         }
         Node::BinOp { op, left, right, .. } => {
             let left_text = format_node_helper(left, level, indent_size);
@@ -189,8 +213,8 @@ fn format_node_helper(node: &Arc<Node>, level: usize, indent_size: usize) -> Str
         Node::Quote { quotable, .. } => format!("@{}", format_node_helper(quotable, level, indent_size)),
         Node::VarRef { kind, var, .. } => {
             let kind_str = match kind {
-                VarRefKind::Assign => "=",
-                VarRefKind::AssignStar => "=*",
+                VarRefKind::Bind => "=",
+                VarRefKind::Unforgeable => "=*",
             };
             format!("{}{}", kind_str, format_node_helper(var, level, indent_size))
         }
@@ -222,22 +246,30 @@ fn format_node_helper(node: &Arc<Node>, level: usize, indent_size: usize) -> Str
         Node::NameDecl { var, uri, .. } => {
             if let Some(uri_node) = uri { format!("{}({})", format_node_helper(var, level, indent_size), format_node_helper(uri_node, level, indent_size)) } else { format_node_helper(var, level, indent_size) }
         }
-        Node::Decl { names, procs, .. } => {
+        Node::Decl { names, names_remainder, procs, .. } => {
             let names_str = names.iter().map(|n| format_node_helper(n, level, indent_size)).collect::<Vec<_>>().join(", ");
+            let remainder_str = names_remainder.as_ref().map(|r| format!("...{}", format_node_helper(r, level, indent_size))).unwrap_or_default();
+            let names_with_rem = if names_remainder.is_some() { format!("{}{}", names_str, if !names_str.is_empty() { "," } else { "" }) } else { names_str };
             let procs_str = procs.iter().map(|p| format_node_helper(p, level, indent_size)).collect::<Vec<_>>().join(", ");
-            format!("{} = {}", names_str, procs_str)
+            format!("{}{} = {}", names_with_rem, remainder_str, procs_str)
         }
-        Node::LinearBind { names, source, .. } => {
+        Node::LinearBind { names, remainder, source, .. } => {
             let names_str = names.iter().map(|n| format_node_helper(n, level, indent_size)).collect::<Vec<_>>().join(", ");
-            format!("{} <- {}", names_str, format_node_helper(source, level, indent_size))
+            let remainder_str = remainder.as_ref().map(|r| format!("...{}", format_node_helper(r, level, indent_size))).unwrap_or_default();
+            let names_with_rem = if remainder.is_some() { format!("{}{}", names_str, if !names_str.is_empty() { "," } else { "" }) } else { names_str };
+            format!("{}{} <- {}", names_with_rem, remainder_str, format_node_helper(source, level, indent_size))
         }
-        Node::RepeatedBind { names, source, .. } => {
+        Node::RepeatedBind { names, remainder, source, .. } => {
             let names_str = names.iter().map(|n| format_node_helper(n, level, indent_size)).collect::<Vec<_>>().join(", ");
-            format!("{} <= {}", names_str, format_node_helper(source, level, indent_size))
+            let remainder_str = remainder.as_ref().map(|r| format!("...{}", format_node_helper(r, level, indent_size))).unwrap_or_default();
+            let names_with_rem = if remainder.is_some() { format!("{}{}", names_str, if !names_str.is_empty() { "," } else { "" }) } else { names_str };
+            format!("{}{} <= {}", names_with_rem, remainder_str, format_node_helper(source, level, indent_size))
         }
-        Node::PeekBind { names, source, .. } => {
+        Node::PeekBind { names, remainder, source, .. } => {
             let names_str = names.iter().map(|n| format_node_helper(n, level, indent_size)).collect::<Vec<_>>().join(", ");
-            format!("{} <<- {}", names_str, format_node_helper(source, level, indent_size))
+            let remainder_str = remainder.as_ref().map(|r| format!("...{}", format_node_helper(r, level, indent_size))).unwrap_or_default();
+            let names_with_rem = if remainder.is_some() { format!("{}{}", names_str, if !names_str.is_empty() { "," } else { "" }) } else { names_str };
+            format!("{}{} <<- {}", names_with_rem, remainder_str, format_node_helper(source, level, indent_size))
         }
         Node::Comment { base, kind, .. } => {
             let text = base.text().unwrap_or(&String::new()).to_string();
@@ -252,6 +284,14 @@ fn format_node_helper(node: &Arc<Node>, level: usize, indent_size: usize) -> Str
         Node::SendReceiveSource { name, inputs, .. } => {
             let inputs_str = inputs.iter().map(|i| format_node_helper(i, level, indent_size)).collect::<Vec<_>>().join(", ");
             format!("{}!?({})", format_node_helper(name, level, indent_size), inputs_str)
+        }
+        Node::Error { children, .. } => {
+            let children_str = children
+                .iter()
+                .map(|child| format_node_helper(child, level, indent_size))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("/* ERROR: \n{} */", children_str)
         }
     }
 }

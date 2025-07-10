@@ -53,6 +53,11 @@ The IR pipeline (`src/ir/pipeline.rs`) transforms and analyzes Rholang code with
 2. **Transformation**: Visitors (e.g., `SimplifyDoubleUnary`) produce new immutable versions.
 3. **Pipeline**: `Pipeline::apply` chains transformations, preserving intermediate states.
 
+### Metadata Structure
+
+- **Dynamic Storage**: `Metadata` uses `HashMap<String, Arc<dyn Any + Send + Sync>>`.
+- **Accessing Data**: Use `metadata.data.get("key")` and downcast, e.g., `symbol_table.downcast_ref::<SymbolTable>()`.
+
 ### Example
 
 ```rust

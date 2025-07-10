@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::any::Any;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::cell::RefCell;
 use std::sync::Arc;
 use tracing::{debug, trace};
@@ -8,10 +9,17 @@ use super::super::node::{
 };
 use super::super::visitor::Visitor;
 use rpds::Vector;
+use archery::ArcK;
 
 /// Formats the Rholang IR tree into a JSON-like string representation.
-/// This module provides a visitor that serializes the IR tree, supporting both
-/// compact and pretty-printed output with alignment and indentation options.
+/// Supports both compact and pretty-printed output with alignment and indentation.
+///
+/// # Arguments
+/// * `tree` - The root node of the IR tree.
+/// * `pretty_print` - If true, enables indentation and newlines for readability.
+///
+/// # Returns
+/// A `Result` containing the formatted string or an error if validation fails.
 pub fn format<'a>(tree: &Arc<Node<'a>>, pretty_print: bool) -> Result<String, String> {
     tree.validate()?;
     let positions = compute_absolute_positions(tree);
@@ -25,7 +33,7 @@ pub fn format<'a>(tree: &Arc<Node<'a>>, pretty_print: bool) -> Result<String, St
 }
 
 /// A visitor that constructs a JSON-like string representation of the IR tree.
-/// Supports compact or pretty-printed output based on configuration.
+/// Configurable for compact or pretty-printed output.
 pub struct PrettyPrinter<'a> {
     /// If true, formats output with indentation and alignment.
     pretty_print: bool,
@@ -39,6 +47,325 @@ pub struct PrettyPrinter<'a> {
     is_first_field: RefCell<bool>,
     /// Maps node IDs to their absolute positions in the source code.
     positions: &'a HashMap<usize, (Position, Position)>,
+}
+
+/// Trait for formatting types into a JSON-like string representation.
+pub trait JsonStringFormatter {
+    /// Formats `self` into a JSON-like string using the provided `PrettyPrinter`.
+    fn format_json_string(&self, p: &PrettyPrinter);
+}
+
+// Primitive type implementations
+impl JsonStringFormatter for bool {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        p.append(&self.to_string());
+    }
+}
+
+impl JsonStringFormatter for i8 {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        p.append(&self.to_string());
+    }
+}
+
+impl JsonStringFormatter for i16 {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        p.append(&self.to_string());
+    }
+}
+
+impl JsonStringFormatter for i32 {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        p.append(&self.to_string());
+    }
+}
+
+impl JsonStringFormatter for i64 {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        p.append(&self.to_string());
+    }
+}
+
+impl JsonStringFormatter for i128 {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        p.append(&self.to_string());
+    }
+}
+
+impl JsonStringFormatter for isize {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        p.append(&self.to_string());
+    }
+}
+
+impl JsonStringFormatter for u8 {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        p.append(&self.to_string());
+    }
+}
+
+impl JsonStringFormatter for u16 {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        p.append(&self.to_string());
+    }
+}
+
+impl JsonStringFormatter for u32 {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        p.append(&self.to_string());
+    }
+}
+
+impl JsonStringFormatter for u64 {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        p.append(&self.to_string());
+    }
+}
+
+impl JsonStringFormatter for u128 {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        p.append(&self.to_string());
+    }
+}
+
+impl JsonStringFormatter for usize {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        p.append(&self.to_string());
+    }
+}
+
+impl JsonStringFormatter for f32 {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        p.append(&self.to_string());
+    }
+}
+
+impl JsonStringFormatter for f64 {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        p.append(&self.to_string());
+    }
+}
+
+impl JsonStringFormatter for char {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        p.escape_json_string(&self.to_string());
+    }
+}
+
+impl JsonStringFormatter for String {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        p.escape_json_string(self);
+    }
+}
+
+impl JsonStringFormatter for () {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        p.append("'()");
+    }
+}
+
+// Collection type implementations with pretty_print support
+impl<T: JsonStringFormatter + Any + Send + Sync> JsonStringFormatter for Vec<T> {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        if self.is_empty() {
+            p.append("[]");
+            return;
+        }
+        if p.pretty_print {
+            p.append("[");
+            let align_col = *p.current_column.borrow();
+            for (i, item) in self.iter().enumerate() {
+                if i > 0 {
+                    p.append("\n");
+                    p.append(&" ".repeat(align_col));
+                }
+                item.format_json_string(p);
+            }
+            p.append("]");
+        } else {
+            p.append("[");
+            for (i, item) in self.iter().enumerate() {
+                if i > 0 {
+                    p.append(" ");
+                }
+                item.format_json_string(p);
+            }
+            p.append("]");
+        }
+    }
+}
+
+impl<T: JsonStringFormatter + Any + Send + Sync> JsonStringFormatter for HashMap<String, T> {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        if self.is_empty() {
+            p.append("{}");
+            return;
+        }
+        let mut sorted: Vec<_> = self.iter().collect();
+        sorted.sort_by_key(|&(k, _)| k);
+        if p.pretty_print {
+            p.append("{");
+            let align_col = *p.current_column.borrow();
+            for (i, (key, value)) in sorted.iter().enumerate() {
+                if i > 0 {
+                    p.append("\n");
+                    p.append(&" ".repeat(align_col));
+                }
+                p.append(":");
+                p.append(key);
+                p.append(" ");
+                value.format_json_string(p);
+            }
+            p.append("}");
+        } else {
+            p.append("{");
+            for (i, (key, value)) in sorted.iter().enumerate() {
+                if i > 0 {
+                    p.append(",");
+                }
+                p.append(":");
+                p.append(key);
+                p.append(" ");
+                value.format_json_string(p);
+            }
+            p.append("}");
+        }
+    }
+}
+
+impl<T: JsonStringFormatter + Any + Send + Sync> JsonStringFormatter for BTreeMap<String, T> {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        if self.is_empty() {
+            p.append("{}");
+            return;
+        }
+        if p.pretty_print {
+            p.append("{");
+            let align_col = *p.current_column.borrow();
+            for (i, (key, value)) in self.iter().enumerate() {
+                if i > 0 {
+                    p.append("\n");
+                    p.append(&" ".repeat(align_col));
+                }
+                p.append(":");
+                p.append(key);
+                p.append(" ");
+                value.format_json_string(p);
+            }
+            p.append("}");
+        } else {
+            p.append("{");
+            for (i, (key, value)) in self.iter().enumerate() {
+                if i > 0 {
+                    p.append(",");
+                }
+                p.append(":");
+                p.append(key);
+                p.append(" ");
+                value.format_json_string(p);
+            }
+            p.append("}");
+        }
+    }
+}
+
+impl<T: JsonStringFormatter + Any + Send + Sync> JsonStringFormatter for Option<T> {
+    fn format_json_string(&self, p: &PrettyPrinter) {
+        match self {
+            Some(value) => value.format_json_string(p),
+            None => p.append("nil"),
+        }
+    }
+}
+
+/// Formats a metadata value into a JSON-like string, handling various types.
+///
+/// # Arguments
+/// * `p` - The `PrettyPrinter` instance to append to.
+/// * `value` - The metadata value to format.
+fn format_json_string(p: &PrettyPrinter, value: &Arc<dyn Any + Send + Sync>) {
+    macro_rules! try_format {
+        ($($t:ty),*) => {
+            $(
+                if let Some(val) = value.downcast_ref::<$t>() {
+                    val.format_json_string(p);
+                    return;
+                }
+            )*
+        };
+    }
+    try_format!(
+        String,
+        usize, u128, u64, u32, u16, u8,
+        isize, i128, i64, i32, i16, i8,
+        f64, f32,
+        char,
+        bool
+    );
+
+    // Handle collection types
+    if let Some(map) = value.downcast_ref::<BTreeMap<String, i32>>() {
+        map.format_json_string(p);
+    } else if let Some(map) = value.downcast_ref::<HashMap<String, i32>>() {
+        map.format_json_string(p);
+    } else if let Some(vec) = value.downcast_ref::<Vec<i32>>() {
+        vec.format_json_string(p);
+    } else if let Some(set) = value.downcast_ref::<HashSet<i32>>() {
+        let mut vec: Vec<i32> = set.iter().cloned().collect();
+        vec.sort();
+        if p.pretty_print {
+            p.append("#{");
+            let align_col = *p.current_column.borrow();
+            for (i, item) in vec.iter().enumerate() {
+                if i > 0 {
+                    p.append("\n");
+                    p.append(&" ".repeat(align_col));
+                }
+                item.format_json_string(p);
+            }
+            p.append("}");
+        } else {
+            p.append("#{");
+            for (i, item) in vec.iter().enumerate() {
+                if i > 0 {
+                    p.append(" ");
+                }
+                item.format_json_string(p);
+            }
+            p.append("}");
+        }
+    } else if let Some(set) = value.downcast_ref::<HashSet<String>>() {
+        let mut vec: Vec<String> = set.iter().cloned().collect();
+        vec.sort();
+        if p.pretty_print {
+            p.append("#{");
+            let align_col = *p.current_column.borrow();
+            for (i, item) in vec.iter().enumerate() {
+                if i > 0 {
+                    p.append("\n");
+                    p.append(&" ".repeat(align_col));
+                }
+                item.format_json_string(p);
+            }
+            p.append("}");
+        } else {
+            p.append("#{");
+            for (i, item) in vec.iter().enumerate() {
+                if i > 0 {
+                    p.append(" ");
+                }
+                item.format_json_string(p);
+            }
+            p.append("}");
+        }
+    } else if let Some(opt) = value.downcast_ref::<Option<i32>>() {
+        opt.format_json_string(p);
+    } else if let Some(unit) = value.downcast_ref::<()>() {
+        unit.format_json_string(p);
+    } else {
+        // Fallback for unhandled types
+        p.escape_json_string(&format!("{:?}", value));
+    }
 }
 
 impl<'a> PrettyPrinter<'a> {
@@ -70,51 +397,90 @@ impl<'a> PrettyPrinter<'a> {
         self.add_field("position", |p| p.append(&start.byte.to_string()));
         self.add_field("length", |p| p.append(&base.length().to_string()));
         if let Some(text) = base.text() {
-            self.add_field("text", |p| p.append(&p.escape_json_string(text)));
+            self.add_field("text", |p| p.escape_json_string(text));
         }
     }
 
-    /// Adds metadata fields to the current map if metadata exists.
+    /// Adds metadata to the output, respecting `pretty_print` for indentation and newlines.
     fn add_metadata(&self, metadata: &Option<Arc<Metadata>>) {
         if let Some(meta) = metadata {
             self.add_field("metadata", |p| {
-                p.start_map();
-                p.add_field("version", |p| p.append(&meta.version.to_string()));
-                p.end_map();
+                if meta.data.is_empty() {
+                    p.append("{}");
+                    return;
+                }
+                let mut sorted: Vec<_> = meta.data.iter().collect();
+                sorted.sort_by_key(|&(k, _)| k);
+                if p.pretty_print {
+                    p.append("{");
+                    let align_col = *p.current_column.borrow();
+                    for (i, (key, value)) in sorted.iter().enumerate() {
+                        if i > 0 {
+                            p.append("\n");
+                            p.append(&" ".repeat(align_col));
+                        }
+                        p.append(":");
+                        p.append(key);
+                        p.append(" ");
+                        format_json_string(p, value);
+                    }
+                    p.append("}");
+                } else {
+                    p.append("{");
+                    for (i, (key, value)) in sorted.iter().enumerate() {
+                        if i > 0 {
+                            p.append(",");
+                        }
+                        p.append(":");
+                        p.append(key);
+                        p.append(" ");
+                        format_json_string(p, value);
+                    }
+                    p.append("}");
+                }
             });
         }
     }
 
     /// Escapes a string for JSON compatibility.
-    fn escape_json_string(&self, s: &str) -> String {
-        let mut escaped = String::new();
-        escaped.push('"');
+    fn escape_json_string(&self, s: &str) {
+        self.append_char('"');
         for c in s.chars() {
             match c {
-                '"' => escaped.push_str("\\\""),
-                '\\' => escaped.push_str("\\\\"),
-                '\n' => escaped.push_str("\\n"),
-                '\r' => escaped.push_str("\\r"),
-                '\t' => escaped.push_str("\\t"),
-                _ if c.is_control() => escaped.push_str(&format!("\\u{:04x}", c as u32)),
-                _ => escaped.push(c),
+                '"' => self.append("\\\""),
+                '\\' => self.append("\\\\"),
+                '\n' => self.append("\\n"),
+                '\r' => self.append("\\r"),
+                '\t' => self.append("\\t"),
+                _ if c.is_control() => self.append(&format!("\\u{:04x}", c as u32)),
+                _ => self.append_char(c),
             }
         }
-        escaped.push('"');
-        escaped
+        self.append_char('"');
+    }
+
+    fn update_column(&self, c: char) {
+        let mut current_column = self.current_column.borrow_mut();
+        if c == '\n' {
+            *current_column = 0;
+        } else {
+            *current_column += 1;
+        }
+    }
+
+    /// Appends a character to the result, updating the current column position.
+    fn append_char(&self, c: char) {
+        let mut result = self.result.borrow_mut();
+        result.push(c);
+        self.update_column(c);
     }
 
     /// Appends a string to the result, updating the current column position.
     fn append(&self, s: &str) {
         let mut result = self.result.borrow_mut();
-        let mut current_column = self.current_column.borrow_mut();
         result.push_str(s);
         for c in s.chars() {
-            if c == '\n' {
-                *current_column = 0;
-            } else {
-                *current_column += 1;
-            }
+            self.update_column(c);
         }
     }
 
@@ -151,16 +517,16 @@ impl<'a> PrettyPrinter<'a> {
                     self.append("\n");
                     self.append(&" ".repeat(alignment));
                 }
-                self.append(&format!(":{key} "));
+                self.append(&format!(":{} ", key));
             }
             value(self);
             *self.is_first_field.borrow_mut() = false;
         } else {
             {
                 if is_first {
-                    self.append(&format!(":{key} "));
+                    self.append(&format!(":{} ", key));
                 } else {
-                    self.append(&format!(",:{key} "));
+                    self.append(&format!(",:{} ", key));
                 }
             }
             value(self);
@@ -169,7 +535,7 @@ impl<'a> PrettyPrinter<'a> {
     }
 
     /// Formats a vector of nodes as an array, with alignment if pretty-printing.
-    fn visit_vector(&self, items: &Vector<Arc<Node<'_>>>) {
+    fn visit_vector(&self, items: &Vector<Arc<Node<'_>>, ArcK>) {
         if items.is_empty() {
             self.append("[]");
             return;
@@ -203,7 +569,7 @@ impl<'a> PrettyPrinter<'a> {
     }
 
     /// Formats a vector of key-value pairs as an array of maps.
-    fn format_pairs(&self, pairs: &Vector<(Arc<Node<'a>>, Arc<Node<'a>>)>, key_name: &str, value_name: &str) {
+    fn format_pairs(&self, pairs: &Vector<(Arc<Node<'a>>, Arc<Node<'a>>), ArcK>, key_name: &str, value_name: &str) {
         self.append("[");
         for (i, (key, value)) in pairs.iter().enumerate() {
             if i > 0 {
@@ -235,7 +601,7 @@ impl<'a> Visitor for PrettyPrinter<'a> {
         Arc::clone(node)
     }
 
-    fn visit_sendsync<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, channel: &Arc<Node<'b>>, inputs: &Vector<Arc<Node<'b>>>, cont: &Arc<Node<'b>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+    fn visit_sendsync<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, channel: &Arc<Node<'b>>, inputs: &Vector<Arc<Node<'b>>, ArcK>, cont: &Arc<Node<'b>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
         self.start_map();
         self.add_field("type", |p| p.append("\"sendsync\""));
         self.add_base_fields(node);
@@ -247,7 +613,7 @@ impl<'a> Visitor for PrettyPrinter<'a> {
         Arc::clone(node)
     }
 
-    fn visit_send<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, channel: &Arc<Node<'b>>, send_type: &SendType, _send_type_end: &Position, inputs: &Vector<Arc<Node<'b>>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+    fn visit_send<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, channel: &Arc<Node<'b>>, send_type: &SendType, _send_type_end: &Position, inputs: &Vector<Arc<Node<'b>>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
         self.start_map();
         self.add_field("type", |p| p.append("\"send\""));
         self.add_base_fields(node);
@@ -259,7 +625,7 @@ impl<'a> Visitor for PrettyPrinter<'a> {
         Arc::clone(node)
     }
 
-    fn visit_new<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, decls: &Vector<Arc<Node<'b>>>, proc: &Arc<Node<'b>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+    fn visit_new<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, decls: &Vector<Arc<Node<'b>>, ArcK>, proc: &Arc<Node<'b>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
         self.start_map();
         self.add_field("type", |p| p.append("\"new\""));
         self.add_base_fields(node);
@@ -284,7 +650,7 @@ impl<'a> Visitor for PrettyPrinter<'a> {
         Arc::clone(node)
     }
 
-    fn visit_let<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, decls: &Vector<Arc<Node<'b>>>, proc: &Arc<Node<'b>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+    fn visit_let<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, decls: &Vector<Arc<Node<'b>>, ArcK>, proc: &Arc<Node<'b>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
         self.start_map();
         self.add_field("type", |p| p.append("\"let\""));
         self.add_base_fields(node);
@@ -306,7 +672,7 @@ impl<'a> Visitor for PrettyPrinter<'a> {
         Arc::clone(node)
     }
 
-    fn visit_match<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, expression: &Arc<Node<'b>>, cases: &Vector<(Arc<Node<'b>>, Arc<Node<'b>>)>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+    fn visit_match<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, expression: &Arc<Node<'b>>, cases: &Vector<(Arc<Node<'b>>, Arc<Node<'b>>), ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
         self.start_map();
         self.add_field("type", |p| p.append("\"match\""));
         self.add_base_fields(node);
@@ -317,7 +683,7 @@ impl<'a> Visitor for PrettyPrinter<'a> {
         Arc::clone(node)
     }
 
-    fn visit_choice<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, branches: &Vector<(Vector<Arc<Node<'b>>>, Arc<Node<'b>>)>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+    fn visit_choice<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, branches: &Vector<(Vector<Arc<Node<'b>>, ArcK>, Arc<Node<'b>>), ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
         self.start_map();
         self.add_field("type", |p| p.append("\"choice\""));
         self.add_base_fields(node);
@@ -344,19 +710,22 @@ impl<'a> Visitor for PrettyPrinter<'a> {
         Arc::clone(node)
     }
 
-    fn visit_contract<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, name: &Arc<Node<'b>>, formals: &Vector<Arc<Node<'b>>>, proc: &Arc<Node<'b>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+    fn visit_contract<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, name: &Arc<Node<'b>>, formals: &Vector<Arc<Node<'b>>, ArcK>, formals_remainder: &Option<Arc<Node<'b>>>, proc: &Arc<Node<'b>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
         self.start_map();
         self.add_field("type", |p| p.append("\"contract\""));
         self.add_base_fields(node);
         self.add_field("name", |p| { p.visit_node(name); });
         self.add_field("formals", |p| p.visit_vector(formals));
+        if let Some(rem) = formals_remainder {
+            self.add_field("formals_remainder", |p| { p.visit_node(rem); });
+        }
         self.add_field("proc", |p| { p.visit_node(proc); });
         self.add_metadata(metadata);
         self.end_map();
         Arc::clone(node)
     }
 
-    fn visit_input<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, receipts: &Vector<Vector<Arc<Node<'b>>>>, proc: &Arc<Node<'b>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+    fn visit_input<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, receipts: &Vector<Vector<Arc<Node<'b>>, ArcK>, ArcK>, proc: &Arc<Node<'b>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
         self.start_map();
         self.add_field("type", |p| p.append("\"input\""));
         self.add_base_fields(node);
@@ -391,6 +760,16 @@ impl<'a> Visitor for PrettyPrinter<'a> {
         Arc::clone(node)
     }
 
+    fn visit_parenthesized<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, expr: &Arc<Node<'b>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+        self.start_map();
+        self.add_field("type", |p| p.append("\"parenthesized\""));
+        self.add_base_fields(node);
+        self.add_field("expr", |p| { p.visit_node(expr); });
+        self.add_metadata(metadata);
+        self.end_map();
+        Arc::clone(node)
+    }
+
     fn visit_binop<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, op: BinOperator, left: &Arc<Node<'b>>, right: &Arc<Node<'b>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
         self.start_map();
         self.add_field("type", |p| p.append("\"binop\""));
@@ -414,12 +793,12 @@ impl<'a> Visitor for PrettyPrinter<'a> {
         Arc::clone(node)
     }
 
-    fn visit_method<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, receiver: &Arc<Node<'b>>, name: &String, args: &Vector<Arc<Node<'b>>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+    fn visit_method<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, receiver: &Arc<Node<'b>>, name: &String, args: &Vector<Arc<Node<'b>>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
         self.start_map();
         self.add_field("type", |p| p.append("\"method\""));
         self.add_base_fields(node);
         self.add_field("receiver", |p| { p.visit_node(receiver); });
-        self.add_field("name", |p| p.append(&p.escape_json_string(name)));
+        self.add_field("name", |p| p.escape_json_string(name));
         self.add_field("args", |p| p.visit_vector(args));
         self.add_metadata(metadata);
         self.end_map();
@@ -502,7 +881,7 @@ impl<'a> Visitor for PrettyPrinter<'a> {
         Arc::clone(node)
     }
 
-    fn visit_list<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, elements: &Vector<Arc<Node<'b>>>, remainder: &Option<Arc<Node<'b>>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+    fn visit_list<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, elements: &Vector<Arc<Node<'b>>, ArcK>, remainder: &Option<Arc<Node<'b>>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
         self.start_map();
         self.add_field("type", |p| p.append("\"list\""));
         self.add_base_fields(node);
@@ -515,7 +894,7 @@ impl<'a> Visitor for PrettyPrinter<'a> {
         Arc::clone(node)
     }
 
-    fn visit_set<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, elements: &Vector<Arc<Node<'b>>>, remainder: &Option<Arc<Node<'b>>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+    fn visit_set<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, elements: &Vector<Arc<Node<'b>>, ArcK>, remainder: &Option<Arc<Node<'b>>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
         self.start_map();
         self.add_field("type", |p| p.append("\"set\""));
         self.add_base_fields(node);
@@ -528,7 +907,7 @@ impl<'a> Visitor for PrettyPrinter<'a> {
         Arc::clone(node)
     }
 
-    fn visit_map<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, pairs: &Vector<(Arc<Node<'b>>, Arc<Node<'b>>)>, remainder: &Option<Arc<Node<'b>>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+    fn visit_map<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, pairs: &Vector<(Arc<Node<'b>>, Arc<Node<'b>>), ArcK>, remainder: &Option<Arc<Node<'b>>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
         self.start_map();
         self.add_field("type", |p| p.append("\"map\""));
         self.add_base_fields(node);
@@ -541,7 +920,7 @@ impl<'a> Visitor for PrettyPrinter<'a> {
         Arc::clone(node)
     }
 
-    fn visit_tuple<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, elements: &Vector<Arc<Node<'b>>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+    fn visit_tuple<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, elements: &Vector<Arc<Node<'b>>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
         self.start_map();
         self.add_field("type", |p| p.append("\"tuple\""));
         self.add_base_fields(node);
@@ -555,7 +934,7 @@ impl<'a> Visitor for PrettyPrinter<'a> {
         self.start_map();
         self.add_field("type", |p| p.append("\"var\""));
         self.add_base_fields(node);
-        self.add_field("name", |p| p.append(&p.escape_json_string(name)));
+        self.add_field("name", |p| p.escape_json_string(name));
         self.add_metadata(metadata);
         self.end_map();
         Arc::clone(node)
@@ -574,44 +953,56 @@ impl<'a> Visitor for PrettyPrinter<'a> {
         Arc::clone(node)
     }
 
-    fn visit_decl<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, names: &Vector<Arc<Node<'b>>>, procs: &Vector<Arc<Node<'b>>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+    fn visit_decl<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, names: &Vector<Arc<Node<'b>>, ArcK>, names_remainder: &Option<Arc<Node<'b>>>, procs: &Vector<Arc<Node<'b>>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
         self.start_map();
         self.add_field("type", |p| p.append("\"decl\""));
         self.add_base_fields(node);
         self.add_field("names", |p| p.visit_vector(names));
+        if let Some(rem) = names_remainder {
+            self.add_field("names_remainder", |p| { p.visit_node(rem); });
+        }
         self.add_field("procs", |p| p.visit_vector(procs));
         self.add_metadata(metadata);
         self.end_map();
         Arc::clone(node)
     }
 
-    fn visit_linear_bind<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, names: &Vector<Arc<Node<'b>>>, source: &Arc<Node<'b>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+    fn visit_linear_bind<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, names: &Vector<Arc<Node<'b>>, ArcK>, remainder: &Option<Arc<Node<'b>>>, source: &Arc<Node<'b>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
         self.start_map();
         self.add_field("type", |p| p.append("\"linear_bind\""));
         self.add_base_fields(node);
         self.add_field("names", |p| p.visit_vector(names));
+        if let Some(rem) = remainder {
+            self.add_field("remainder", |p| { p.visit_node(rem); });
+        }
         self.add_field("source", |p| { p.visit_node(source); });
         self.add_metadata(metadata);
         self.end_map();
         Arc::clone(node)
     }
 
-    fn visit_repeated_bind<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, names: &Vector<Arc<Node<'b>>>, source: &Arc<Node<'b>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+    fn visit_repeated_bind<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, names: &Vector<Arc<Node<'b>>, ArcK>, remainder: &Option<Arc<Node<'b>>>, source: &Arc<Node<'b>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
         self.start_map();
         self.add_field("type", |p| p.append("\"repeated_bind\""));
         self.add_base_fields(node);
         self.add_field("names", |p| p.visit_vector(names));
+        if let Some(rem) = remainder {
+            self.add_field("remainder", |p| { p.visit_node(rem); });
+        }
         self.add_field("source", |p| { p.visit_node(source); });
         self.add_metadata(metadata);
         self.end_map();
         Arc::clone(node)
     }
 
-    fn visit_peek_bind<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, names: &Vector<Arc<Node<'b>>>, source: &Arc<Node<'b>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+    fn visit_peek_bind<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, names: &Vector<Arc<Node<'b>>, ArcK>, remainder: &Option<Arc<Node<'b>>>, source: &Arc<Node<'b>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
         self.start_map();
         self.add_field("type", |p| p.append("\"peek_bind\""));
         self.add_base_fields(node);
         self.add_field("names", |p| p.visit_vector(names));
+        if let Some(rem) = remainder {
+            self.add_field("remainder", |p| { p.visit_node(rem); });
+        }
         self.add_field("source", |p| { p.visit_node(source); });
         self.add_metadata(metadata);
         self.end_map();
@@ -641,7 +1032,7 @@ impl<'a> Visitor for PrettyPrinter<'a> {
         self.start_map();
         self.add_field("type", |p| p.append("\"simple_type\""));
         self.add_base_fields(node);
-        self.add_field("value", |p| p.append(&p.escape_json_string(value)));
+        self.add_field("value", |p| p.escape_json_string(value));
         self.add_metadata(metadata);
         self.end_map();
         Arc::clone(node)
@@ -657,12 +1048,22 @@ impl<'a> Visitor for PrettyPrinter<'a> {
         Arc::clone(node)
     }
 
-    fn visit_send_receive_source<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, name: &Arc<Node<'b>>, inputs: &Vector<Arc<Node<'b>>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+    fn visit_send_receive_source<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, name: &Arc<Node<'b>>, inputs: &Vector<Arc<Node<'b>>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
         self.start_map();
         self.add_field("type", |p| p.append("\"send_receive_source\""));
         self.add_base_fields(node);
         self.add_field("name", |p| { p.visit_node(name); });
         self.add_field("inputs", |p| p.visit_vector(inputs));
+        self.add_metadata(metadata);
+        self.end_map();
+        Arc::clone(node)
+    }
+
+    fn visit_error<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, children: &Vector<Arc<Node<'b>>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+        self.start_map();
+        self.add_field("type", |p| p.append("\"error\""));
+        self.add_base_fields(node);
+        self.add_field("children", |p| p.visit_vector(children));
         self.add_metadata(metadata);
         self.end_map();
         Arc::clone(node)
@@ -673,6 +1074,9 @@ impl<'a> Visitor for PrettyPrinter<'a> {
 mod tests {
     use super::*;
     use indoc::indoc;
+    use crate::ir::node::{Metadata, Node, NodeBase, RelativePosition};
+    use crate::ir::transforms::pretty_printer::format;
+    use std::sync::Arc;
 
     #[test]
     fn test_pretty_printer_aligned() {
@@ -1461,6 +1865,355 @@ Nil"#;
              :metadata {:version 0}}"#}.trim();
         println!("{}", ir.text());
         println!("{}", actual);
+        assert_eq!(actual, expected);
+    }
+
+    /// Creates a Nil node with default metadata containing a version field.
+    fn create_nil_node() -> Arc<Node<'static>> {
+        let base = NodeBase::new(
+            None,
+            RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+            3,
+            Some("Nil".to_string()),
+        );
+        let mut data = HashMap::new();
+        data.insert("version".to_string(), Arc::new(0_usize) as Arc<dyn Any + Send + Sync>);
+        let metadata = Some(Arc::new(Metadata { data }));
+        Arc::new(Node::Nil { base, metadata })
+    }
+
+    /// Adds a key-value pair to the node's metadata, returning a new node.
+    fn add_metadata<T: 'static + Send + Sync>(node: Arc<Node<'static>>, key: &str, value: T) -> Arc<Node<'static>> {
+        let mut data = node.metadata().unwrap().data.clone();
+        data.insert(key.to_string(), Arc::new(value) as Arc<dyn Any + Send + Sync>);
+        let new_metadata = Some(Arc::new(Metadata { data }));
+        node.with_metadata(new_metadata)
+    }
+
+    /// Helper to assert that the formatted output contains the expected key-value pair.
+    fn assert_contains_key_value(formatted: &str, key: &str, value: &str) {
+        let pattern = format!(":{} {}", key, value);
+        assert!(
+            formatted.contains(&pattern),
+            "Expected '{}' to contain '{}', but got '{}'",
+            formatted,
+            pattern,
+            formatted
+        );
+    }
+
+    #[test]
+    fn test_format_bool_metadata() {
+        let node = create_nil_node();
+        let mut nested_map = HashMap::new();
+        nested_map.insert("subkey".to_string(), 42_i32);
+        let node_with_nested = add_metadata(node, "nested", nested_map);
+        let actual = format(&node_with_nested, true).unwrap();
+        let expected = indoc! {r#"
+            {:type "nil"
+             :start_line 0
+             :start_column 0
+             :end_line 0
+             :end_column 3
+             :position 0
+             :length 3
+             :text "Nil"
+             :metadata {:nested {:subkey 42}
+                        :version 0}}
+        "#}.trim();
+        println!("{}", actual);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_format_i32_metadata() {
+        let node = create_nil_node();
+        let node_with_int = add_metadata(node, "int", 42_i32);
+        let formatted = format(&node_with_int, false).unwrap();
+        assert_contains_key_value(&formatted, "int", "42");
+    }
+
+    #[test]
+    fn test_format_i8_metadata() {
+        let node = create_nil_node();
+        let node_with_int = add_metadata(node, "int8", -8_i8);
+        let formatted = format(&node_with_int, false).unwrap();
+        assert_contains_key_value(&formatted, "int8", "-8");
+    }
+
+    #[test]
+    fn test_format_i16_metadata() {
+        let node = create_nil_node();
+        let node_with_int = add_metadata(node, "int16", 16_i16);
+        let formatted = format(&node_with_int, false).unwrap();
+        assert_contains_key_value(&formatted, "int16", "16");
+    }
+
+    #[test]
+    fn test_format_i64_metadata() {
+        let node = create_nil_node();
+        let node_with_int = add_metadata(node, "int64", -64_i64);
+        let formatted = format(&node_with_int, false).unwrap();
+        assert_contains_key_value(&formatted, "int64", "-64");
+    }
+
+    #[test]
+    fn test_format_i128_metadata() {
+        let node = create_nil_node();
+        let node_with_int = add_metadata(node, "int128", 128_i128);
+        let formatted = format(&node_with_int, false).unwrap();
+        assert_contains_key_value(&formatted, "int128", "128");
+    }
+
+    #[test]
+    fn test_format_isize_metadata() {
+        let node = create_nil_node();
+        let node_with_int = add_metadata(node, "isize", -100_isize);
+        let formatted = format(&node_with_int, false).unwrap();
+        assert_contains_key_value(&formatted, "isize", "-100");
+    }
+
+    #[test]
+    fn test_format_u8_metadata() {
+        let node = create_nil_node();
+        let node_with_uint = add_metadata(node, "uint8", 8_u8);
+        let formatted = format(&node_with_uint, false).unwrap();
+        assert_contains_key_value(&formatted, "uint8", "8");
+    }
+
+    #[test]
+    fn test_format_u16_metadata() {
+        let node = create_nil_node();
+        let node_with_uint = add_metadata(node, "uint16", 16_u16);
+        let formatted = format(&node_with_uint, false).unwrap();
+        assert_contains_key_value(&formatted, "uint16", "16");
+    }
+
+    #[test]
+    fn test_format_u32_metadata() {
+        let node = create_nil_node();
+        let node_with_uint = add_metadata(node, "uint32", 32_u32);
+        let formatted = format(&node_with_uint, false).unwrap();
+        assert_contains_key_value(&formatted, "uint32", "32");
+    }
+
+    #[test]
+    fn test_format_u64_metadata() {
+        let node = create_nil_node();
+        let node_with_uint = add_metadata(node, "uint64", 64_u64);
+        let formatted = format(&node_with_uint, false).unwrap();
+        assert_contains_key_value(&formatted, "uint64", "64");
+    }
+
+    #[test]
+    fn test_format_u128_metadata() {
+        let node = create_nil_node();
+        let node_with_uint = add_metadata(node, "uint128", 128_u128);
+        let formatted = format(&node_with_uint, false).unwrap();
+        assert_contains_key_value(&formatted, "uint128", "128");
+    }
+
+    #[test]
+    fn test_format_usize_metadata() {
+        let node = create_nil_node();
+        let node_with_uint = add_metadata(node, "usize", 100_usize);
+        let formatted = format(&node_with_uint, false).unwrap();
+        assert_contains_key_value(&formatted, "usize", "100");
+    }
+
+    #[test]
+    fn test_format_f32_metadata() {
+        let node = create_nil_node();
+        let node_with_float = add_metadata(node, "float32", 3.14_f32);
+        let formatted = format(&node_with_float, false).unwrap();
+        assert_contains_key_value(&formatted, "float32", "3.14");
+    }
+
+    #[test]
+    fn test_format_f64_metadata() {
+        let node = create_nil_node();
+        let node_with_float = add_metadata(node, "float64", 2.718_f64);
+        let formatted = format(&node_with_float, false).unwrap();
+        assert_contains_key_value(&formatted, "float64", "2.718");
+    }
+
+    #[test]
+    fn test_format_char_metadata() {
+        let node = create_nil_node();
+        let node_with_char = add_metadata(node, "char", 'a');
+        let formatted = format(&node_with_char, false).unwrap();
+        assert_contains_key_value(&formatted, "char", "\"a\"");
+    }
+
+    #[test]
+    fn test_format_string_metadata() {
+        let node = create_nil_node();
+        let node_with_str = add_metadata(node, "str", "hello".to_string());
+        let formatted = format(&node_with_str, false).unwrap();
+        assert_contains_key_value(&formatted, "str", "\"hello\"");
+    }
+
+    #[test]
+    fn test_format_string_with_special_chars() {
+        let node = create_nil_node();
+        let node_with_str = add_metadata(node, "str", "hello\nworld".to_string());
+        let formatted = format(&node_with_str, false).unwrap();
+        assert_contains_key_value(&formatted, "str", "\"hello\\nworld\"");
+    }
+
+    #[test]
+    fn test_format_vec_metadata() {
+        let node = create_nil_node();
+        let vec_data = vec![1_i32, 2, 3];
+        let node_with_vec = add_metadata(node, "vec", vec_data);
+        let actual = format(&node_with_vec, true).unwrap();
+        let expected = indoc! {r#"
+            {:type "nil"
+             :start_line 0
+             :start_column 0
+             :end_line 0
+             :end_column 3
+             :position 0
+             :length 3
+             :text "Nil"
+             :metadata {:vec [1
+                              2
+                              3]
+                        :version 0}}
+        "#}.trim();
+        println!("{}", actual);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_metadata_empty_map() {
+        let node = create_nil_node();
+        let mut data = HashMap::new();
+        data.insert("empty".to_string(), Arc::new(HashMap::<String, i32>::new()) as Arc<dyn Any + Send + Sync>);
+        let node_with_empty = node.with_metadata(Some(Arc::new(Metadata { data })));
+        let formatted = format(&node_with_empty, true).unwrap();
+        let expected = indoc! {r#"
+            {:type "nil"
+             :start_line 0
+             :start_column 0
+             :end_line 0
+             :end_column 3
+             :position 0
+             :length 3
+             :text "Nil"
+             :metadata {:empty {}}}
+        "#}.trim();
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_metadata_map_pretty() {
+        let node = create_nil_node();
+        let mut nested_map = HashMap::new();
+        nested_map.insert("subkey".to_string(), 42_i32);
+        let node_with_nested = add_metadata(node, "nested", nested_map);
+        let formatted = format(&node_with_nested, true).unwrap();
+        let expected = indoc! {r#"
+            {:type "nil"
+             :start_line 0
+             :start_column 0
+             :end_line 0
+             :end_column 3
+             :position 0
+             :length 3
+             :text "Nil"
+             :metadata {:nested {:subkey 42}
+                        :version 0}}
+        "#}.trim();
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_metadata_map_compact() {
+        let node = create_nil_node();
+        let mut nested_map = HashMap::new();
+        nested_map.insert("subkey".to_string(), 42_i32);
+        let node_with_nested = add_metadata(node, "nested", nested_map);
+        let formatted = format(&node_with_nested, false).unwrap();
+        let expected = r#"{:type "nil",:start_line 0,:start_column 0,:end_line 0,:end_column 3,:position 0,:length 3,:text "Nil",:metadata {:nested {:subkey 42},:version 0}}"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_metadata_vector_pretty() {
+        let node = create_nil_node();
+        let vec_data = vec![1_i32, 2, 3];
+        let node_with_vec = add_metadata(node, "vec", vec_data);
+        let formatted = format(&node_with_vec, true).unwrap();
+        let expected = indoc! {r#"
+            {:type "nil"
+             :start_line 0
+             :start_column 0
+             :end_line 0
+             :end_column 3
+             :position 0
+             :length 3
+             :text "Nil"
+             :metadata {:vec [1
+                              2
+                              3]
+                        :version 0}}
+        "#}.trim();
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_metadata_vector_compact() {
+        let node = create_nil_node();
+        let vec_data = vec![1_i32, 2, 3];
+        let node_with_vec = add_metadata(node, "vec", vec_data);
+        let formatted = format(&node_with_vec, false).unwrap();
+        let expected = r#"{:type "nil",:start_line 0,:start_column 0,:end_line 0,:end_column 3,:position 0,:length 3,:text "Nil",:metadata {:vec [1 2 3],:version 0}}"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_metadata_empty_vector() {
+        let node = create_nil_node();
+        let vec_data: Vec<i32> = vec![];
+        let node_with_vec = add_metadata(node, "vec", vec_data);
+        let formatted = format(&node_with_vec, true).unwrap();
+        let expected = indoc! {r#"
+            {:type "nil"
+             :start_line 0
+             :start_column 0
+             :end_line 0
+             :end_column 3
+             :position 0
+             :length 3
+             :text "Nil"
+             :metadata {:vec []
+                        :version 0}}
+        "#}.trim();
+        assert_eq!(formatted, expected);
+    }
+
+    // Example test updated for new formatting
+    #[test]
+    fn test_metadata_with_set_pretty() {
+        let node = create_nil_node();
+        let mut set_data = HashSet::new();
+        set_data.insert(1);
+        let node_with_set = add_metadata(node, "set", set_data);
+        let actual = format(&node_with_set, true).unwrap();
+        let expected = indoc! {r#"
+            {:type "nil"
+             :start_line 0
+             :start_column 0
+             :end_line 0
+             :end_column 3
+             :position 0
+             :length 3
+             :text "Nil"
+             :metadata {:set #{1}
+                        :version 0}}
+        "#}.trim();
+        print!("{}", actual);
         assert_eq!(actual, expected);
     }
 }

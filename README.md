@@ -46,6 +46,46 @@ The Rholang Language Server employs an Intermediate Representation (IR) to repre
   - Enables **versioning** for features like undo/redo or transformation history with minimal overhead, and enhances **efficiency** by avoiding duplication of large tree segments.
   - **Why it matters**: Supports efficient handling of large codebases and facilitates backtracking or analysis without performance penalties.
 
+## Symbol Table and Inverted Index
+
+The language server now includes a hierarchical symbol table and inverted index, built as part of the IR pipeline:
+
+- **Symbol Table**: Manages scoping for `new`, `let`, `contract`, `input`, `case`, and `branch` nodes. Symbols are stored with their type, declaration, and definition locations, accessible via node metadata.
+- **Inverted Index**: Tracks all usage locations of symbols, enabling features like semantic renaming.
+- **Usage**: Use `SymbolTableBuilder` in the pipeline to build these structures. Query them with `find_node_at_position` to access symbol information at any source position.
+
+Example usage in the pipeline:
+
+```rust
+let mut pipeline = Pipeline::new();
+pipeline.add_transform(Transform {
+    id: "symbol_table".to_string(),
+    dependencies: vec![],
+    visitor: Arc::new(SymbolTableBuilder::new(ir.clone())),
+});
+let (transformed, inverted_index) = builder.build();
+```
+
+See `src/ir/transforms/symbol_table_builder.rs` for details.
+
+## Workspace Indexing and Symbol Management
+
+The Rholang Language Server now supports:
+
+- **Dynamic Metadata**: The `metadata` field in IR nodes now uses a `HashMap` for flexible storage of version, symbol tables, and more.
+- **Workspace Indexing**: On initialization, all `.rho` files in the workspace are indexed, with parsed IR, symbol tables, and inverted indices cached.
+- **File Watching**: Changes to `.rho` files trigger reindexing, keeping caches current across platforms.
+- **Cross-File Linking**: Symbols are linked across files, updating inverted indices for cross-references.
+- **Explicit Document Handling**: Opened documents override on-disk versions, with Tree-Sitter enabling incremental updates.
+
+### Usage
+
+- **Initialization**: Provide a `rootUri` in `InitializeParams` to trigger workspace indexing.
+- **Cache Access**: Access cached data via `RholangBackend::workspace`.
+- **Debugging**: Enable `RUST_LOG=debug` for indexing and linking logs.
+
+See `src/backend.rs` for implementation details.
+
 ### Benefits
 
 - **Thread Safety**: Safe concurrent parsing and transformation.

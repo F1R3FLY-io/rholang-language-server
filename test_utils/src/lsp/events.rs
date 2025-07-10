@@ -1,14 +1,18 @@
+/// Events related to LSP document lifecycle and changes.
 #[derive(Debug)]
 pub enum LspEvent {
+    /// Emitted when a file is opened.
     FileOpened {
         document_id: u64,
         uri: String,
         text: String,
     },
+    /// Emitted when a file is closed.
     FileClosed {
         document_id: u64,
         uri: String,
     },
+    /// Emitted when text in a document changes.
     TextChanged {
         document_id: u64,
         uri: String,
@@ -19,6 +23,8 @@ pub enum LspEvent {
         to_column: usize,
         text: String,
     },
+    /// Emitted when the server is shut down.
     Shutdown,
+    /// Emitted when the client exits.
     Exit,
 }

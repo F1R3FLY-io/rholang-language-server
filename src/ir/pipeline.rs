@@ -89,10 +89,12 @@ impl Pipeline {
 
 #[cfg(test)]
 mod tests {
+    use std::any::Any;
+    use std::collections::HashMap;
+    use std::sync::Arc;
     use super::*;
     use crate::ir::node::{Metadata, Node, NodeBase, RelativePosition};
     use crate::ir::visitor::Visitor;
-    use std::sync::Arc;
 
     // Define an IdentityVisitor that preserves the node
     struct IdentityVisitor;
@@ -116,7 +118,9 @@ mod tests {
             0,
             None,
         );
-        let metadata = Some(Arc::new(Metadata { version: 0 }));
+        let mut data = HashMap::new();
+        data.insert("version".to_string(), Arc::new(0_usize) as Arc<dyn Any + Send + Sync>);
+        let metadata = Some(Arc::new(Metadata { data }));
         let node = Arc::new(Node::Nil { base, metadata });
         let result = pipeline.apply(&node);
         assert!(Arc::ptr_eq(&node, &result));

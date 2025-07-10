@@ -25,7 +25,7 @@ use tracing::{debug, error, info, trace};
 
 use clap::Parser;
 
-use rholang_language_server::backend::RholangBackend;
+use rholang_language_server::lsp::backend::RholangBackend;
 use rholang_language_server::logging::init_logger;
 use rholang_language_server::rnode_apis::lsp::lsp_client::LspClient;
 

@@ -1,8 +1,15 @@
+use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tree_sitter::Node as TSNode;
 use rpds::Vector;
-use tracing::debug;
+use archery::ArcK;
+use tracing::trace;
+
+pub type NodeVector<'a> = Vector<Arc<Node<'a>>, ArcK>;
+pub type NodePairVector<'a> = Vector<(Arc<Node<'a>>, Arc<Node<'a>>), ArcK>;
+pub type BranchVector<'a> = Vector<(NodeVector<'a>, Arc<Node<'a>>), ArcK>;
+pub type ReceiptVector<'a> = Vector<NodeVector<'a>, ArcK>;
 
 /// Represents the position of a node relative to the previous node's end position in the source code.
 /// Used to compute absolute positions dynamically during traversal.
@@ -15,7 +22,7 @@ pub struct RelativePosition {
 
 /// Represents an absolute position in the source code, computed when needed from relative positions.
 /// Coordinates are zero-based (row, column, byte).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Position {
     pub row: usize,    // Line number (0-based)
     pub column: usize, // Column number (0-based)
@@ -71,33 +78,35 @@ pub enum Node<'a> {
     /// Parallel composition of two processes.
     Par { base: NodeBase<'a>, left: Arc<Node<'a>>, right: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
     /// Synchronous send with a continuation process.
-    SendSync { base: NodeBase<'a>, channel: Arc<Node<'a>>, inputs: Vector<Arc<Node<'a>>>, cont: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
+    SendSync { base: NodeBase<'a>, channel: Arc<Node<'a>>, inputs: NodeVector<'a>, cont: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
     /// Asynchronous send operation on a channel.
-    Send { base: NodeBase<'a>, channel: Arc<Node<'a>>, send_type: SendType, send_type_end: Position, inputs: Vector<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>> },
+    Send { base: NodeBase<'a>, channel: Arc<Node<'a>>, send_type: SendType, send_type_end: Position, inputs: NodeVector<'a>, metadata: Option<Arc<Metadata>> },
     /// Declaration of new names with a scoped process.
-    New { base: NodeBase<'a>, decls: Vector<Arc<Node<'a>>>, proc: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
+    New { base: NodeBase<'a>, decls: NodeVector<'a>, proc: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
     /// Conditional branching with optional else clause.
     IfElse { base: NodeBase<'a>, condition: Arc<Node<'a>>, consequence: Arc<Node<'a>>, alternative: Option<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>> },
     /// Variable binding with a subsequent process.
-    Let { base: NodeBase<'a>, decls: Vector<Arc<Node<'a>>>, proc: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
+    Let { base: NodeBase<'a>, decls: NodeVector<'a>, proc: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
     /// Access-controlled process with a bundle type.
     Bundle { base: NodeBase<'a>, bundle_type: BundleType, proc: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
     /// Pattern matching construct with cases.
-    Match { base: NodeBase<'a>, expression: Arc<Node<'a>>, cases: Vector<(Arc<Node<'a>>, Arc<Node<'a>>)>, metadata: Option<Arc<Metadata>> },
+    Match { base: NodeBase<'a>, expression: Arc<Node<'a>>, cases: NodePairVector<'a>, metadata: Option<Arc<Metadata>> },
     /// Non-deterministic choice among branches.
-    Choice { base: NodeBase<'a>, branches: Vector<(Vector<Arc<Node<'a>>>, Arc<Node<'a>>)>, metadata: Option<Arc<Metadata>> },
+    Choice { base: NodeBase<'a>, branches: BranchVector<'a>, metadata: Option<Arc<Metadata>> },
     /// Contract definition with name, parameters, and body.
-    Contract { base: NodeBase<'a>, name: Arc<Node<'a>>, formals: Vector<Arc<Node<'a>>>, proc: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
+    Contract { base: NodeBase<'a>, name: Arc<Node<'a>>, formals: NodeVector<'a>, formals_remainder: Option<Arc<Node<'a>>>, proc: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
     /// Input binding from channels with a process.
-    Input { base: NodeBase<'a>, receipts: Vector<Vector<Arc<Node<'a>>>>, proc: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
+    Input { base: NodeBase<'a>, receipts: ReceiptVector<'a>, proc: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
     /// Block of a single process (e.g., `{ P }`).
     Block { base: NodeBase<'a>, proc: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
+    /// Parenthesized expression (e.g., `(P)`).
+    Parenthesized { base: NodeBase<'a>, expr: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
     /// Binary operation (e.g., `P + Q`).
     BinOp { base: NodeBase<'a>, op: BinOperator, left: Arc<Node<'a>>, right: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
     /// Unary operation (e.g., `-P` or `not P`).
     UnaryOp { base: NodeBase<'a>, op: UnaryOperator, operand: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
     /// Method call on a receiver (e.g., `obj.method(args)`).
-    Method { base: NodeBase<'a>, receiver: Arc<Node<'a>>, name: String, args: Vector<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>> },
+    Method { base: NodeBase<'a>, receiver: Arc<Node<'a>>, name: String, args: NodeVector<'a>, metadata: Option<Arc<Metadata>> },
     /// Evaluation of a name (e.g., `*name`).
     Eval { base: NodeBase<'a>, name: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
     /// Quotation of a process (e.g., `@P`).
@@ -115,25 +124,25 @@ pub enum Node<'a> {
     /// Empty process (e.g., `Nil`).
     Nil { base: NodeBase<'a>, metadata: Option<Arc<Metadata>> },
     /// List collection (e.g., `[1, 2, 3]`).
-    List { base: NodeBase<'a>, elements: Vector<Arc<Node<'a>>>, remainder: Option<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>> },
+    List { base: NodeBase<'a>, elements: NodeVector<'a>, remainder: Option<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>> },
     /// Set collection (e.g., `Set(1, 2, 3)`).
-    Set { base: NodeBase<'a>, elements: Vector<Arc<Node<'a>>>, remainder: Option<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>> },
+    Set { base: NodeBase<'a>, elements: NodeVector<'a>, remainder: Option<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>> },
     /// Map collection (e.g., `{k: v}`).
-    Map { base: NodeBase<'a>, pairs: Vector<(Arc<Node<'a>>, Arc<Node<'a>>)>, remainder: Option<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>> },
+    Map { base: NodeBase<'a>, pairs: NodePairVector<'a>, remainder: Option<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>> },
     /// Tuple collection (e.g., `(1, 2)`).
-    Tuple { base: NodeBase<'a>, elements: Vector<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>> },
+    Tuple { base: NodeBase<'a>, elements: NodeVector<'a>, metadata: Option<Arc<Metadata>> },
     /// Variable identifier (e.g., `x`).
     Var { base: NodeBase<'a>, name: String, metadata: Option<Arc<Metadata>> },
     /// Name declaration in a `new` construct (e.g., `x` or `x(uri)`).
     NameDecl { base: NodeBase<'a>, var: Arc<Node<'a>>, uri: Option<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>> },
     /// Declaration in a `let` statement (e.g., `x = P`).
-    Decl { base: NodeBase<'a>, names: Vector<Arc<Node<'a>>>, procs: Vector<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>> },
+    Decl { base: NodeBase<'a>, names: NodeVector<'a>, names_remainder: Option<Arc<Node<'a>>>, procs: NodeVector<'a>, metadata: Option<Arc<Metadata>> },
     /// Linear binding in a `for` (e.g., `x <- ch`).
-    LinearBind { base: NodeBase<'a>, names: Vector<Arc<Node<'a>>>, source: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
+    LinearBind { base: NodeBase<'a>, names: NodeVector<'a>, remainder: Option<Arc<Node<'a>>>, source: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
     /// Repeated binding in a `for` (e.g., `x <= ch`).
-    RepeatedBind { base: NodeBase<'a>, names: Vector<Arc<Node<'a>>>, source: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
+    RepeatedBind { base: NodeBase<'a>, names: NodeVector<'a>, remainder: Option<Arc<Node<'a>>>, source: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
     /// Peek binding in a `for` (e.g., `x <<- ch`).
-    PeekBind { base: NodeBase<'a>, names: Vector<Arc<Node<'a>>>, source: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
+    PeekBind { base: NodeBase<'a>, names: NodeVector<'a>, remainder: Option<Arc<Node<'a>>>, source: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
     /// Comment in the source code (e.g., `// text` or `/* text */`).
     Comment { base: NodeBase<'a>, kind: CommentKind, metadata: Option<Arc<Metadata>> },
     /// Wildcard pattern (e.g., `_`).
@@ -143,7 +152,9 @@ pub enum Node<'a> {
     /// Receive-send source (e.g., `ch?!`).
     ReceiveSendSource { base: NodeBase<'a>, name: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
     /// Send-receive source (e.g., `ch!?(args)`).
-    SendReceiveSource { base: NodeBase<'a>, name: Arc<Node<'a>>, inputs: Vector<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>> },
+    SendReceiveSource { base: NodeBase<'a>, name: Arc<Node<'a>>, inputs: NodeVector<'a>, metadata: Option<Arc<Metadata>> },
+    /// Represents a syntax error in the source code with its erroneous subtree.
+    Error { base: NodeBase<'a>, children: NodeVector<'a>, metadata: Option<Arc<Metadata>> },
 }
 
 #[derive(Clone, PartialEq, Debug, Hash)]
@@ -159,14 +170,29 @@ pub enum BinOperator { Or, And, Matches, Eq, Neq, Lt, Lte, Gt, Gte, Concat, Diff
 pub enum UnaryOperator { Not, Neg, Negation }
 
 #[derive(Clone, PartialEq, Debug, Hash)]
-pub enum VarRefKind { Assign, AssignStar }
+pub enum VarRefKind { Bind, Unforgeable }
 
 #[derive(Clone, PartialEq, Debug, Hash)]
 pub enum CommentKind { Line, Block }
 
-#[derive(Clone, Debug, PartialEq, Hash)]
+#[derive(Clone, Debug)]
 pub struct Metadata {
-    pub version: usize,
+    pub data: HashMap<String, Arc<dyn Any + Send + Sync>>,
+}
+
+impl Metadata {
+    /// Retrieves the version from the metadata data map, defaulting to 0 if absent.
+    pub fn get_version(&self) -> usize {
+        self.data.get("version")
+            .and_then(|v| v.downcast_ref::<usize>())
+            .cloned()
+            .unwrap_or(0)
+    }
+
+    /// Sets the version in the metadata data map.
+    pub fn set_version(&mut self, version: usize) {
+        self.data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
+    }
 }
 
 /// Computes absolute positions for all nodes in the IR tree, storing them in a HashMap.
@@ -181,7 +207,7 @@ pub fn compute_absolute_positions<'a>(root: &Arc<Node<'a>>) -> HashMap<usize, (P
     let mut positions = HashMap::new();
     let initial_prev_end = Position { row: 0, column: 0, byte: 0 };
     compute_positions_helper(root, initial_prev_end, &mut positions);
-    debug!("Computed positions for {} nodes", positions.len());
+    trace!("Computed positions for {} nodes", positions.len());
     positions
 }
 
@@ -217,7 +243,7 @@ fn compute_positions_helper<'a>(
             byte: ts_node.end_byte(),
         };
         positions.insert(key, (start, end));
-        debug!(
+        trace!(
             "Node '{}': key={}, ts_node positions: start={:?}, end={:?}",
             base.text().map_or("Unknown", |v| v), key, start, end
         );
@@ -278,11 +304,16 @@ fn compute_positions_helper<'a>(
                     compute_positions_helper(proc, inputs_end, positions)
                 })
             }
-            Node::Contract { name, formals, proc, .. } => {
+            Node::Contract { name, formals, formals_remainder, proc, .. } => {
                 current_end = compute_positions_helper(name, start, positions);
                 current_end = formals.iter().fold(current_end, |prev, formal| {
                     compute_positions_helper(formal, prev, positions)
                 });
+                current_end = if let Some(rem) = formals_remainder {
+                    compute_positions_helper(rem, current_end, positions)
+                } else {
+                    current_end
+                };
                 compute_positions_helper(proc, current_end, positions)
             }
             Node::Input { receipts, proc, .. } => {
@@ -295,6 +326,9 @@ fn compute_positions_helper<'a>(
             }
             Node::Block { proc, .. } => {
                 compute_positions_helper(proc, start, positions)
+            }
+            Node::Parenthesized { expr, .. } => {
+                compute_positions_helper(expr, start, positions)
             }
             Node::BinOp { left, right, .. } => {
                 current_end = compute_positions_helper(left, start, positions);
@@ -354,30 +388,50 @@ fn compute_positions_helper<'a>(
                     compute_positions_helper(u, current_end, positions)
                 })
             }
-            Node::Decl { names, procs, .. } => {
+            Node::Decl { names, names_remainder, procs, .. } => {
                 current_end = names.iter().fold(start, |prev, name| {
                     compute_positions_helper(name, prev, positions)
                 });
+                current_end = if let Some(rem) = names_remainder {
+                    compute_positions_helper(rem, current_end, positions)
+                } else {
+                    current_end
+                };
                 procs.iter().fold(current_end, |prev, proc| {
                     compute_positions_helper(proc, prev, positions)
                 })
             }
-            Node::LinearBind { names, source, .. } => {
+            Node::LinearBind { names, remainder, source, .. } => {
                 current_end = names.iter().fold(start, |prev, name| {
                     compute_positions_helper(name, prev, positions)
                 });
+                current_end = if let Some(rem) = remainder {
+                    compute_positions_helper(rem, current_end, positions)
+                } else {
+                    current_end
+                };
                 compute_positions_helper(source, current_end, positions)
             }
-            Node::RepeatedBind { names, source, .. } => {
+            Node::RepeatedBind { names, remainder, source, .. } => {
                 current_end = names.iter().fold(start, |prev, name| {
                     compute_positions_helper(name, prev, positions)
                 });
+                current_end = if let Some(rem) = remainder {
+                    compute_positions_helper(rem, current_end, positions)
+                } else {
+                    current_end
+                };
                 compute_positions_helper(source, current_end, positions)
             }
-            Node::PeekBind { names, source, .. } => {
+            Node::PeekBind { names, remainder, source, .. } => {
                 current_end = names.iter().fold(start, |prev, name| {
                     compute_positions_helper(name, prev, positions)
                 });
+                current_end = if let Some(rem) = remainder {
+                    compute_positions_helper(rem, current_end, positions)
+                } else {
+                    current_end
+                };
                 compute_positions_helper(source, current_end, positions)
             }
             Node::ReceiveSendSource { name, .. } => {
@@ -387,6 +441,11 @@ fn compute_positions_helper<'a>(
                 current_end = compute_positions_helper(name, start, positions);
                 inputs.iter().fold(current_end, |prev, input| {
                     compute_positions_helper(input, prev, positions)
+                })
+            }
+            Node::Error { children, .. } => {
+                children.iter().fold(start, |prev, child| {
+                    compute_positions_helper(child, prev, positions)
                 })
             }
             _ => end, // Leaf nodes use Tree-Sitter’s end
@@ -457,12 +516,15 @@ fn compute_positions_helper<'a>(
                     compute_positions_helper(proc, inputs_end, positions)
                 })
             }
-            Node::Contract { name, formals, proc, .. } => {
+            Node::Contract { name, formals, formals_remainder, proc, .. } => {
                 let name_end = compute_positions_helper(name, start, positions);
                 let formals_end = formals.iter().fold(name_end, |prev, formal| {
                     compute_positions_helper(formal, prev, positions)
                 });
-                compute_positions_helper(proc, formals_end, positions)
+                let formals_rem_end = formals_remainder.as_ref().map_or(formals_end, |rem| {
+                    compute_positions_helper(rem, formals_end, positions)
+                });
+                compute_positions_helper(proc, formals_rem_end, positions)
             }
             Node::Input { receipts, proc, .. } => {
                 let receipts_end = receipts.iter().fold(start, |prev, receipt| {
@@ -474,6 +536,9 @@ fn compute_positions_helper<'a>(
             }
             Node::Block { proc, .. } => {
                 compute_positions_helper(proc, start, positions)
+            }
+            Node::Parenthesized { expr, .. } => {
+                compute_positions_helper(expr, start, positions)
             }
             Node::BinOp { left, right, .. } => {
                 let left_end = compute_positions_helper(left, start, positions);
@@ -533,31 +598,43 @@ fn compute_positions_helper<'a>(
                     compute_positions_helper(u, var_end, positions)
                 })
             }
-            Node::Decl { names, procs, .. } => {
+            Node::Decl { names, names_remainder, procs, .. } => {
                 let names_end = names.iter().fold(start, |prev, name| {
                     compute_positions_helper(name, prev, positions)
                 });
-                procs.iter().fold(names_end, |prev, proc| {
+                let names_rem_end = names_remainder.as_ref().map_or(names_end, |rem| {
+                    compute_positions_helper(rem, names_end, positions)
+                });
+                procs.iter().fold(names_rem_end, |prev, proc| {
                     compute_positions_helper(proc, prev, positions)
                 })
             }
-            Node::LinearBind { names, source, .. } => {
+            Node::LinearBind { names, remainder, source, .. } => {
                 let names_end = names.iter().fold(start, |prev, name| {
                     compute_positions_helper(name, prev, positions)
                 });
-                compute_positions_helper(source, names_end, positions)
+                let rem_end = remainder.as_ref().map_or(names_end, |rem| {
+                    compute_positions_helper(rem, names_end, positions)
+                });
+                compute_positions_helper(source, rem_end, positions)
             }
-            Node::RepeatedBind { names, source, .. } => {
+            Node::RepeatedBind { names, remainder, source, .. } => {
                 let names_end = names.iter().fold(start, |prev, name| {
                     compute_positions_helper(name, prev, positions)
                 });
-                compute_positions_helper(source, names_end, positions)
+                let rem_end = remainder.as_ref().map_or(names_end, |rem| {
+                    compute_positions_helper(rem, names_end, positions)
+                });
+                compute_positions_helper(source, rem_end, positions)
             }
-            Node::PeekBind { names, source, .. } => {
+            Node::PeekBind { names, remainder, source, .. } => {
                 let names_end = names.iter().fold(start, |prev, name| {
                     compute_positions_helper(name, prev, positions)
                 });
-                compute_positions_helper(source, names_end, positions)
+                let rem_end = remainder.as_ref().map_or(names_end, |rem| {
+                    compute_positions_helper(rem, names_end, positions)
+                });
+                compute_positions_helper(source, rem_end, positions)
             }
             Node::ReceiveSendSource { name, .. } => {
                 compute_positions_helper(name, start, positions)
@@ -568,10 +645,15 @@ fn compute_positions_helper<'a>(
                     compute_positions_helper(input, prev, positions)
                 })
             }
+            Node::Error { children, .. } => {
+                children.iter().fold(start, |prev, child| {
+                    compute_positions_helper(child, prev, positions)
+                })
+            }
             _ => compute_end_position(start, base.length, base.text()),
         };
         positions.insert(key, (start, end));
-        debug!(
+        trace!(
             "Node '{}': key={}, computed positions: start={:?}, end={:?}",
             base.text().map_or("Unknown", |v| v), key, start, end
         );
@@ -611,6 +693,20 @@ pub fn compute_end_position(start: Position, length: usize, text: Option<&String
 }
 
 impl<'a> Node<'a> {
+    /// Computes the byte offset from a line and character position in the source text.
+    pub fn byte_offset_from_position(text: &str, line: usize, character: usize) -> Option<usize> {
+        let mut byte_offset = 0;
+        for (i, line_str) in text.lines().enumerate() {
+            if i == line {
+                let char_index = character.min(line_str.len());
+                byte_offset += line_str.as_bytes()[..char_index].len();
+                return Some(byte_offset);
+            }
+            byte_offset += line_str.len() + 1; // +1 for newline
+        }
+        None
+    }
+
     /// Returns the starting line number of the node within the source code.
     ///
     /// # Arguments
@@ -750,10 +846,11 @@ impl<'a> Node<'a> {
                 branches: branches.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Contract { name, formals, proc, metadata, .. } => Arc::new(Node::Contract {
+            Node::Contract { name, formals, formals_remainder, proc, metadata, .. } => Arc::new(Node::Contract {
                 base: new_base,
                 name: name.clone(),
                 formals: formals.clone(),
+                formals_remainder: formals_remainder.clone(),
                 proc: proc.clone(),
                 metadata: metadata.clone(),
             }),
@@ -766,6 +863,11 @@ impl<'a> Node<'a> {
             Node::Block { proc, metadata, .. } => Arc::new(Node::Block {
                 base: new_base,
                 proc: proc.clone(),
+                metadata: metadata.clone(),
+            }),
+            Node::Parenthesized { expr, metadata, .. } => Arc::new(Node::Parenthesized {
+                base: new_base,
+                expr: expr.clone(),
                 metadata: metadata.clone(),
             }),
             Node::BinOp { op, left, right, metadata, .. } => Arc::new(Node::BinOp {
@@ -862,27 +964,31 @@ impl<'a> Node<'a> {
                 uri: uri.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Decl { names, procs, metadata, .. } => Arc::new(Node::Decl {
+            Node::Decl { names, names_remainder, procs, metadata, .. } => Arc::new(Node::Decl {
                 base: new_base,
                 names: names.clone(),
+                names_remainder: names_remainder.clone(),
                 procs: procs.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::LinearBind { names, source, metadata, .. } => Arc::new(Node::LinearBind {
+            Node::LinearBind { names, remainder, source, metadata, .. } => Arc::new(Node::LinearBind {
                 base: new_base,
                 names: names.clone(),
+                remainder: remainder.clone(),
                 source: source.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::RepeatedBind { names, source, metadata, .. } => Arc::new(Node::RepeatedBind {
+            Node::RepeatedBind { names, remainder, source, metadata, .. } => Arc::new(Node::RepeatedBind {
                 base: new_base,
                 names: names.clone(),
+                remainder: remainder.clone(),
                 source: source.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::PeekBind { names, source, metadata, .. } => Arc::new(Node::PeekBind {
+            Node::PeekBind { names, remainder, source, metadata, .. } => Arc::new(Node::PeekBind {
                 base: new_base,
                 names: names.clone(),
+                remainder: remainder.clone(),
                 source: source.clone(),
                 metadata: metadata.clone(),
             }),
@@ -909,6 +1015,11 @@ impl<'a> Node<'a> {
                 base: new_base,
                 name: name.clone(),
                 inputs: inputs.clone(),
+                metadata: metadata.clone(),
+            }),
+            Node::Error { children, metadata, .. } => Arc::new(Node::Error {
+                base: new_base,
+                children: children.clone(),
                 metadata: metadata.clone(),
             }),
         }
@@ -971,7 +1082,7 @@ impl<'a> Node<'a> {
             Node::Choice { branches, .. } => {
                 for (inputs, proc) in branches {
                     for input in inputs {
-                        if let Node::LinearBind { names, source, .. } = &**input {
+                        if let Node::LinearBind { names, remainder, source, .. } = &**input {
                             for name in names {
                                 if let Node::Var { name: var_name, .. } = &**name {
                                     if RESERVED_KEYWORDS.contains(&var_name.as_str()) {
@@ -983,6 +1094,9 @@ impl<'a> Node<'a> {
                                     }
                                 }
                             }
+                            if let Some(rem) = remainder {
+                                rem.validate()?;
+                            }
                             source.validate()?;
                         }
                         input.validate()?;
@@ -990,9 +1104,10 @@ impl<'a> Node<'a> {
                     proc.validate()?;
                 }
             }
-            Node::Contract { name, formals, proc, .. } => {
+            Node::Contract { name, formals, formals_remainder, proc, .. } => {
                 name.validate()?;
                 for formal in formals { formal.validate()?; }
+                if let Some(rem) = formals_remainder { rem.validate()?; }
                 proc.validate()?;
             }
             Node::Input { receipts, proc, .. } => {
@@ -1002,6 +1117,7 @@ impl<'a> Node<'a> {
                 proc.validate()?;
             }
             Node::Block { proc, .. } => proc.validate()?,
+            Node::Parenthesized { expr, .. } => expr.validate()?,
             Node::BinOp { left, right, .. } => {
                 left.validate()?;
                 right.validate()?;
@@ -1036,26 +1152,33 @@ impl<'a> Node<'a> {
                 var.validate()?;
                 if let Some(u) = uri { u.validate()?; }
             }
-            Node::Decl { names, procs, .. } => {
+            Node::Decl { names, names_remainder, procs, .. } => {
                 for name in names { name.validate()?; }
+                if let Some(rem) = names_remainder { rem.validate()?; }
                 for proc in procs { proc.validate()?; }
             }
-            Node::LinearBind { names, source, .. } => {
+            Node::LinearBind { names, remainder, source, .. } => {
                 for name in names { name.validate()?; }
+                if let Some(rem) = remainder { rem.validate()?; }
                 source.validate()?;
             }
-            Node::RepeatedBind { names, source, .. } => {
+            Node::RepeatedBind { names, remainder, source, .. } => {
                 for name in names { name.validate()?; }
+                if let Some(rem) = remainder { rem.validate()?; }
                 source.validate()?;
             }
-            Node::PeekBind { names, source, .. } => {
+            Node::PeekBind { names, remainder, source, .. } => {
                 for name in names { name.validate()?; }
+                if let Some(rem) = remainder { rem.validate()?; }
                 source.validate()?;
             }
             Node::ReceiveSendSource { name, .. } => name.validate()?,
             Node::SendReceiveSource { name, inputs, .. } => {
                 name.validate()?;
                 for input in inputs { input.validate()?; }
+            }
+            Node::Error { children, .. } => {
+                for child in children { child.validate()?; }
             }
             _ => {}
         }
@@ -1095,12 +1218,14 @@ impl<'a> Node<'a> {
                 base: base.clone(), expression: expression.clone(), cases: cases.clone(), metadata: new_metadata }),
             Node::Choice { base, branches, .. } => Arc::new(Node::Choice {
                 base: base.clone(), branches: branches.clone(), metadata: new_metadata }),
-            Node::Contract { base, name, formals, proc, .. } => Arc::new(Node::Contract {
-                base: base.clone(), name: name.clone(), formals: formals.clone(), proc: proc.clone(), metadata: new_metadata }),
+            Node::Contract { base, name, formals, formals_remainder, proc, .. } => Arc::new(Node::Contract {
+                base: base.clone(), name: name.clone(), formals: formals.clone(), formals_remainder: formals_remainder.clone(), proc: proc.clone(), metadata: new_metadata }),
             Node::Input { base, receipts, proc, .. } => Arc::new(Node::Input {
                 base: base.clone(), receipts: receipts.clone(), proc: proc.clone(), metadata: new_metadata }),
             Node::Block { base, proc, .. } => Arc::new(Node::Block {
                 base: base.clone(), proc: proc.clone(), metadata: new_metadata }),
+            Node::Parenthesized { base, expr, .. } => Arc::new(Node::Parenthesized {
+                base: base.clone(), expr: expr.clone(), metadata: new_metadata }),
             Node::BinOp { base, op, left, right, .. } => Arc::new(Node::BinOp {
                 base: base.clone(), op: op.clone(), left: left.clone(), right: right.clone(), metadata: new_metadata }),
             Node::UnaryOp { base, op, operand, .. } => Arc::new(Node::UnaryOp {
@@ -1135,14 +1260,14 @@ impl<'a> Node<'a> {
                 base: base.clone(), name: name.clone(), metadata: new_metadata }),
             Node::NameDecl { base, var, uri, .. } => Arc::new(Node::NameDecl {
                 base: base.clone(), var: var.clone(), uri: uri.clone(), metadata: new_metadata }),
-            Node::Decl { base, names, procs, .. } => Arc::new(Node::Decl {
-                base: base.clone(), names: names.clone(), procs: procs.clone(), metadata: new_metadata }),
-            Node::LinearBind { base, names, source, .. } => Arc::new(Node::LinearBind {
-                base: base.clone(), names: names.clone(), source: source.clone(), metadata: new_metadata }),
-            Node::RepeatedBind { base, names, source, .. } => Arc::new(Node::RepeatedBind {
-                base: base.clone(), names: names.clone(), source: source.clone(), metadata: new_metadata }),
-            Node::PeekBind { base, names, source, .. } => Arc::new(Node::PeekBind {
-                base: base.clone(), names: names.clone(), source: source.clone(), metadata: new_metadata }),
+            Node::Decl { base, names, names_remainder, procs, .. } => Arc::new(Node::Decl {
+                base: base.clone(), names: names.clone(), names_remainder: names_remainder.clone(), procs: procs.clone(), metadata: new_metadata }),
+            Node::LinearBind { base, names, remainder, source, .. } => Arc::new(Node::LinearBind {
+                base: base.clone(), names: names.clone(), remainder: remainder.clone(), source: source.clone(), metadata: new_metadata }),
+            Node::RepeatedBind { base, names, remainder, source, .. } => Arc::new(Node::RepeatedBind {
+                base: base.clone(), names: names.clone(), remainder: remainder.clone(), source: source.clone(), metadata: new_metadata }),
+            Node::PeekBind { base, names, remainder, source, .. } => Arc::new(Node::PeekBind {
+                base: base.clone(), names: names.clone(), remainder: remainder.clone(), source: source.clone(), metadata: new_metadata }),
             Node::Comment { base, kind, .. } => Arc::new(Node::Comment {
                 base: base.clone(), kind: kind.clone(), metadata: new_metadata }),
             Node::Wildcard { base, .. } => Arc::new(Node::Wildcard {
@@ -1153,6 +1278,11 @@ impl<'a> Node<'a> {
                 base: base.clone(), name: name.clone(), metadata: new_metadata }),
             Node::SendReceiveSource { base, name, inputs, .. } => Arc::new(Node::SendReceiveSource {
                 base: base.clone(), name: name.clone(), inputs: inputs.clone(), metadata: new_metadata }),
+            Node::Error { base, children, .. } => Arc::new(Node::Error {
+                base: base.clone(),
+                children: children.clone(),
+                metadata: new_metadata,
+            }),
         }
     }
 
@@ -1163,7 +1293,7 @@ impl<'a> Node<'a> {
     }
 
     /// Constructs a new `SendSync` node with the given attributes.
-    pub fn new_send_sync(ts_node: Option<TSNode<'a>>, channel: Arc<Node<'a>>, inputs: Vector<Arc<Node<'a>>>, cont: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+    pub fn new_send_sync(ts_node: Option<TSNode<'a>>, channel: Arc<Node<'a>>, inputs: NodeVector<'a>, cont: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
         let base = NodeBase::new(ts_node, relative_start, length, text);
         Node::SendSync { base, channel, inputs, cont, metadata }
     }
@@ -1174,7 +1304,7 @@ impl<'a> Node<'a> {
         channel: Arc<Node<'a>>,
         send_type: SendType,
         send_type_end: Position,
-        inputs: Vector<Arc<Node<'a>>>,
+        inputs: NodeVector<'a>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -1185,7 +1315,7 @@ impl<'a> Node<'a> {
     }
 
     /// Constructs a new `New` node with the given attributes.
-    pub fn new_new(ts_node: Option<TSNode<'a>>, decls: Vector<Arc<Node<'a>>>, proc: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+    pub fn new_new(ts_node: Option<TSNode<'a>>, decls: NodeVector<'a>, proc: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
         let base = NodeBase::new(ts_node, relative_start, length, text);
         Node::New { base, decls, proc, metadata }
     }
@@ -1197,7 +1327,7 @@ impl<'a> Node<'a> {
     }
 
     /// Constructs a new `Let` node with the given attributes.
-    pub fn new_let(ts_node: Option<TSNode<'a>>, decls: Vector<Arc<Node<'a>>>, proc: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+    pub fn new_let(ts_node: Option<TSNode<'a>>, decls: NodeVector<'a>, proc: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
         let base = NodeBase::new(ts_node, relative_start, length, text);
         Node::Let { base, decls, proc, metadata }
     }
@@ -1209,25 +1339,25 @@ impl<'a> Node<'a> {
     }
 
     /// Constructs a new `Match` node with the given attributes.
-    pub fn new_match(ts_node: Option<TSNode<'a>>, expression: Arc<Node<'a>>, cases: Vector<(Arc<Node<'a>>, Arc<Node<'a>>)>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+    pub fn new_match(ts_node: Option<TSNode<'a>>, expression: Arc<Node<'a>>, cases: NodePairVector<'a>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
         let base = NodeBase::new(ts_node, relative_start, length, text);
         Node::Match { base, expression, cases, metadata }
     }
 
     /// Constructs a new `Choice` node with the given attributes.
-    pub fn new_choice(ts_node: Option<TSNode<'a>>, branches: Vector<(Vector<Arc<Node<'a>>>, Arc<Node<'a>>)>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+    pub fn new_choice(ts_node: Option<TSNode<'a>>, branches: BranchVector<'a>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
         let base = NodeBase::new(ts_node, relative_start, length, text);
         Node::Choice { base, branches, metadata }
     }
 
     /// Constructs a new `Contract` node with the given attributes.
-    pub fn new_contract(ts_node: Option<TSNode<'a>>, name: Arc<Node<'a>>, formals: Vector<Arc<Node<'a>>>, proc: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+    pub fn new_contract(ts_node: Option<TSNode<'a>>, name: Arc<Node<'a>>, formals: NodeVector<'a>, formals_remainder: Option<Arc<Node<'a>>>, proc: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
         let base = NodeBase::new(ts_node, relative_start, length, text);
-        Node::Contract { base, name, formals, proc, metadata }
+        Node::Contract { base, name, formals, formals_remainder, proc, metadata }
     }
 
     /// Constructs a new `Input` node with the given attributes.
-    pub fn new_input(ts_node: Option<TSNode<'a>>, receipts: Vector<Vector<Arc<Node<'a>>>>, proc: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+    pub fn new_input(ts_node: Option<TSNode<'a>>, receipts: ReceiptVector<'a>, proc: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
         let base = NodeBase::new(ts_node, relative_start, length, text);
         Node::Input { base, receipts, proc, metadata }
     }
@@ -1236,6 +1366,12 @@ impl<'a> Node<'a> {
     pub fn new_block(ts_node: Option<TSNode<'a>>, proc: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
         let base = NodeBase::new(ts_node, relative_start, length, text);
         Node::Block { base, proc, metadata }
+    }
+
+    /// Constructs a new `Parenthesized` node with the given attributes.
+    pub fn new_parenthesized(ts_node: Option<TSNode<'a>>, expr: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+        let base = NodeBase::new(ts_node, relative_start, length, text);
+        Node::Parenthesized { base, expr, metadata }
     }
 
     /// Constructs a new `BinOp` node with the given attributes.
@@ -1251,7 +1387,7 @@ impl<'a> Node<'a> {
     }
 
     /// Constructs a new `Method` node with the given attributes.
-    pub fn new_method(ts_node: Option<TSNode<'a>>, receiver: Arc<Node<'a>>, name: String, args: Vector<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+    pub fn new_method(ts_node: Option<TSNode<'a>>, receiver: Arc<Node<'a>>, name: String, args: NodeVector<'a>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
         let base = NodeBase::new(ts_node, relative_start, length, text);
         Node::Method { base, receiver, name, args, metadata }
     }
@@ -1305,25 +1441,25 @@ impl<'a> Node<'a> {
     }
 
     /// Constructs a new `List` node with the given attributes.
-    pub fn new_list(ts_node: Option<TSNode<'a>>, elements: Vector<Arc<Node<'a>>>, remainder: Option<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+    pub fn new_list(ts_node: Option<TSNode<'a>>, elements: NodeVector<'a>, remainder: Option<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
         let base = NodeBase::new(ts_node, relative_start, length, text);
         Node::List { base, elements, remainder, metadata }
     }
 
     /// Constructs a new `Set` node with the given attributes.
-    pub fn new_set(ts_node: Option<TSNode<'a>>, elements: Vector<Arc<Node<'a>>>, remainder: Option<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+    pub fn new_set(ts_node: Option<TSNode<'a>>, elements: NodeVector<'a>, remainder: Option<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
         let base = NodeBase::new(ts_node, relative_start, length, text);
         Node::Set { base, elements, remainder, metadata }
     }
 
     /// Constructs a new `Map` node with the given attributes.
-    pub fn new_map(ts_node: Option<TSNode<'a>>, pairs: Vector<(Arc<Node<'a>>, Arc<Node<'a>>)>, remainder: Option<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+    pub fn new_map(ts_node: Option<TSNode<'a>>, pairs: NodePairVector<'a>, remainder: Option<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
         let base = NodeBase::new(ts_node, relative_start, length, text);
         Node::Map { base, pairs, remainder, metadata }
     }
 
     /// Constructs a new `Tuple` node with the given attributes.
-    pub fn new_tuple(ts_node: Option<TSNode<'a>>, elements: Vector<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+    pub fn new_tuple(ts_node: Option<TSNode<'a>>, elements: NodeVector<'a>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
         let base = NodeBase::new(ts_node, relative_start, length, text);
         Node::Tuple { base, elements, metadata }
     }
@@ -1341,27 +1477,27 @@ impl<'a> Node<'a> {
     }
 
     /// Constructs a new `Decl` node with the given attributes.
-    pub fn new_decl(ts_node: Option<TSNode<'a>>, names: Vector<Arc<Node<'a>>>, procs: Vector<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+    pub fn new_decl(ts_node: Option<TSNode<'a>>, names: NodeVector<'a>, names_remainder: Option<Arc<Node<'a>>>, procs: NodeVector<'a>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
         let base = NodeBase::new(ts_node, relative_start, length, text);
-        Node::Decl { base, names, procs, metadata }
+        Node::Decl { base, names, names_remainder, procs, metadata }
     }
 
     /// Constructs a new `LinearBind` node with the given attributes.
-    pub fn new_linear_bind(ts_node: Option<TSNode<'a>>, names: Vector<Arc<Node<'a>>>, source: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+    pub fn new_linear_bind(ts_node: Option<TSNode<'a>>, names: NodeVector<'a>, remainder: Option<Arc<Node<'a>>>, source: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
         let base = NodeBase::new(ts_node, relative_start, length, text);
-        Node::LinearBind { base, names, source, metadata }
+        Node::LinearBind { base, names, remainder, source, metadata }
     }
 
     /// Constructs a new `RepeatedBind` node with the given attributes.
-    pub fn new_repeated_bind(ts_node: Option<TSNode<'a>>, names: Vector<Arc<Node<'a>>>, source: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+    pub fn new_repeated_bind(ts_node: Option<TSNode<'a>>, names: NodeVector<'a>, remainder: Option<Arc<Node<'a>>>, source: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
         let base = NodeBase::new(ts_node, relative_start, length, text);
-        Node::RepeatedBind { base, names, source, metadata }
+        Node::RepeatedBind { base, names, remainder, source, metadata }
     }
 
     /// Constructs a new `PeekBind` node with the given attributes.
-    pub fn new_peek_bind(ts_node: Option<TSNode<'a>>, names: Vector<Arc<Node<'a>>>, source: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+    pub fn new_peek_bind(ts_node: Option<TSNode<'a>>, names: NodeVector<'a>, remainder: Option<Arc<Node<'a>>>, source: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
         let base = NodeBase::new(ts_node, relative_start, length, text);
-        Node::PeekBind { base, names, source, metadata }
+        Node::PeekBind { base, names, remainder, source, metadata }
     }
 
     /// Constructs a new `Comment` node with the given attributes.
@@ -1389,9 +1525,22 @@ impl<'a> Node<'a> {
     }
 
     /// Constructs a new `SendReceiveSource` node with the given attributes.
-    pub fn new_send_receive_source(ts_node: Option<TSNode<'a>>, name: Arc<Node<'a>>, inputs: Vector<Arc<Node<'a>>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+    pub fn new_send_receive_source(ts_node: Option<TSNode<'a>>, name: Arc<Node<'a>>, inputs: NodeVector<'a>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
         let base = NodeBase::new(ts_node, relative_start, length, text);
         Node::SendReceiveSource { base, name, inputs, metadata }
+    }
+
+    /// Constructs a new `Error` node with the given attributes.
+    pub fn new_error(
+        ts_node: Option<TSNode<'a>>,
+        children: NodeVector<'a>,
+        metadata: Option<Arc<Metadata>>,
+        relative_start: RelativePosition,
+        length: usize,
+        text: Option<String>,
+    ) -> Self {
+        let base = NodeBase::new(ts_node, relative_start, length, text);
+        Node::Error { base, children, metadata }
     }
 
     /// Returns the textual representation of the node.
@@ -1419,6 +1568,7 @@ impl<'a> Node<'a> {
             Node::Contract { base, .. } => base,
             Node::Input { base, .. } => base,
             Node::Block { base, .. } => base,
+            Node::Parenthesized { base, .. } => base,
             Node::BinOp { base, .. } => base,
             Node::UnaryOp { base, .. } => base,
             Node::Method { base, .. } => base,
@@ -1445,6 +1595,7 @@ impl<'a> Node<'a> {
             Node::SimpleType { base, .. } => base,
             Node::ReceiveSendSource { base, .. } => base,
             Node::SendReceiveSource { base, .. } => base,
+            Node::Error { base, .. } => base,
         }
     }
 
@@ -1463,6 +1614,7 @@ impl<'a> Node<'a> {
             Node::Contract { metadata, .. } => metadata.as_ref(),
             Node::Input { metadata, .. } => metadata.as_ref(),
             Node::Block { metadata, .. } => metadata.as_ref(),
+            Node::Parenthesized { metadata, .. } => metadata.as_ref(),
             Node::BinOp { metadata, .. } => metadata.as_ref(),
             Node::UnaryOp { metadata, .. } => metadata.as_ref(),
             Node::Method { metadata, .. } => metadata.as_ref(),
@@ -1489,6 +1641,7 @@ impl<'a> Node<'a> {
             Node::SimpleType { metadata, .. } => metadata.as_ref(),
             Node::ReceiveSendSource { metadata, .. } => metadata.as_ref(),
             Node::SendReceiveSource { metadata, .. } => metadata.as_ref(),
+            Node::Error { metadata, .. } => metadata.as_ref(),
         }
     }
 }
@@ -1628,6 +1781,31 @@ mod tests {
             assert_eq!(proc_start.byte, 26);
         } else {
             panic!("Expected Match node");
+        }
+    }
+
+    #[test]
+    fn test_metadata_dynamic() {
+        let mut data = HashMap::new();
+        data.insert("version".to_string(), Arc::new(1_usize) as Arc<dyn Any + Send + Sync>);
+        data.insert("custom".to_string(), Arc::new("test".to_string()) as Arc<dyn Any + Send + Sync>);
+        let metadata = Arc::new(Metadata { data });
+        let base = NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, None);
+        let node = Node::Nil { base, metadata: Some(metadata.clone()) };
+
+        assert_eq!(node.metadata().unwrap().data.get("version").unwrap().downcast_ref::<usize>(), Some(&1));
+        assert_eq!(node.metadata().unwrap().data.get("custom").unwrap().downcast_ref::<String>(), Some(&"test".to_string()));
+    }
+
+    #[test]
+    fn test_error_node_with_children() {
+        let code = r#"new x { x!("") }"#;
+        let tree = parse_code(code);
+        let ir = parse_to_ir(&tree, code);
+        if let Node::Par { left, .. } = &*ir {
+            if let Node::Error { children, .. } = left.as_ref() {
+                assert!(!children.is_empty(), "Error node should have children");
+            }
         }
     }
 }

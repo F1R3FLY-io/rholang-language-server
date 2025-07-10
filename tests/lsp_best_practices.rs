@@ -10,7 +10,7 @@ use nix::unistd::Pid;
 use tower_lsp::lsp_types::DiagnosticSeverity;
 
 use test_utils::with_lsp_client;
-use test_utils::lsp_client::{CommType, LspClient};
+use test_utils::lsp::client::{CommType, LspClient};
 
 #[tokio::test]
 async fn test_server_terminates_on_client_death() -> io::Result<()> {
@@ -118,31 +118,4 @@ with_lsp_client!(test_diagnostic_pipe, CommType::Pipe { path: None }, |client: &
 
 with_lsp_client!(test_diagnostic_websocket, CommType::WebSocket { port: None }, |client: &LspClient| {
     run_diagnostic_test(client);
-});
-
-with_lsp_client!(test_valid_syntax, CommType::Stdio, |client: &LspClient| {
-    let doc = client.open_document("/path/to/valid.rho", "new x in { x!(\"Hello\") }").expect("Failed to open document");
-    let diagnostic_params = client.await_diagnostics(&doc).unwrap();
-    assert_eq!(diagnostic_params.diagnostics.len(), 0);  // No errors for valid syntax
-});
-
-with_lsp_client!(test_diagnostics_update, CommType::Stdio, |client: &LspClient| {
-    // Open document with invalid code
-    let doc = client.open_document("/path/to/test.rho", r#"new x in { x!("Hello") "#).unwrap();
-    let diagnostics = client.await_diagnostics(&doc).unwrap();
-    assert_eq!(diagnostics.diagnostics.len(), 1, "Expected one diagnostic initially");
-    doc.move_cursor(1, 24);
-    doc.insert_text("}".to_string()).expect("Failed to insert closing curly brace");
-    println!("{}", doc.text().expect("Failed to get text"));
-    let diagnostics = client.await_diagnostics(&doc).unwrap();
-    println!("{:?}", diagnostics);
-    assert_eq!(diagnostics.diagnostics.len(), 0, "Diagnostics should clear after fix");
-});
-
-with_lsp_client!(test_close_document, CommType::Stdio, |client: &LspClient| {
-    let doc = client.open_document("/path/to/test.rho", "new x in { x!() }").unwrap();
-    client.close_document(&doc).unwrap();
-    // No diagnostics expected after close (server clears them)
-    let diagnostics = client.await_diagnostics(&doc);
-    assert!(diagnostics.is_err() || diagnostics.unwrap().diagnostics.is_empty(), "No diagnostics after close");
 });

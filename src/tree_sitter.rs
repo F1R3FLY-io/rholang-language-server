@@ -1,7 +1,10 @@
+use std::any::Any;
 use std::sync::Arc;
-use tree_sitter::{Node as TSNode, Parser, Tree};
-use tracing::{debug, warn};
+use std::collections::HashMap;
+use tree_sitter::{InputEdit, Node as TSNode, Parser, Tree};
+use tracing::{debug, trace, warn};
 use rpds::Vector;
+use archery::ArcK;
 
 use crate::ir::node::{
     BinOperator, BundleType, CommentKind, Node, NodeBase, SendType, UnaryOperator, VarRefKind,
@@ -24,9 +27,29 @@ pub fn parse_to_ir<'a>(tree: &'a Tree, source_code: &'a str) -> Arc<Node<'a>> {
     node
 }
 
+/// Updates the syntax tree incrementally based on text changes.
+pub fn update_tree(tree: &Tree, new_text: &str, start_byte: usize, old_end_byte: usize, new_length: usize) -> Tree {
+    let mut parser = Parser::new();
+    parser.set_language(&rholang_tree_sitter::LANGUAGE.into()).expect("Failed to set Tree-Sitter language");
+    let edit = InputEdit {
+        start_byte,
+        old_end_byte,
+        new_end_byte: start_byte + new_length,
+        start_position: tree.root_node().start_position(),
+        old_end_position: tree.root_node().end_position(),
+        new_end_position: tree.root_node().end_position(),
+    };
+    let mut new_tree = tree.clone();
+    new_tree.edit(&edit);
+    parser.parse(new_text, Some(&new_tree)).unwrap_or_else(|| {
+        warn!("Incremental parse failed, performing full parse");
+        parse_code(new_text)
+    })
+}
+
 /// Collects named descendant nodes, updating prev_end sequentially.
-fn collect_named_descendants<'a>(node: TSNode<'a>, source_code: &'a str, prev_end: Position) -> (Vector<Arc<Node<'a>>>, Position) {
-    let mut nodes = Vector::new();
+fn collect_named_descendants<'a>(node: TSNode<'a>, source_code: &'a str, prev_end: Position) -> (Vector<Arc<Node<'a>>, ArcK>, Position) {
+    let mut nodes: Vector<Arc<Node<'_>>, ArcK> = Vector::<Arc<Node<'_>>, ArcK>::new_with_ptr_kind();
     let mut current_prev_end = prev_end;
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -37,9 +60,63 @@ fn collect_named_descendants<'a>(node: TSNode<'a>, source_code: &'a str, prev_en
     (nodes, current_prev_end)
 }
 
+/// Collects patterns from a names node, separating elements and optional remainder.
+fn collect_patterns<'a>(node: TSNode<'a>, source_code: &'a str, prev_end: Position) -> (Vector<Arc<Node<'a>>, ArcK>, Option<Arc<Node<'a>>>, Position) {
+    let mut elements: Vector<Arc<Node<'_>>, ArcK> = Vector::<Arc<Node<'_>>, ArcK>::new_with_ptr_kind();
+    let mut remainder: Option<Arc<Node<'_>>> = None;
+    let mut current_prev_end = prev_end;
+    let mut cursor = node.walk();
+    let mut is_remainder = false;
+    let mut is_quote = false;
+    for child in node.children(&mut cursor) {
+        let child_kind = child.kind();
+        trace!("Pattern child: '{}' at start={:?}, end={:?}", child_kind, child.start_position(), child.end_position());
+        if child_kind == "," {
+            continue;
+        } else if child_kind == "..." {
+            is_remainder = true;
+            continue;
+        } else if child_kind == "@" {
+            is_quote = true;
+            current_prev_end = Position {
+                row: child.end_position().row,
+                column: child.end_position().column,
+                byte: child.end_byte(),
+            };
+            continue;
+        } else if child.is_named() {
+            let (mut child_node, child_end) = convert_ts_node_to_ir(child, source_code, current_prev_end);
+            if is_quote {
+                let quote_base = NodeBase::new(
+                    Some(child),
+                    RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+                    child.end_byte() - child.start_byte() + 1,
+                    Some("@".to_string() + child_node.text().as_str()),
+                );
+                child_node = Arc::new(Node::Quote {
+                    base: quote_base,
+                    quotable: child_node,
+                    metadata: None,
+                });
+                is_quote = false;
+            }
+            if is_remainder {
+                remainder = Some(child_node);
+                is_remainder = false;
+            } else {
+                elements = elements.push_back(child_node);
+            }
+            current_prev_end = child_end;
+        } else {
+            warn!("Unhandled child in patterns: {}", child_kind);
+        }
+    }
+    (elements, remainder, current_prev_end)
+}
+
 /// Collects linear binds for Choice nodes, maintaining position continuity.
-fn collect_linear_binds<'a>(branch_node: TSNode<'a>, source_code: &'a str, prev_end: Position) -> (Vector<Arc<Node<'a>>>, Position) {
-    let mut linear_binds = Vector::new();
+fn collect_linear_binds<'a>(branch_node: TSNode<'a>, source_code: &'a str, prev_end: Position) -> (Vector<Arc<Node<'a>>, ArcK>, Position) {
+    let mut linear_binds: Vector<Arc<Node<'_>>, ArcK> = Vector::<Arc<Node<'_>>, ArcK>::new_with_ptr_kind();
     let mut current_prev_end = prev_end;
     let mut cursor = branch_node.walk();
     for child in branch_node.children(&mut cursor) {
@@ -80,7 +157,7 @@ fn convert_ts_node_to_ir<'a>(ts_node: TSNode<'a>, source_code: &'a str, prev_end
         delta_columns,
         delta_bytes,
     };
-    debug!(
+    trace!(
         "Node '{}': prev_end={:?}, start={:?}, end={:?}, delta=({}, {}, {})",
         ts_node.kind(), prev_end, absolute_start, absolute_end, delta_lines, delta_columns, delta_bytes
     );
@@ -91,11 +168,13 @@ fn convert_ts_node_to_ir<'a>(ts_node: TSNode<'a>, source_code: &'a str, prev_end
         absolute_end.byte - absolute_start.byte,
         Some(ts_node.utf8_text(source_code.as_bytes()).unwrap_or("").to_string()),
     );
-    let metadata = Some(Arc::new(Metadata { version: 0 }));
+    let mut data = HashMap::new();
+    data.insert("version".to_string(), Arc::new(0_usize) as Arc<dyn Any + Send + Sync>);
+    let metadata = Some(Arc::new(Metadata { data }));
 
     match ts_node.kind() {
         "source_file" => {
-            let mut current_prev_end = prev_end;
+            let mut current_prev_end = absolute_start;
             let children = ts_node.named_children(&mut ts_node.walk())
                 .map(|child| {
                     let (node, end) = convert_ts_node_to_ir(child, source_code, current_prev_end);
@@ -103,25 +182,33 @@ fn convert_ts_node_to_ir<'a>(ts_node: TSNode<'a>, source_code: &'a str, prev_end
                     node
                 })
                 .collect::<Vec<_>>();
-            debug!("Source file children: {:?}", children.iter().map(|n| n.text()).collect::<Vec<_>>());
-            let result = if children.len() == 1 {
+            trace!("Source file children: {:?}", children.iter().map(|n| n.text()).collect::<Vec<_>>());
+            let mut result = if children.len() == 1 {
                 children[0].clone()
             } else if children.is_empty() {
-                Arc::new(Node::Nil { base, metadata })
+                Arc::new(Node::Nil { base: base.clone(), metadata: metadata.clone() })
             } else {
-                children.into_iter().reduce(|left, right| {
+                children.clone().into_iter().reduce(|left, right| {
                     Arc::new(Node::Par {
                         base: base.clone(),
                         left,
                         right,
                         metadata: metadata.clone(),
                     })
-                }).unwrap_or(Arc::new(Node::Nil { base, metadata }))
+                }).unwrap_or(Arc::new(Node::Nil { base: base.clone(), metadata: metadata.clone() }))
             };
+            let trimmed_source = source_code.trim();
+            if children.len() == 1 && trimmed_source.starts_with('(') && trimmed_source.ends_with(')') {
+                result = Arc::new(Node::Parenthesized {
+                    base,
+                    expr: result,
+                    metadata,
+                });
+            }
             (result, absolute_end)
         }
         "collection" => {
-            let child = ts_node.named_child(0).expect("Collection node must have a named child (list, set, map, or tuple)");
+            let child = ts_node.named_child(0).expect("Collection node must have a named child");
             convert_ts_node_to_ir(child, source_code, prev_end)
         }
         "par" => {
@@ -143,11 +230,28 @@ fn convert_ts_node_to_ir<'a>(ts_node: TSNode<'a>, source_code: &'a str, prev_end
                     current_prev_end = end;
                     node
                 })
-                .collect();
+                .collect::<Vector<_, ArcK>>();
             let cont_ts = ts_node.child_by_field_name("cont").unwrap();
             let (cont, cont_end) = convert_ts_node_to_ir(cont_ts, source_code, current_prev_end);
             let node = Arc::new(Node::SendSync { base, channel, inputs, cont, metadata });
             (node, cont_end)
+        }
+        "non_empty_cont" => {
+            let proc_ts = ts_node.named_child(0).unwrap();
+            convert_ts_node_to_ir(proc_ts, source_code, prev_end)
+        }
+        "empty_cont" => {
+            let node = Arc::new(Node::Nil { base, metadata });
+            (node, absolute_end)
+        }
+        "sync_send_cont" => {
+            if ts_node.named_child_count() == 0 {
+                let node = Arc::new(Node::Nil { base, metadata });
+                (node, absolute_end)
+            } else {
+                let proc_ts = ts_node.named_child(0).unwrap();
+                convert_ts_node_to_ir(proc_ts, source_code, absolute_start)
+            }
         }
         "send" => {
             let channel_ts = ts_node.child_by_field_name("channel").unwrap();
@@ -166,7 +270,7 @@ fn convert_ts_node_to_ir<'a>(ts_node: TSNode<'a>, source_code: &'a str, prev_end
                     current_prev_end = end;
                     node
                 })
-                .collect();
+                .collect::<Vector<_, ArcK>>();
             let send_type = match send_type_ts.kind() {
                 "send_single" => SendType::Single,
                 "send_multiple" => SendType::Multiple,
@@ -253,7 +357,7 @@ fn convert_ts_node_to_ir<'a>(ts_node: TSNode<'a>, source_code: &'a str, prev_end
                     current_prev_end = proc_end;
                     (pattern, proc)
                 })
-                .collect();
+                .collect::<Vector<_, ArcK>>();
             let node = Arc::new(Node::Match { base, expression, cases, metadata });
             (node, current_prev_end)
         }
@@ -269,7 +373,7 @@ fn convert_ts_node_to_ir<'a>(ts_node: TSNode<'a>, source_code: &'a str, prev_end
                     current_prev_end = proc_end;
                     (inputs, proc)
                 })
-                .collect();
+                .collect::<Vector<_, ArcK>>();
             let node = Arc::new(Node::Choice { base, branches, metadata });
             (node, current_prev_end)
         }
@@ -277,10 +381,10 @@ fn convert_ts_node_to_ir<'a>(ts_node: TSNode<'a>, source_code: &'a str, prev_end
             let name_ts = ts_node.child_by_field_name("name").unwrap();
             let (name, name_end) = convert_ts_node_to_ir(name_ts, source_code, absolute_start);
             let formals_ts = ts_node.child_by_field_name("formals").unwrap();
-            let (formals, formals_end) = collect_named_descendants(formals_ts, source_code, name_end);
+            let (formals, formals_remainder, formals_end) = collect_patterns(formals_ts, source_code, name_end);
             let proc_ts = ts_node.child_by_field_name("proc").unwrap();
             let (proc, proc_end) = convert_ts_node_to_ir(proc_ts, source_code, formals_end);
-            let node = Arc::new(Node::Contract { base, name, formals, proc, metadata });
+            let node = Arc::new(Node::Contract { base, name, formals, formals_remainder, proc, metadata });
             (node, proc_end)
         }
         "input" => {
@@ -292,7 +396,7 @@ fn convert_ts_node_to_ir<'a>(ts_node: TSNode<'a>, source_code: &'a str, prev_end
                     current_prev_end = binds_end;
                     binds
                 })
-                .collect();
+                .collect::<Vector<_, ArcK>>();
             let proc_ts = ts_node.child_by_field_name("proc").unwrap();
             let (proc, proc_end) = convert_ts_node_to_ir(proc_ts, source_code, current_prev_end);
             let node = Arc::new(Node::Input { base, receipts, proc, metadata });
@@ -303,6 +407,18 @@ fn convert_ts_node_to_ir<'a>(ts_node: TSNode<'a>, source_code: &'a str, prev_end
             let (proc, proc_end) = convert_ts_node_to_ir(proc_ts, source_code, absolute_start);
             let node = Arc::new(Node::Block { base, proc, metadata });
             (node, proc_end)
+        }
+        "_parenthesized" => {
+            let expr_ts = ts_node.named_child(0).unwrap();
+            let (expr, _expr_end) = convert_ts_node_to_ir(expr_ts, source_code, absolute_start);
+            let node = Arc::new(Node::Parenthesized { base, expr, metadata });
+            (node, absolute_end)
+        }
+        "_name_remainder" => {
+            let cont_ts = ts_node.child_by_field_name("cont").unwrap();
+            let (cont, cont_end) = convert_ts_node_to_ir(cont_ts, source_code, absolute_start);
+            let node = Arc::new(Node::Quote { base, quotable: cont, metadata });
+            (node, cont_end)
         }
         "or" => binary_op(ts_node, source_code, base, BinOperator::Or, absolute_start),
         "and" => binary_op(ts_node, source_code, base, BinOperator::And, absolute_start),
@@ -321,11 +437,8 @@ fn convert_ts_node_to_ir<'a>(ts_node: TSNode<'a>, source_code: &'a str, prev_end
         "mult" => binary_op(ts_node, source_code, base, BinOperator::Mult, absolute_start),
         "div" => binary_op(ts_node, source_code, base, BinOperator::Div, absolute_start),
         "mod" => binary_op(ts_node, source_code, base, BinOperator::Mod, absolute_start),
-        "disjunction" => binary_op(ts_node, source_code, base, BinOperator::Disjunction, absolute_start),
-        "conjunction" => binary_op(ts_node, source_code, base, BinOperator::Conjunction, absolute_start),
         "not" => unary_op(ts_node, source_code, base, UnaryOperator::Not, absolute_start),
         "neg" => unary_op(ts_node, source_code, base, UnaryOperator::Neg, absolute_start),
-        "negation" => unary_op(ts_node, source_code, base, UnaryOperator::Negation, absolute_start),
         "method" => {
             let receiver_ts = ts_node.child_by_field_name("receiver").unwrap();
             let (receiver, receiver_end) = convert_ts_node_to_ir(receiver_ts, source_code, absolute_start);
@@ -338,7 +451,7 @@ fn convert_ts_node_to_ir<'a>(ts_node: TSNode<'a>, source_code: &'a str, prev_end
                     current_prev_end = end;
                     node
                 })
-                .collect();
+                .collect::<Vector<_, ArcK>>();
             let node = Arc::new(Node::Method { base, receiver, name, args, metadata });
             (node, absolute_end)
         }
@@ -355,16 +468,21 @@ fn convert_ts_node_to_ir<'a>(ts_node: TSNode<'a>, source_code: &'a str, prev_end
             (node, quotable_end)
         }
         "var_ref" => {
-            let kind = match ts_node.child_by_field_name("kind").unwrap().kind() {
-                "=" => VarRefKind::Assign,
-                "=*" => VarRefKind::AssignStar,
-                _ => unreachable!("Unknown var_ref kind: {}", ts_node.kind()),
+            let kind_ts = ts_node.child_by_field_name("kind").unwrap();
+            let kind_text = kind_ts.utf8_text(source_code.as_bytes()).unwrap().to_string();
+            let kind = match kind_text.as_str() {
+                "=" => VarRefKind::Bind,
+                "=*" => VarRefKind::Unforgeable,
+                _ => panic!("Unknown var_ref kind text: {}", kind_text),
             };
             let var_ts = ts_node.child_by_field_name("var").unwrap();
             let (var, var_end) = convert_ts_node_to_ir(var_ts, source_code, absolute_start);
             let node = Arc::new(Node::VarRef { base, kind, var, metadata });
             (node, var_end)
         }
+        "disjunction" => binary_op(ts_node, source_code, base, BinOperator::Disjunction, absolute_start),
+        "conjunction" => binary_op(ts_node, source_code, base, BinOperator::Conjunction, absolute_start),
+        "negation" => unary_op(ts_node, source_code, base, UnaryOperator::Negation, absolute_start),
         "bool_literal" => {
             let value = ts_node.utf8_text(source_code.as_bytes()).unwrap() == "true";
             let node = Arc::new(Node::BoolLiteral { base, value, metadata });
@@ -399,7 +517,7 @@ fn convert_ts_node_to_ir<'a>(ts_node: TSNode<'a>, source_code: &'a str, prev_end
                     current_prev_end = end;
                     node
                 })
-                .collect();
+                .collect::<Vector<_, ArcK>>();
             let remainder = ts_node.children(&mut cursor)
                 .find(|n| n.kind() == "_proc_remainder")
                 .map(|rem| {
@@ -420,7 +538,7 @@ fn convert_ts_node_to_ir<'a>(ts_node: TSNode<'a>, source_code: &'a str, prev_end
                     current_prev_end = end;
                     node
                 })
-                .collect();
+                .collect::<Vector<_, ArcK>>();
             let remainder = ts_node.children(&mut ts_node.walk())
                 .find(|n| n.kind() == "_proc_remainder")
                 .map(|rem| {
@@ -444,7 +562,7 @@ fn convert_ts_node_to_ir<'a>(ts_node: TSNode<'a>, source_code: &'a str, prev_end
                     current_prev_end = value_end;
                     (key, value)
                 })
-                .collect();
+                .collect::<Vector<_, ArcK>>();
             let remainder = ts_node.children(&mut ts_node.walk())
                 .find(|n| n.kind() == "_proc_remainder")
                 .map(|rem| {
@@ -464,7 +582,7 @@ fn convert_ts_node_to_ir<'a>(ts_node: TSNode<'a>, source_code: &'a str, prev_end
                     current_prev_end = end;
                     node
                 })
-                .collect();
+                .collect::<Vector<_, ArcK>>();
             let node = Arc::new(Node::Tuple { base, elements, metadata });
             (node, absolute_end)
         }
@@ -486,34 +604,34 @@ fn convert_ts_node_to_ir<'a>(ts_node: TSNode<'a>, source_code: &'a str, prev_end
         }
         "decl" => {
             let names_ts = ts_node.child_by_field_name("names").unwrap();
-            let (names, names_end) = collect_named_descendants(names_ts, source_code, absolute_start);
+            let (names, names_remainder, names_end) = collect_patterns(names_ts, source_code, absolute_start);
             let procs_ts = ts_node.child_by_field_name("procs").unwrap();
             let (procs, procs_end) = collect_named_descendants(procs_ts, source_code, names_end);
-            let node = Arc::new(Node::Decl { base, names, procs, metadata });
+            let node = Arc::new(Node::Decl { base, names, names_remainder, procs, metadata });
             (node, procs_end)
         }
         "linear_bind" => {
             let names_ts = ts_node.child_by_field_name("names").unwrap();
-            let (names, names_end) = collect_named_descendants(names_ts, source_code, absolute_start);
-            let source_ts = ts_node.child_by_field_name("input").unwrap();
-            let (source, source_end) = convert_ts_node_to_ir(source_ts, source_code, names_end);
-            let node = Arc::new(Node::LinearBind { base, names, source, metadata });
+            let (names, remainder, names_end) = collect_patterns(names_ts, source_code, absolute_start);
+            let input_ts = ts_node.child_by_field_name("input").unwrap();
+            let (source, source_end) = convert_ts_node_to_ir(input_ts, source_code, names_end);
+            let node = Arc::new(Node::LinearBind { base, names, remainder, source, metadata });
             (node, source_end)
         }
         "repeated_bind" => {
             let names_ts = ts_node.child_by_field_name("names").unwrap();
-            let (names, names_end) = collect_named_descendants(names_ts, source_code, absolute_start);
-            let source_ts = ts_node.child_by_field_name("input").unwrap();
-            let (source, source_end) = convert_ts_node_to_ir(source_ts, source_code, names_end);
-            let node = Arc::new(Node::RepeatedBind { base, names, source, metadata });
+            let (names, remainder, names_end) = collect_patterns(names_ts, source_code, absolute_start);
+            let input_ts = ts_node.child_by_field_name("input").unwrap();
+            let (source, source_end) = convert_ts_node_to_ir(input_ts, source_code, names_end);
+            let node = Arc::new(Node::RepeatedBind { base, names, remainder, source, metadata });
             (node, source_end)
         }
         "peek_bind" => {
             let names_ts = ts_node.child_by_field_name("names").unwrap();
-            let (names, names_end) = collect_named_descendants(names_ts, source_code, absolute_start);
-            let source_ts = ts_node.child_by_field_name("input").unwrap();
-            let (source, source_end) = convert_ts_node_to_ir(source_ts, source_code, names_end);
-            let node = Arc::new(Node::PeekBind { base, names, source, metadata });
+            let (names, remainder, names_end) = collect_patterns(names_ts, source_code, absolute_start);
+            let input_ts = ts_node.child_by_field_name("input").unwrap();
+            let (source, source_end) = convert_ts_node_to_ir(input_ts, source_code, names_end);
+            let node = Arc::new(Node::PeekBind { base, names, remainder, source, metadata });
             (node, source_end)
         }
         "simple_source" => {
@@ -537,7 +655,7 @@ fn convert_ts_node_to_ir<'a>(ts_node: TSNode<'a>, source_code: &'a str, prev_end
                     current_prev_end = end;
                     node
                 })
-                .collect();
+                .collect::<Vector<_, ArcK>>();
             let node = Arc::new(Node::SendReceiveSource { base, name, inputs, metadata });
             (node, absolute_end)
         }
@@ -558,12 +676,25 @@ fn convert_ts_node_to_ir<'a>(ts_node: TSNode<'a>, source_code: &'a str, prev_end
             let node = Arc::new(Node::Comment { base, kind: CommentKind::Block, metadata });
             (node, absolute_end)
         }
+        "ERROR" => {
+            warn!("Encountered ERROR node at {}:{}", absolute_start.row, absolute_start.column);
+            let (children, _) = collect_named_descendants(ts_node, source_code, absolute_start);
+            let node = Arc::new(Node::Error { base, children, metadata });
+            (node, absolute_end)
+        }
         _ => {
             if ts_node.is_named() {
                 warn!("Unhandled node type '{}'", ts_node.kind());
+                let node = Arc::new(Node::Error {
+                    base,
+                    children: Vector::<Arc<Node<'_>>, ArcK>::new_with_ptr_kind(),
+                    metadata,
+                });
+                (node, absolute_end)
+            } else {
+                let node = Arc::new(Node::Nil { base, metadata });
+                (node, absolute_end)
             }
-            let node = Arc::new(Node::Nil { base, metadata });
-            (node, absolute_end)
         }
     }
 }
@@ -573,7 +704,9 @@ fn binary_op<'a>(ts_node: TSNode<'a>, source_code: &'a str, base: NodeBase<'a>, 
     let (left, left_end) = convert_ts_node_to_ir(left_ts, source_code, prev_end);
     let right_ts = ts_node.child(2).unwrap();
     let (right, right_end) = convert_ts_node_to_ir(right_ts, source_code, left_end);
-    let metadata = Some(Arc::new(Metadata { version: 0 }));
+    let mut data = HashMap::new();
+    data.insert("version".to_string(), Arc::new(0_usize) as Arc<dyn Any + Send + Sync>);
+    let metadata = Some(Arc::new(Metadata { data }));
     let node = Arc::new(Node::BinOp { base, op, left, right, metadata });
     (node, right_end)
 }
@@ -581,7 +714,9 @@ fn binary_op<'a>(ts_node: TSNode<'a>, source_code: &'a str, base: NodeBase<'a>, 
 fn unary_op<'a>(ts_node: TSNode<'a>, source_code: &'a str, base: NodeBase<'a>, op: UnaryOperator, prev_end: Position) -> (Arc<Node<'a>>, Position) {
     let operand_ts = ts_node.child(1).unwrap();
     let (operand, operand_end) = convert_ts_node_to_ir(operand_ts, source_code, prev_end);
-    let metadata = Some(Arc::new(Metadata { version: 0 }));
+    let mut data = HashMap::new();
+    data.insert("version".to_string(), Arc::new(0_usize) as Arc<dyn Any + Send + Sync>);
+    let metadata = Some(Arc::new(Metadata { data }));
     let node = Arc::new(Node::UnaryOp { base, op, operand, metadata });
     (node, operand_end)
 }
@@ -682,5 +817,86 @@ mod tests {
             TestResult::passed()
         }
         QuickCheck::new().tests(100).max_tests(1000).quickcheck(prop as fn(RholangProc) -> TestResult);
+    }
+
+    #[test]
+    fn test_parse_parenthesized() {
+        crate::logging::init_logger(false, Some("trace")).expect("Failed to initialize logger");
+        let code = "(Nil)";
+        let tree = parse_code(code);
+        let ir = parse_to_ir(&tree, code);
+        match &*ir {
+            Node::Parenthesized { expr, .. } => {
+                match &**expr {
+                    Node::Nil { .. } => {}
+                    _ => panic!("Expected Nil inside Parenthesized"),
+                }
+            }
+            _ => panic!("Expected Parenthesized node"),
+        }
+    }
+
+    #[test]
+    fn test_parse_name_remainder() {
+        crate::logging::init_logger(false, Some("trace")).expect("Failed to initialize logger");
+        let code = "for(x, ...@y <- ch) { Nil }";
+        let tree = parse_code(code);
+        let ir = parse_to_ir(&tree, code);
+        match &*ir {
+            Node::Input { receipts, .. } => {
+                let bind = &receipts[0][0];
+                match &**bind {
+                    Node::LinearBind { names, remainder, source, .. } => {
+                        assert_eq!(names.len(), 1);
+                        assert_eq!(names[0].text(), "x");
+                        assert!(remainder.is_some());
+                        let rem = remainder.as_ref().unwrap();
+                        match &**rem {
+                            Node::Quote { quotable, .. } => {
+                                assert_eq!(quotable.text(), "y");
+                            }
+                            _ => panic!("Expected Quote for remainder"),
+                        }
+                        assert_eq!(source.text(), "ch");
+                    }
+                    _ => panic!("Expected LinearBind"),
+                }
+            }
+            _ => panic!("Expected Input node"),
+        }
+    }
+
+    #[test]
+    fn test_parse_sync_send_empty_cont() {
+        crate::logging::init_logger(false, Some("trace")).expect("Failed to initialize logger");
+        let code = "ch!?(\"msg\").";
+        let tree = parse_code(code);
+        let ir = parse_to_ir(&tree, code);
+        match &*ir {
+            Node::SendSync { cont, .. } => {
+                match &**cont {
+                    Node::Nil { .. } => {}
+                    _ => panic!("Expected Nil for empty continuation"),
+                }
+            }
+            _ => panic!("Expected SendSync node"),
+        }
+    }
+
+    #[test]
+    fn test_parse_sync_send_non_empty_cont() {
+        crate::logging::init_logger(false, Some("trace")).expect("Failed to initialize logger");
+        let code = "ch!?(\"msg\"); Nil";
+        let tree = parse_code(code);
+        let ir = parse_to_ir(&tree, code);
+        match &*ir {
+            Node::SendSync { cont, .. } => {
+                match &**cont {
+                    Node::Nil { .. } => {}
+                    _ => panic!("Expected Nil for continuation"),
+                }
+            }
+            _ => panic!("Expected SendSync node"),
+        }
     }
 }

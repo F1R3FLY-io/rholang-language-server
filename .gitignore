@@ -1,1 +1,18 @@
-/target
+# Blacklist everything by default
+*
+
+# Enable whitelisting of specific file patterns
+!*/
+
+# Whitelist specific file patterns
+!/build.rs
+!/Cargo.toml
+!/.github/**/*.yml
+!/.gitignore
+!/LICENSE.txt
+!/*.md
+!/proto/**/*.proto
+!/src/**/*.rs
+!/tests/**/*.rs
+!/test_utils/Cargo.toml
+!/test_utils/src/**/*.rs
