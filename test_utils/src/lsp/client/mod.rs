@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{self, BufReader, Write};
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex, Once, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::sync::atomic::AtomicU64;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread::{self, JoinHandle};
@@ -28,7 +28,7 @@ use futures_util::{SinkExt, StreamExt};
 use uuid::Uuid;
 
 use tracing::{debug, error, info};
-use tracing_subscriber::prelude::*;
+use tracing_subscriber::{self, fmt, prelude::*};
 
 use time::macros::format_description;
 use time::UtcOffset;
@@ -129,22 +129,21 @@ impl LspClient {
             .parse::<u16>()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("Invalid port: {}", e)))?;
 
+        let log_level = std::env::var("RUST_LOG").unwrap_or("debug".to_string());
+
         let (output, input, logger, server, tcp_write_stream, pipe_or_unix_write_stream, websocket_stream, generated_pipe_path) =
             match comm_type.clone() {
                 CommType::Stdio => {
                     let server_args = &[
                         "--stdio",
-                        "--client-process-id",
-                        &client_pid.to_string(),
-                        "--log-level",
-                        "debug",
-                        "--rnode-address",
-                        &rnode_address,
-                        "--rnode-port",
-                        &rnode_port.to_string(),
+                        "--client-process-id", &client_pid.to_string(),
+                        "--log-level", &log_level,
+                        "--rnode-address", &rnode_address,
+                        "--rnode-port", &rnode_port.to_string(),
                     ];
                     let mut server = Command::new(&server_path)
                         .args(server_args)
+                        .envs(std::env::vars())
                         .stdin(Stdio::piped())
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped())
@@ -158,19 +157,15 @@ impl LspClient {
                     let port = port.unwrap_or_else(find_free_port);
                     let server_args = &[
                         "--socket",
-                        "--port",
-                        &port.to_string(),
-                        "--client-process-id",
-                        &client_pid.to_string(),
-                        "--log-level",
-                        "debug",
-                        "--rnode-address",
-                        &rnode_address,
-                        "--rnode-port",
-                        &rnode_port.to_string(),
+                        "--port", &port.to_string(),
+                        "--client-process-id", &client_pid.to_string(),
+                        "--log-level", &log_level,
+                        "--rnode-address", &rnode_address,
+                        "--rnode-port", &rnode_port.to_string(),
                     ];
                     let mut server = Command::new(&server_path)
                         .args(server_args)
+                        .envs(std::env::vars())
                         .stdin(Stdio::null())
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped())
@@ -214,19 +209,15 @@ impl LspClient {
                     });
                     let generated_pipe_path = if path_is_generated { Some(path.clone()) } else { None };
                     let server_args = &[
-                        "--pipe",
-                        &path.clone(),
-                        "--client-process-id",
-                        &client_pid.to_string(),
-                        "--log-level",
-                        "debug",
-                        "--rnode-address",
-                        &rnode_address,
-                        "--rnode-port",
-                        &rnode_port.to_string(),
+                        "--pipe", &path.clone(),
+                        "--client-process-id", &client_pid.to_string(),
+                        "--log-level", &log_level,
+                        "--rnode-address", &rnode_address,
+                        "--rnode-port", &rnode_port.to_string(),
                     ];
                     let mut server = Command::new(&server_path)
                         .args(server_args)
+                        .envs(std::env::vars())
                         .stdin(Stdio::null())
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped())
@@ -265,20 +256,16 @@ impl LspClient {
                     info!("Starting WebSocket server on port {}", port);
                     let server_args = &[
                         "--websocket",
-                        "--port",
-                        &port.to_string(),
-                        "--client-process-id",
-                        &client_pid.to_string(),
-                        "--log-level",
-                        "debug",
-                        "--rnode-address",
-                        &rnode_address,
-                        "--rnode-port",
-                        &rnode_port.to_string(),
+                        "--port", &port.to_string(),
+                        "--client-process-id", &client_pid.to_string(),
+                        "--log-level", &log_level,
+                        "--rnode-address", &rnode_address,
+                        "--rnode-port", &rnode_port.to_string(),
                     ];
                     debug!("Server command: {} {:?}", server_path, server_args);
                     let mut server = Command::new(&server_path)
                         .args(server_args)
+                        .envs(std::env::vars())
                         .stdin(Stdio::null())
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped())
@@ -706,16 +693,38 @@ fn find_free_port() -> u16 {
     listener.local_addr().expect("Failed to get local address").port()
 }
 
-static INIT: Once = Once::new();
-pub fn setup() {
-    INIT.call_once(|| {
-        let timer = tracing_subscriber::fmt::time::OffsetTime::new(
-            UtcOffset::UTC,
-            format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"),
-        );
-        tracing_subscriber::registry()
-            .with(tracing_subscriber::fmt::layer().with_timer(timer))
-            .with(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "debug".into()))
-            .init();
-    });
+pub fn init_logger() -> io::Result<()> {
+    let timer = fmt::time::OffsetTime::new(
+        UtcOffset::UTC,
+        format_description!("[[[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z]"),
+    );
+
+    // Log to stderr
+    let stderr_layer = fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_timer(timer)
+        .with_ansi(true);
+
+    // Configure the log level based on whether --log-level was provided
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("trace"));
+
+    // Combine the layers using a registry
+    let result = tracing_subscriber::registry()
+        .with(env_filter)
+        .with(stderr_layer)
+        .try_init();
+
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Ignore errors due to the subscriber or logger already being set
+            if e.to_string().contains("already been set") || e.to_string().contains("SetLoggerError") {
+                Ok(())
+            } else {
+                // Propagate unexpected errors
+                Err(io::Error::new(io::ErrorKind::Other, e))
+            }
+        }
+    }
 }

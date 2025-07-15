@@ -122,7 +122,7 @@ impl Visitor for IncrementVersion {
         })
     }
 
-    fn visit_sendsync<'a>(
+    fn visit_send_sync<'a>(
         &self,
         _node: &Arc<Node<'a>>,
         base: &NodeBase<'a>,

@@ -5,7 +5,7 @@ use crate::ir::node::Position;
 use tower_lsp::lsp_types::Url;
 
 /// Represents the type of a symbol in Rholang.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub enum SymbolType {
     Variable,
     Contract,
@@ -13,7 +13,7 @@ pub enum SymbolType {
 }
 
 /// Stores information about a symbol, including its declaration and definition locations.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct Symbol {
     pub name: String,
     pub symbol_type: SymbolType,

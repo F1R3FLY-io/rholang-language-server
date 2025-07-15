@@ -164,7 +164,7 @@ with_lsp_client!(test_goto_definition_same_file, CommType::Stdio, |client: &LspC
 
     assert_eq!(location.uri.to_string(), doc.uri());
     assert_eq!(location.range.start.line, 0);
-    assert_eq!(location.range.start.character, 24); // Start of '{ Nil }'
+    assert_eq!(location.range.start.character, 9);
 });
 
 with_lsp_client!(test_goto_declaration_cross_file, CommType::Stdio, |client: &LspClient| {
@@ -204,7 +204,7 @@ with_lsp_client!(test_goto_definition_cross_file, CommType::Stdio, |client: &Lsp
 
     assert_eq!(location.uri.to_string(), contract_doc.uri());
     assert_eq!(location.range.start.line, 0);
-    assert_eq!(location.range.start.character, 24);
+    assert_eq!(location.range.start.character, 9);
 });
 
 with_lsp_client!(test_goto_definition_loop_param, CommType::Stdio, |client: &LspClient| {
@@ -413,4 +413,154 @@ with_lsp_client!(test_document_highlight_contract, CommType::Stdio, |client: &Ls
     let decl_position = Position { line: 0, character: 9 }; // 'myContract' declaration
     let highlights = client.document_highlight(&doc.uri(), decl_position).expect("Failed to get document highlights");
     assert_eq!(highlights.len(), 2, "Should highlight declaration + usage");
+});
+
+with_lsp_client!(test_goto_definition_contract_on_name, CommType::Stdio, |client: &LspClient| {
+    let code = indoc! {r#"
+        new foo in {
+            contract foo(@x) = {
+                Nil
+            } |
+            foo!(42)
+        }
+    "#};
+    let doc = client.open_document("/path/to/test.rho", code).unwrap();
+    client.await_diagnostics(&doc).unwrap();
+
+    let usage_pos = Position { line: 4, character: 4 }; // 'foo' in 'foo!(42)'
+    let location = client.definition(&doc.uri(), usage_pos).unwrap().unwrap();
+
+    assert_eq!(location.uri.to_string(), doc.uri());
+    assert_eq!(location.range.start.line, 1);
+    assert_eq!(location.range.start.character, 13); // 'foo' in 'contract foo'
+});
+
+with_lsp_client!(test_goto_declaration_contract_on_name, CommType::Stdio, |client: &LspClient| {
+    let code = indoc! {r#"
+        new foo in {
+            contract foo(@x) = {
+                Nil
+            } |
+            foo!(42)
+        }
+    "#};
+    let doc = client.open_document("/path/to/test.rho", code).unwrap();
+    client.await_diagnostics(&doc).unwrap();
+
+    let usage_pos = Position { line: 4, character: 4 }; // 'foo' in 'foo!(42)'
+    let location = client.declaration(&doc.uri(), usage_pos).unwrap().unwrap();
+
+    assert_eq!(location.uri.to_string(), doc.uri());
+    assert_eq!(location.range.start.line, 0);
+    assert_eq!(location.range.start.character, 4); // 'foo' in 'new foo'
+});
+
+with_lsp_client!(test_references_contract_with_new, CommType::Stdio, |client: &LspClient| {
+    let code = indoc! {r#"
+        new foo in {
+            contract foo(@x) = {
+                Nil
+            } |
+            foo!(42)
+        }
+    "#};
+    let doc = client.open_document("/path/to/test.rho", code).unwrap();
+    client.await_diagnostics(&doc).unwrap();
+
+    let position = Position { line: 4, character: 4 }; // 'foo' usage
+    let references = client.references(&doc.uri(), position, true).unwrap();
+    assert_eq!(references.len(), 3, "Should find new declaration, contract definition, and usage");
+
+    let references_no_decl = client.references(&doc.uri(), position, false).unwrap();
+    assert_eq!(references_no_decl.len(), 2, "Should find contract definition and usage without declaration");
+});
+
+with_lsp_client!(test_references_after_goto_definition_cross_file, CommType::Stdio, |client: &LspClient| {
+    let contract_code = indoc! {r#"
+        // contract.rho
+        contract otherContract(x) = { x!("Hello World!") }
+        contract myContract(y) = { Nil }
+    "#};
+
+    let usage_code = indoc! {r#"
+        // usage.rho
+        new x in { myContract!("foo") }
+        new y in { otherContract!("bar") }
+        new chan in {
+            chan!() |
+            new chan in {
+                chan!()
+            }
+        }
+    "#};
+
+    let usage_doc = client
+        .open_document("/path/to/usage.rho", usage_code)
+        .expect("Failed to open usage.rho");
+
+    let contract_doc = client
+        .open_document("/path/to/contract.rho", contract_code)
+        .expect("Failed to open contract.rho");
+
+    // Open both documents at the same time to introduce a potential race
+    // condition in how they are indexed.
+    client.await_diagnostics(&usage_doc)
+        .expect("Failed to receive diagnostics for usage.rho");
+    client.await_diagnostics(&contract_doc)
+        .expect("Failed to receive diagnostics for contract.rho");
+
+    // Step 1: From usage.rho, goto definition of otherContract
+    let usage_pos = Position { line: 2, character: 11 }; // 'otherContract' in usage
+    let location = client.definition(&usage_doc.uri(), usage_pos).unwrap().unwrap();
+
+    assert_eq!(location.uri.to_string(), contract_doc.uri());
+    assert_eq!(location.range.start.line, 1);
+    assert_eq!(location.range.start.character, 9); // 'otherContract' in declaration
+
+    // Step 2: From contract.rho, find references of otherContract
+    let decl_pos = Position { line: 1, character: 9 }; // 'otherContract' in declaration
+    let references = client.references(&contract_doc.uri(), decl_pos, true).unwrap();
+
+    assert_eq!(references.len(), 2, "Should find declaration + one usage");
+    let usage_ref = references.iter().find(|r| r.uri.to_string() == usage_doc.uri()).expect("Usage reference not found");
+    assert_eq!(usage_ref.range.start.line, 2);
+    assert_eq!(usage_ref.range.start.character, 11);
+});
+
+// Add a new test to simulate race with reverse order
+with_lsp_client!(test_references_after_goto_definition_reverse_order, CommType::Stdio, |client: &LspClient| {
+    let contract_code = indoc! {r#"
+        // contract.rho
+        contract otherContract(x) = { x!("Hello World!") }
+        contract myContract(y) = { Nil }
+    "#};
+
+    let usage_code = indoc! {r#"
+        // usage.rho
+        new x in { myContract!("foo") }
+        new y in { otherContract!("bar") }
+    "#};
+
+    // Open contract first, then usage to simulate different order
+    let contract_doc = client
+        .open_document("/path/to/contract.rho", contract_code)
+        .expect("Failed to open contract.rho");
+    client.await_diagnostics(&contract_doc).unwrap();
+
+    let usage_doc = client
+        .open_document("/path/to/usage.rho", usage_code)
+        .expect("Failed to open usage.rho");
+    client.await_diagnostics(&usage_doc).unwrap();
+
+    // Goto definition from usage
+    let usage_pos = Position { line: 2, character: 11 };
+    let location = client.definition(&usage_doc.uri(), usage_pos).unwrap().unwrap();
+    assert_eq!(location.uri.to_string(), contract_doc.uri());
+    assert_eq!(location.range.start.line, 1);
+    assert_eq!(location.range.start.character, 9);
+
+    // Find references from contract
+    let decl_pos = Position { line: 1, character: 9 };
+    let references = client.references(&contract_doc.uri(), decl_pos, true).unwrap();
+    assert_eq!(references.len(), 2, "Should find declaration + usage in reverse order");
 });

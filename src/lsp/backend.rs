@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -59,6 +59,7 @@ pub struct RholangBackend {
     file_events: Arc<Mutex<Receiver<notify::Result<notify::Event>>>>,
     file_sender: Arc<Mutex<Sender<notify::Result<notify::Event>>>>,
     version_counter: Arc<AtomicI32>,
+    root_dir: Arc<RwLock<Option<PathBuf>>>,
 }
 
 impl RholangBackend {
@@ -83,6 +84,7 @@ impl RholangBackend {
             file_events: Arc::new(Mutex::new(rx)),
             file_sender: Arc::new(Mutex::new(tx)),
             version_counter: Arc::new(AtomicI32::new(0)),
+            root_dir: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -101,7 +103,6 @@ impl RholangBackend {
         let positions = Arc::new(compute_absolute_positions(&transformed_ir));
         debug!("Cached {} node positions for {}", positions.len(), uri);
         let inverted_index = builder.get_inverted_index();
-        let global_usages = builder.get_global_usages();
         let potential_global_refs = builder.get_potential_global_refs();
         let symbol_table = transformed_ir.metadata()
             .and_then(|m| m.data.get("symbol_table"))
@@ -109,16 +110,8 @@ impl RholangBackend {
             .ok_or("Failed to extract symbol table")?;
         let version = self.version_counter.fetch_add(1, Ordering::SeqCst);
 
-        let mut workspace = self.workspace.write().await;
-        for ((def_uri, def_pos), (use_uri, use_pos)) in global_usages {
-            workspace.global_inverted_index
-                .entry((def_uri, def_pos))
-                .or_insert_with(Vec::new)
-                .push((use_uri, use_pos));
-        }
-
         debug!("Processed document {}: {} symbols, {} usages, version {}",
-               uri, symbol_table.collect_all_symbols().len(), inverted_index.len(), version);
+            uri, symbol_table.collect_all_symbols().len(), inverted_index.len(), version);
         Ok(CachedDocument {
             ir: unsafe { std::mem::transmute(transformed_ir) },
             tree: Arc::new(parse_code(&ir.text())),
@@ -165,10 +158,10 @@ impl RholangBackend {
         let mut workspace = self.workspace.write().await;
         let mut global_symbols = HashMap::new();
         let documents = workspace.documents.clone();
-        for (uri, doc) in &documents {
+        for (_uri, doc) in &documents {
             for symbol in doc.symbol_table.collect_all_symbols() {
                 if matches!(symbol.symbol_type, SymbolType::Contract) {
-                    global_symbols.insert(symbol.name.clone(), (uri.clone(), symbol.declaration_location));
+                    global_symbols.insert(symbol.name.clone(), (symbol.declaration_uri.clone(), symbol.declaration_location));
                 }
             }
         }
@@ -180,8 +173,12 @@ impl RholangBackend {
         for (doc_uri, doc) in &documents {
             for (name, use_pos) in &doc.potential_global_refs {
                 if let Some((def_uri, def_pos)) = workspace.global_symbols.get(name).cloned() {
-                    resolutions.push(((def_uri, def_pos), (doc_uri.clone(), *use_pos)));
-                    trace!("Resolved potential global usage of '{}' at {:?} to def at {:?}", name, use_pos, def_pos);
+                    if (doc_uri.clone(), *use_pos) != (def_uri.clone(), def_pos) {
+                        resolutions.push(((def_uri, def_pos), (doc_uri.clone(), *use_pos)));
+                        trace!("Resolved potential global usage of '{}' at {:?} to def at {:?}", name, use_pos, def_pos);
+                    } else {
+                        trace!("Skipping self-reference potential for '{}' at {:?}", name, use_pos);
+                    }
                 }
             }
         }
@@ -210,6 +207,42 @@ impl RholangBackend {
                     }
                     Err(e) => warn!("Failed to index file {}: {}", uri, e),
                 }
+            }
+        }
+    }
+
+    /// Indexes all .rho files in the given directory (non-recursively).
+    async fn index_directory(&self, dir: &Path) {
+        match std::fs::read_dir(dir) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(entry) => {
+                            let path = entry.path();
+                            if entry.file_type().expect("Failed to get file type").is_file()
+                                && path.extension().map_or(false, |ext| ext == "rho") {
+                                let uri = Url::from_file_path(&path).expect("Failed to create URI from path");
+                                if !self.documents_by_uri.read().await.contains_key(&uri)
+                                    && !self.workspace.read().await.documents.contains_key(&uri) {
+                                    if let Ok(text) = std::fs::read_to_string(&path) {
+                                        match self.index_file(&uri, &text, 0, None).await {
+                                            Ok(cached_doc) => {
+                                                self.workspace.write().await.documents.insert(uri.clone(), Arc::new(cached_doc));
+                                                debug!("Indexed sibling file: {}", uri);
+                                            }
+                                            Err(e) => warn!("Failed to index sibling file {}: {}", uri, e),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => warn!("Failed to read directory entry: {}", e),
+                    }
+                }
+                self.link_symbols().await;
+            }
+            Err(e) => {
+                warn!("Failed to read directory {:?} for sibling indexing: {}", dir, e);
             }
         }
     }
@@ -377,8 +410,22 @@ impl RholangBackend {
                                    name, position.line, position.character, uri);
                             return Some(symbol);
                         } else {
-                            debug!("Symbol '{}' at {}:{} in {} not found in symbol table",
-                                   name, position.line, position.character, uri);
+                            // Search global symbols for unbound references
+                            let workspace = self.workspace.read().await;
+                            if let Some((def_uri, def_pos)) = workspace.global_symbols.get(name) {
+                                debug!("Found global symbol '{}' for unbound reference at {}:{} in {}",
+                                       name, position.line, position.character, uri);
+                                return Some(Arc::new(Symbol {
+                                    name: name.to_string(),
+                                    symbol_type: SymbolType::Contract,
+                                    declaration_uri: def_uri.clone(),
+                                    declaration_location: *def_pos,
+                                    definition_location: Some(*def_pos),
+                                }));
+                            } else {
+                                debug!("Symbol '{}' at {}:{} in {} not found in symbol table or global",
+                                       name, position.line, position.character, uri);
+                            }
                         }
                     } else {
                         debug!("Node at {}:{} in {} is not a Var node",
@@ -399,16 +446,27 @@ impl RholangBackend {
     }
 
     /// Collects all locations where the given symbol is referenced, including local and global usages.
-    async fn get_symbol_references(&self, symbol: &Symbol) -> Vec<(Url, Range)> {
+    async fn get_symbol_references(&self, symbol: &Symbol, include_declaration: bool) -> Vec<(Url, Range)> {
         let mut locations = Vec::new();
-        let decl_pos = symbol.declaration_location;
         let decl_uri = symbol.declaration_uri.clone();
         let name_len = symbol.name.len();
 
         // Add declaration location
+        let decl_pos = symbol.declaration_location;
         let decl_range = Self::position_to_range(decl_pos, name_len);
-        locations.push((decl_uri.clone(), decl_range));
-        debug!("Added declaration of '{}' at {}:{:?}", symbol.name, decl_uri, decl_pos);
+        if include_declaration {
+            locations.push((decl_uri.clone(), decl_range));
+            debug!("Added declaration of '{}' at {}:{:?}", symbol.name, decl_uri, decl_pos);
+        }
+
+        // Add definition location if present and different from declaration
+        if let Some(def_pos) = symbol.definition_location {
+            if def_pos != symbol.declaration_location {
+                let def_range = Self::position_to_range(def_pos, name_len);
+                locations.push((decl_uri.clone(), def_range));
+                debug!("Added definition of '{}' at {}:{:?}", symbol.name, decl_uri, def_pos);
+            }
+        }
 
         let workspace = self.workspace.read().await;
 
@@ -468,8 +526,12 @@ impl LanguageServer for RholangBackend {
             *locked_pid = Some(client_pid);
         }
 
+        let mut root_guard = self.root_dir.write().await;
         if let Some(root_uri) = params.root_uri {
             if let Ok(root_path) = root_uri.to_file_path() {
+                *root_guard = Some(root_path.clone());
+                drop(root_guard);
+
                 for entry in WalkDir::new(&root_path).into_iter().filter_map(|e| e.ok()) {
                     if entry.path().extension().map_or(false, |ext| ext == "rho") {
                         let uri = Url::from_file_path(entry.path()).unwrap();
@@ -545,6 +607,47 @@ impl LanguageServer for RholangBackend {
         let uri = params.text_document.uri.clone();
         let text = params.text_document.text;
         let version = params.text_document.version;
+
+        let mut root_guard = self.root_dir.write().await;
+        if root_guard.is_none() {
+            if let Ok(path) = uri.to_file_path() {
+                if let Some(parent) = path.parent() {
+                    *root_guard = Some(parent.to_owned());
+                    drop(root_guard);
+
+                    let dir = parent.to_owned();
+                    self.index_directory(&dir).await;
+
+                    let tx = self.file_sender.lock().unwrap().clone();
+                    let mut watcher = RecommendedWatcher::new(
+                        move |res| { let _ = tx.send(res); },
+                        notify::Config::default()
+                    ).map_err(|_| jsonrpc::Error::internal_error()).expect("Failed to initialize watcher");
+                    if let Err(e) = watcher.watch(parent, RecursiveMode::NonRecursive) {
+                        warn!("Failed to watch directory {:?}: {}", parent, e);
+                    }
+                    *self.file_watcher.lock().unwrap() = Some(watcher);
+
+                    let file_events = self.file_events.clone();
+                    let backend = self.clone();
+                    task::spawn_blocking(move || {
+                        while let Ok(event) = file_events.lock().unwrap().recv() {
+                            if let Ok(event) = event {
+                                for path in event.paths {
+                                    let backend = backend.clone();
+                                    tokio::spawn(async move {
+                                        backend.handle_file_change(path).await;
+                                    });
+                                }
+                            }
+                        }
+                    });
+                }
+            }
+        } else {
+            drop(root_guard);
+        }
+
         let document_id = self.next_document_id();
         let document = Arc::new(LspDocument {
             id: document_id,
@@ -638,7 +741,7 @@ impl LanguageServer for RholangBackend {
         };
 
         // Step 2: Collect all reference locations
-        let references = self.get_symbol_references(&symbol).await;
+        let references = self.get_symbol_references(&symbol, true).await;
         if references.is_empty() {
             debug!("No references to rename for '{}'", symbol.name);
             return Ok(None);
@@ -721,21 +824,11 @@ impl LanguageServer for RholangBackend {
         };
 
         // Step 2: Collect all references including the declaration
-        let references = self.get_symbol_references(&symbol).await;
+        let references = self.get_symbol_references(&symbol, include_declaration).await;
         debug!("Collected {} references for '{}'", references.len(), symbol.name);
 
-        // Step 3: Filter out declaration if not requested
-        let decl_range = Self::position_to_range(symbol.declaration_location, symbol.name.len());
-        let locations = if include_declaration {
-            references
-        } else {
-            references.into_iter()
-                .filter(|(u, r)| !(u == &symbol.declaration_uri && r == &decl_range))
-                .collect()
-        };
-
-        // Step 4: Convert to LSP Location objects
-        let locations: Vec<Location> = locations.into_iter()
+        // Step 3: Convert to LSP Location objects
+        let locations: Vec<Location> = references.into_iter()
             .map(|(uri, range)| Location { uri, range })
             .collect();
 
@@ -793,7 +886,7 @@ impl LanguageServer for RholangBackend {
             }
         };
 
-        let references = self.get_symbol_references(&symbol).await;
+        let references = self.get_symbol_references(&symbol, true).await;
 
         let highlights: Vec<DocumentHighlight> = references
             .into_iter()

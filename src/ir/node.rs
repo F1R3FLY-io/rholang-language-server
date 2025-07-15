@@ -22,7 +22,7 @@ pub struct RelativePosition {
 
 /// Represents an absolute position in the source code, computed when needed from relative positions.
 /// Coordinates are zero-based (row, column, byte).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct Position {
     pub row: usize,    // Line number (0-based)
     pub column: usize, // Column number (0-based)
@@ -1082,7 +1082,7 @@ impl<'a> Node<'a> {
             Node::Choice { branches, .. } => {
                 for (inputs, proc) in branches {
                     for input in inputs {
-                        if let Node::LinearBind { names, remainder, source, .. } = &**input {
+                        if let Node::LinearBind { names, remainder, .. } = &**input {
                             for name in names {
                                 if let Node::Var { name: var_name, .. } = &**name {
                                     if RESERVED_KEYWORDS.contains(&var_name.as_str()) {
@@ -1097,7 +1097,6 @@ impl<'a> Node<'a> {
                             if let Some(rem) = remainder {
                                 rem.validate()?;
                             }
-                            source.validate()?;
                         }
                         input.validate()?;
                     }
@@ -1195,9 +1194,18 @@ impl<'a> Node<'a> {
     pub fn with_metadata(&self, new_metadata: Option<Arc<Metadata>>) -> Arc<Node<'a>> {
         match self {
             Node::Par { base, left, right, .. } => Arc::new(Node::Par {
-                base: base.clone(), left: left.clone(), right: right.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                left: left.clone(),
+                right: right.clone(),
+                metadata: new_metadata,
+            }),
             Node::SendSync { base, channel, inputs, cont, .. } => Arc::new(Node::SendSync {
-                base: base.clone(), channel: channel.clone(), inputs: inputs.clone(), cont: cont.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                channel: channel.clone(),
+                inputs: inputs.clone(),
+                cont: cont.clone(),
+                metadata: new_metadata,
+            }),
             Node::Send { base, channel, send_type, send_type_end, inputs, .. } => Arc::new(Node::Send {
                 base: base.clone(),
                 channel: channel.clone(),
@@ -1207,77 +1215,212 @@ impl<'a> Node<'a> {
                 metadata: new_metadata,
             }),
             Node::New { base, decls, proc, .. } => Arc::new(Node::New {
-                base: base.clone(), decls: decls.clone(), proc: proc.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                decls: decls.clone(),
+                proc: proc.clone(),
+                metadata: new_metadata,
+            }),
             Node::IfElse { base, condition, consequence, alternative, .. } => Arc::new(Node::IfElse {
-                base: base.clone(), condition: condition.clone(), consequence: consequence.clone(), alternative: alternative.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                condition: condition.clone(),
+                consequence: consequence.clone(),
+                alternative: alternative.clone(),
+                metadata: new_metadata,
+            }),
             Node::Let { base, decls, proc, .. } => Arc::new(Node::Let {
-                base: base.clone(), decls: decls.clone(), proc: proc.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                decls: decls.clone(),
+                proc: proc.clone(),
+                metadata: new_metadata,
+            }),
             Node::Bundle { base, bundle_type, proc, .. } => Arc::new(Node::Bundle {
-                base: base.clone(), bundle_type: bundle_type.clone(), proc: proc.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                bundle_type: bundle_type.clone(),
+                proc: proc.clone(),
+                metadata: new_metadata,
+            }),
             Node::Match { base, expression, cases, .. } => Arc::new(Node::Match {
-                base: base.clone(), expression: expression.clone(), cases: cases.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                expression: expression.clone(),
+                cases: cases.clone(),
+                metadata: new_metadata,
+            }),
             Node::Choice { base, branches, .. } => Arc::new(Node::Choice {
-                base: base.clone(), branches: branches.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                branches: branches.clone(),
+                metadata: new_metadata,
+            }),
             Node::Contract { base, name, formals, formals_remainder, proc, .. } => Arc::new(Node::Contract {
-                base: base.clone(), name: name.clone(), formals: formals.clone(), formals_remainder: formals_remainder.clone(), proc: proc.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                name: name.clone(),
+                formals: formals.clone(),
+                formals_remainder: formals_remainder.clone(),
+                proc: proc.clone(),
+                metadata: new_metadata,
+            }),
             Node::Input { base, receipts, proc, .. } => Arc::new(Node::Input {
-                base: base.clone(), receipts: receipts.clone(), proc: proc.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                receipts: receipts.clone(),
+                proc: proc.clone(),
+                metadata: new_metadata,
+            }),
             Node::Block { base, proc, .. } => Arc::new(Node::Block {
-                base: base.clone(), proc: proc.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                proc: proc.clone(),
+                metadata: new_metadata,
+            }),
             Node::Parenthesized { base, expr, .. } => Arc::new(Node::Parenthesized {
-                base: base.clone(), expr: expr.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                expr: expr.clone(),
+                metadata: new_metadata,
+            }),
             Node::BinOp { base, op, left, right, .. } => Arc::new(Node::BinOp {
-                base: base.clone(), op: op.clone(), left: left.clone(), right: right.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                op: op.clone(),
+                left: left.clone(),
+                right: right.clone(),
+                metadata: new_metadata,
+            }),
             Node::UnaryOp { base, op, operand, .. } => Arc::new(Node::UnaryOp {
-                base: base.clone(), op: op.clone(), operand: operand.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                op: op.clone(),
+                operand: operand.clone(),
+                metadata: new_metadata,
+            }),
             Node::Method { base, receiver, name, args, .. } => Arc::new(Node::Method {
-                base: base.clone(), receiver: receiver.clone(), name: name.clone(), args: args.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                receiver: receiver.clone(),
+                name: name.clone(),
+                args: args.clone(),
+                metadata: new_metadata,
+            }),
             Node::Eval { base, name, .. } => Arc::new(Node::Eval {
-                base: base.clone(), name: name.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                name: name.clone(),
+                metadata: new_metadata,
+            }),
             Node::Quote { base, quotable, .. } => Arc::new(Node::Quote {
-                base: base.clone(), quotable: quotable.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                quotable: quotable.clone(),
+                metadata: new_metadata,
+            }),
             Node::VarRef { base, kind, var, .. } => Arc::new(Node::VarRef {
-                base: base.clone(), kind: kind.clone(), var: var.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                kind: kind.clone(),
+                var: var.clone(),
+                metadata: new_metadata,
+            }),
             Node::BoolLiteral { base, value, .. } => Arc::new(Node::BoolLiteral {
-                base: base.clone(), value: *value, metadata: new_metadata }),
+                base: base.clone(),
+                value: *value,
+                metadata: new_metadata,
+            }),
             Node::LongLiteral { base, value, .. } => Arc::new(Node::LongLiteral {
-                base: base.clone(), value: *value, metadata: new_metadata }),
+                base: base.clone(),
+                value: *value,
+                metadata: new_metadata,
+            }),
             Node::StringLiteral { base, value, .. } => Arc::new(Node::StringLiteral {
-                base: base.clone(), value: value.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                value: value.clone(),
+                metadata: new_metadata,
+            }),
             Node::UriLiteral { base, value, .. } => Arc::new(Node::UriLiteral {
-                base: base.clone(), value: value.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                value: value.clone(),
+                metadata: new_metadata,
+            }),
             Node::Nil { base, .. } => Arc::new(Node::Nil {
-                base: base.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                metadata: new_metadata,
+            }),
             Node::List { base, elements, remainder, .. } => Arc::new(Node::List {
-                base: base.clone(), elements: elements.clone(), remainder: remainder.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                elements: elements.clone(),
+                remainder: remainder.clone(),
+                metadata: new_metadata,
+            }),
             Node::Set { base, elements, remainder, .. } => Arc::new(Node::Set {
-                base: base.clone(), elements: elements.clone(), remainder: remainder.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                elements: elements.clone(),
+                remainder: remainder.clone(),
+                metadata: new_metadata,
+            }),
             Node::Map { base, pairs, remainder, .. } => Arc::new(Node::Map {
-                base: base.clone(), pairs: pairs.clone(), remainder: remainder.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                pairs: pairs.clone(),
+                remainder: remainder.clone(),
+                metadata: new_metadata,
+            }),
             Node::Tuple { base, elements, .. } => Arc::new(Node::Tuple {
-                base: base.clone(), elements: elements.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                elements: elements.clone(),
+                metadata: new_metadata,
+            }),
             Node::Var { base, name, .. } => Arc::new(Node::Var {
-                base: base.clone(), name: name.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                name: name.clone(),
+                metadata: new_metadata,
+            }),
             Node::NameDecl { base, var, uri, .. } => Arc::new(Node::NameDecl {
-                base: base.clone(), var: var.clone(), uri: uri.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                var: var.clone(),
+                uri: uri.clone(),
+                metadata: new_metadata,
+            }),
             Node::Decl { base, names, names_remainder, procs, .. } => Arc::new(Node::Decl {
-                base: base.clone(), names: names.clone(), names_remainder: names_remainder.clone(), procs: procs.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                names: names.clone(),
+                names_remainder: names_remainder.clone(),
+                procs: procs.clone(),
+                metadata: new_metadata,
+            }),
             Node::LinearBind { base, names, remainder, source, .. } => Arc::new(Node::LinearBind {
-                base: base.clone(), names: names.clone(), remainder: remainder.clone(), source: source.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                names: names.clone(),
+                remainder: remainder.clone(),
+                source: source.clone(),
+                metadata: new_metadata,
+            }),
             Node::RepeatedBind { base, names, remainder, source, .. } => Arc::new(Node::RepeatedBind {
-                base: base.clone(), names: names.clone(), remainder: remainder.clone(), source: source.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                names: names.clone(),
+                remainder: remainder.clone(),
+                source: source.clone(),
+                metadata: new_metadata,
+            }),
             Node::PeekBind { base, names, remainder, source, .. } => Arc::new(Node::PeekBind {
-                base: base.clone(), names: names.clone(), remainder: remainder.clone(), source: source.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                names: names.clone(),
+                remainder: remainder.clone(),
+                source: source.clone(),
+                metadata: new_metadata,
+            }),
             Node::Comment { base, kind, .. } => Arc::new(Node::Comment {
-                base: base.clone(), kind: kind.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                kind: kind.clone(),
+                metadata: new_metadata,
+            }),
             Node::Wildcard { base, .. } => Arc::new(Node::Wildcard {
-                base: base.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                metadata: new_metadata,
+            }),
             Node::SimpleType { base, value, .. } => Arc::new(Node::SimpleType {
-                base: base.clone(), value: value.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                value: value.clone(),
+                metadata: new_metadata,
+            }),
             Node::ReceiveSendSource { base, name, .. } => Arc::new(Node::ReceiveSendSource {
-                base: base.clone(), name: name.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                name: name.clone(),
+                metadata: new_metadata,
+            }),
             Node::SendReceiveSource { base, name, inputs, .. } => Arc::new(Node::SendReceiveSource {
-                base: base.clone(), name: name.clone(), inputs: inputs.clone(), metadata: new_metadata }),
+                base: base.clone(),
+                name: name.clone(),
+                inputs: inputs.clone(),
+                metadata: new_metadata,
+            }),
             Node::Error { base, children, .. } => Arc::new(Node::Error {
                 base: base.clone(),
                 children: children.clone(),

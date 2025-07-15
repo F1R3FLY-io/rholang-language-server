@@ -601,7 +601,7 @@ impl<'a> Visitor for PrettyPrinter<'a> {
         Arc::clone(node)
     }
 
-    fn visit_sendsync<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, channel: &Arc<Node<'b>>, inputs: &Vector<Arc<Node<'b>>, ArcK>, cont: &Arc<Node<'b>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
+    fn visit_send_sync<'b>(&self, node: &Arc<Node<'b>>, _base: &NodeBase<'b>, channel: &Arc<Node<'b>>, inputs: &Vector<Arc<Node<'b>>, ArcK>, cont: &Arc<Node<'b>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node<'b>> {
         self.start_map();
         self.add_field("type", |p| p.append("\"sendsync\""));
         self.add_base_fields(node);

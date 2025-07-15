@@ -1,10 +1,12 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use tracing::{debug, trace};
-use rpds::Vector;
+
 use archery::ArcK;
+use rpds::Vector;
 use tower_lsp::lsp_types::Url;
+use tracing::{debug, trace};
+
 use crate::ir::node::{Metadata, Node, NodeBase, Position};
 use crate::ir::symbol_table::{Symbol, SymbolTable, SymbolType};
 use crate::ir::visitor::Visitor;
@@ -20,21 +22,19 @@ pub struct SymbolTableBuilder {
     current_uri: Url,          // URI of the current file
     current_table: RwLock<Arc<SymbolTable>>,  // Current scope's symbol table
     inverted_index: RwLock<InvertedIndex>,    // Tracks local symbol usages
-    global_usages: RwLock<Vec<((Url, Position), (Url, Position))>>,  // Tracks cross-file usages
-    potential_global_refs: RwLock<Vec<(String, Position)>>,  // Potential unresolved global contract calls
-    global_table: Arc<SymbolTable>,  // Global scope for cross-file symbols
+    potential_global_refs: RwLock<Vec<(String, Position)>>,  // Potential unresolved global contract calls (name, use_pos)
+    global_table: Arc<SymbolTable>,  // Global scope for cross-file symbols (passed but not used as parent)
 }
 
 impl SymbolTableBuilder {
     /// Creates a new builder with a root IR node, file URI, and global symbol table.
     pub fn new(root: Arc<Node<'static>>, uri: Url, global_table: Arc<SymbolTable>) -> Self {
-        let local_table = Arc::new(SymbolTable::new(Some(global_table.clone())));
+        let local_table = Arc::new(SymbolTable::new(Some(global_table.clone())));  // Chain local to global
         Self {
             root,
             current_uri: uri,
             current_table: RwLock::new(local_table),
             inverted_index: RwLock::new(HashMap::new()),
-            global_usages: RwLock::new(Vec::new()),
             potential_global_refs: RwLock::new(Vec::new()),
             global_table,
         }
@@ -43,11 +43,6 @@ impl SymbolTableBuilder {
     /// Returns a clone of the local inverted index.
     pub fn get_inverted_index(&self) -> InvertedIndex {
         self.inverted_index.read().unwrap().clone()
-    }
-
-    /// Returns a clone of the global usage references.
-    pub fn get_global_usages(&self) -> Vec<((Url, Position), (Url, Position))> {
-        self.global_usages.read().unwrap().clone()
     }
 
     /// Returns a clone of the potential global references.
@@ -454,24 +449,57 @@ impl Visitor for SymbolTableBuilder {
         proc: &Arc<Node<'a>>,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'a>> {
-        let new_name = self.visit_node(name);
-        if let Node::Var { name: contract_name, .. } = &*new_name {
-            if !contract_name.is_empty() {  // Ensure contract name is not empty
-                let decl_loc = new_name.absolute_start(&self.root);
-                let def_loc = proc.absolute_start(&self.root);
-                let symbol = Arc::new(Symbol {
-                    name: contract_name.clone(),
-                    symbol_type: SymbolType::Contract,
-                    declaration_uri: self.current_uri.clone(),
-                    declaration_location: decl_loc,
-                    definition_location: Some(def_loc),
-                });
-                self.global_table.insert(symbol);
-                trace!("Declared contract '{}' at {:?}", contract_name, decl_loc);
-            } else {
-                trace!("Skipped empty contract name at {:?}", new_name.absolute_start(&self.root));
+        let contract_pos = name.absolute_start(&self.root);
+        let contract_name = if let Node::Var { name, .. } = &**name {
+            name.clone()
+        } else {
+            String::new()
+        };
+
+        let symbol = if !contract_name.is_empty() {
+            #[allow(unused_assignments)]
+            let mut symbol_opt: Option<Arc<Symbol>> = None;
+            {
+                let current_table_guard = self.current_table.read().unwrap();
+                // let is_top_level = current_table_guard.parent().as_ref().map_or(false, |p| p.parent().is_none());
+                if let Some(existing) = current_table_guard.lookup(&contract_name) {
+                    trace!("Updating variable '{}' to contract at {:?}", contract_name, contract_pos);
+                    let updated = Arc::new(Symbol {
+                        name: existing.name.clone(),
+                        symbol_type: SymbolType::Contract,
+                        declaration_uri: existing.declaration_uri.clone(),
+                        declaration_location: existing.declaration_location,
+                        definition_location: Some(contract_pos),
+                    });
+                    symbol_opt = Some(updated);
+                } else {
+                    trace!("Declaring new contract '{}' at {:?}", contract_name, contract_pos);
+                    let symbol = Arc::new(Symbol {
+                        name: contract_name.clone(),
+                        symbol_type: SymbolType::Contract,
+                        declaration_uri: self.current_uri.clone(),
+                        declaration_location: contract_pos,
+                        definition_location: Some(contract_pos),
+                    });
+                    symbol_opt = Some(symbol);
+                }
             }
-        }
+            if let Some(symbol) = symbol_opt {
+                let current_table_guard = self.current_table.read().unwrap();
+                let is_top_level = current_table_guard.parent().as_ref().map_or(false, |p| p.parent().is_none());
+                drop(current_table_guard);
+                let insert_table = if is_top_level { self.global_table.clone() } else { self.current_table.read().unwrap().clone() };
+                insert_table.symbols.write().unwrap().insert(contract_name.clone(), symbol.clone());
+                Some(symbol)
+            } else {
+                None
+            }
+        } else {
+            trace!("Skipped empty contract name at {:?}", contract_pos);
+            None
+        };
+
+        let new_name = self.visit_node(name);
 
         let new_table = self.push_scope();
         for f in formals {
@@ -519,7 +547,7 @@ impl Visitor for SymbolTableBuilder {
             proc: new_proc,
             metadata: metadata.clone(),
         });
-        let updated_node = self.update_metadata(new_node, new_table.clone(), None, metadata);
+        let updated_node = self.update_metadata(new_node, new_table.clone(), symbol, metadata);
         self.pop_scope();
         updated_node
     }
@@ -606,8 +634,8 @@ impl Visitor for SymbolTableBuilder {
         let new_cases = cases.iter().map(|(pattern, proc)| {
             let new_table = self.push_scope();
             let bound_vars = self.collect_bound_vars(pattern);
-            for var in &bound_vars {
-                if let Node::Var { name, .. } = &**var {
+            for var in bound_vars {
+                if let Node::Var { name, .. } = &*var {
                     if !name.is_empty() {  // Skip empty variable names
                         let location = var.absolute_start(&self.root);
                         let symbol = Arc::new(Symbol::new(
@@ -719,27 +747,31 @@ impl Visitor for SymbolTableBuilder {
         name: &String,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'a>> {
-        let mut referenced_symbol = None;
+        let mut referenced_symbol: Option<Arc<Symbol>> = None;
         if !name.is_empty() {  // Only process non-empty variable names
             if let Some(symbol) = self.current_table.read().unwrap().lookup(name) {
+                referenced_symbol = Some(symbol.clone());
                 let usage_location = node.absolute_start(&self.root);
-                // Only record as usage if it's not the declaration itself
-                if usage_location != symbol.declaration_location || symbol.declaration_uri != self.current_uri {
+                let is_declaration = usage_location == symbol.declaration_location;
+                let is_definition = symbol.definition_location.map_or(false, |def| usage_location == def);
+                if !is_declaration && !is_definition {
                     if symbol.declaration_uri == self.current_uri {
-                        let mut index = self.inverted_index.write().unwrap();
-                        index.entry(symbol.declaration_location).or_insert_with(Vec::new).push(usage_location);
+                        self.inverted_index.write().unwrap()
+                            .entry(symbol.declaration_location)
+                            .or_insert(Vec::new())
+                            .push(usage_location);
                         trace!("Recorded local usage of '{}' at {:?}", name, usage_location);
                     } else {
-                        let mut global = self.global_usages.write().unwrap();
-                        global.push(((symbol.declaration_uri.clone(), symbol.declaration_location), (self.current_uri.clone(), usage_location)));
-                        trace!("Recorded global usage of '{}' from {} at {:?}", name, symbol.declaration_uri, usage_location);
+                        self.potential_global_refs.write().unwrap().push((name.clone(), usage_location));
+                        trace!("Added global reference for '{}' at {:?}", name, usage_location);
                     }
                 } else {
-                    trace!("Skipping usage recording for declaration of '{}' at {:?}", name, usage_location);
+                    trace!("Skipped recording for {} of '{}' at {:?}", if is_declaration {"declaration"} else {"definition"}, name, usage_location);
                 }
-                referenced_symbol = Some(symbol.clone());
             } else {
-                trace!("No symbol found for '{}', likely a declaration", name);
+                let usage_location = node.absolute_start(&self.root);
+                self.potential_global_refs.write().unwrap().push((name.clone(), usage_location));
+                trace!("Added potential unbound reference for '{}' at {:?}", name, usage_location);
             }
         } else {
             trace!("Skipped empty variable name in var usage at {:?}", node.absolute_start(&self.root));
@@ -771,11 +803,6 @@ mod tests {
         let builder = SymbolTableBuilder::new(root.clone(), uri.clone(), global_table.clone());
         let transformed = builder.visit_node(&root);
 
-        // Check global contract
-        let contract_symbol = global_table.lookup("z").unwrap();
-        assert_eq!(contract_symbol.name, "z");
-        assert_eq!(contract_symbol.symbol_type, SymbolType::Contract);
-
         // Check nested scopes
         if let Node::New { proc, .. } = &*transformed {
             if let Node::Block { proc: let_node, .. } = &**proc {
@@ -803,14 +830,8 @@ mod tests {
         let ir = parse_to_ir(&tree, code);
         let root: Arc<Node<'static>> = unsafe { std::mem::transmute(ir) };
         let global_table = Arc::new(SymbolTable::new(None));
-        let builder = SymbolTableBuilder::new(root.clone(), uri.clone(), global_table.clone());
+        let builder = SymbolTableBuilder::new(root.clone(), uri, global_table.clone());
         let transformed = builder.visit_node(&root);
-
-        let global_symbol = global_table.lookup("x").unwrap();
-        assert_eq!(global_symbol.name, "x");
-        assert_eq!(global_symbol.symbol_type, SymbolType::Contract);
-        assert_eq!(global_symbol.declaration_uri, uri);
-        assert!(global_symbol.definition_location.is_some());
 
         if let Node::New { proc, .. } = &*transformed {
             if let Node::Block { proc: contract_node, .. } = &**proc {
@@ -926,10 +947,9 @@ mod tests {
         let builder2 = SymbolTableBuilder::new(root2.clone(), uri2.clone(), global_table.clone());
         builder2.visit_node(&root2);
 
-        let foo_decl = global_table.lookup("foo").unwrap().declaration_location;
-        let global_usages = builder2.get_global_usages();
-        assert_eq!(global_usages.len(), 1);
-        assert_eq!(global_usages[0].0, (uri1, foo_decl));
+        let potentials = builder2.get_potential_global_refs();
+        assert_eq!(potentials.len(), 1);
+        assert_eq!(potentials[0].0, "foo");
     }
 
     #[test]

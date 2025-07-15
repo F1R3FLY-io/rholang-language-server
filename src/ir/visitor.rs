@@ -18,7 +18,7 @@ pub trait Visitor {
     fn visit_node<'a>(&self, node: &Arc<Node<'a>>) -> Arc<Node<'a>> {
         match &**node {
             Node::Par { base, left, right, metadata } => self.visit_par(node, base, left, right, metadata),
-            Node::SendSync { base, channel, inputs, cont, metadata } => self.visit_sendsync(node, base, channel, inputs, cont, metadata),
+            Node::SendSync { base, channel, inputs, cont, metadata } => self.visit_send_sync(node, base, channel, inputs, cont, metadata),
             Node::Send { base, channel, send_type, send_type_end, inputs, metadata } => self.visit_send(node, base, channel, send_type, send_type_end, inputs, metadata),
             Node::New { base, decls, proc, metadata } => self.visit_new(node, base, decls, proc, metadata),
             Node::IfElse { base, condition, consequence, alternative, metadata } => self.visit_ifelse(node, base, condition, consequence, alternative, metadata),
@@ -111,7 +111,7 @@ pub trait Visitor {
     ///
     /// # Examples
     /// For `ch!?("msg"; Nil)`, processes `ch`, `"msg"`, and `Nil`.
-    fn visit_sendsync<'a>(
+    fn visit_send_sync<'a>(
         &self,
         node: &Arc<Node<'a>>,
         base: &NodeBase<'a>,

@@ -3,7 +3,7 @@ macro_rules! with_lsp_client {
     ($test_name:ident, $comm_type:expr, $callback:expr) => {
         #[test]
         fn $test_name() {
-            $crate::lsp::client::setup();
+            $crate::lsp::client::init_logger().expect("Failed to initialize logger");
             let (event_sender, event_receiver) = std::sync::mpsc::channel::<$crate::lsp::events::LspEvent>();
 
             match $crate::lsp::client::LspClient::start(

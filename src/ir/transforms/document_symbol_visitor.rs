@@ -549,7 +549,7 @@ pub fn collect_document_symbols(
 /// Collects all symbols from a SymbolTable as SymbolInformation for workspace-wide search.
 pub fn collect_workspace_symbols(symbol_table: &SymbolTable, uri: &Url) -> Vec<SymbolInformation> {
     symbol_table.collect_all_symbols().into_iter()
-        .filter(|symbol| &symbol.declaration_uri == uri) // Only symbols defined in this document
+        .filter(|symbol| symbol.declaration_uri == *uri && matches!(symbol.symbol_type, SymbolType::Contract)) // Only symbols defined in this document
         .map(|symbol| {
             let location = Location {
                 uri: uri.clone(),
