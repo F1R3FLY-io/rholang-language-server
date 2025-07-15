@@ -38,7 +38,7 @@ impl Symbol {
 /// A hierarchical symbol table with parent-child scoping.
 #[derive(Debug, Clone)]
 pub struct SymbolTable {
-    symbols: Arc<RwLock<HashMap<String, Arc<Symbol>>>>,
+    pub symbols: Arc<RwLock<HashMap<String, Arc<Symbol>>>>,
     parent: Option<Arc<SymbolTable>>,
 }
 

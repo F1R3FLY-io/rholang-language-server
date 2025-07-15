@@ -26,7 +26,7 @@ use tower_lsp::lsp_types::{
 use tower_lsp::lsp_types::request::{GotoDeclarationParams, GotoDeclarationResponse};
 use tower_lsp::jsonrpc::Result as LspResult;
 
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use ropey::Rope;
 
@@ -86,32 +86,11 @@ impl RholangBackend {
         }
     }
 
-    /// Builds the global symbol table by collecting contract symbols from all documents in the workspace.
-    async fn build_global_table(&self) -> Arc<SymbolTable> {
-        let workspace = self.workspace.read().await;
-        let global_table = Arc::new(SymbolTable::new(None));
-        for (uri, doc) in &workspace.documents {
-            for symbol in doc.symbol_table.collect_all_symbols() {
-                if matches!(symbol.symbol_type, SymbolType::Contract) {
-                    let new_symbol = Arc::new(Symbol {
-                        name: symbol.name.clone(),
-                        symbol_type: SymbolType::Contract,
-                        declaration_uri: uri.clone(),
-                        declaration_location: symbol.declaration_location,
-                        definition_location: symbol.definition_location,
-                    });
-                    global_table.insert(new_symbol);
-                }
-            }
-        }
-        global_table
-    }
-
     /// Processes a parsed IR node through the transformation pipeline to build symbols and metadata.
     async fn process_document(&self, ir: Arc<Node<'_>>, uri: &Url) -> Result<CachedDocument, String> {
         let mut pipeline = Pipeline::new();
         let static_ir: Arc<Node<'static>> = unsafe { std::mem::transmute(ir.clone()) };
-        let global_table = self.build_global_table().await;
+        let global_table = self.workspace.read().await.global_table.clone();
         let builder = Arc::new(SymbolTableBuilder::new(static_ir.clone(), uri.clone(), global_table));
         pipeline.add_transform(crate::ir::pipeline::Transform {
             id: "symbol_table_builder".to_string(),
@@ -123,6 +102,7 @@ impl RholangBackend {
         debug!("Cached {} node positions for {}", positions.len(), uri);
         let inverted_index = builder.get_inverted_index();
         let global_usages = builder.get_global_usages();
+        let potential_global_refs = builder.get_potential_global_refs();
         let symbol_table = transformed_ir.metadata()
             .and_then(|m| m.data.get("symbol_table"))
             .map(|st| Arc::clone(st.downcast_ref::<Arc<SymbolTable>>().unwrap()))
@@ -147,6 +127,7 @@ impl RholangBackend {
             version,
             text: ir.text(),
             positions,
+            potential_global_refs,
         })
     }
 
@@ -158,6 +139,22 @@ impl RholangBackend {
         _version: i32,
         tree: Option<tree_sitter::Tree>,
     ) -> Result<CachedDocument, String> {
+        let uri_clone = uri.clone();
+        let mut workspace = self.workspace.write().await;
+        workspace.global_table.symbols.write().unwrap().retain(|_, s| &s.declaration_uri != &uri_clone);
+        let mut global_symbols = workspace.global_symbols.clone();
+        global_symbols.retain(|_, (u, _)| u != &uri_clone);
+        workspace.global_symbols = global_symbols;
+        workspace.global_inverted_index.retain(|(d_uri, _), us| {
+            if d_uri == &uri_clone {
+                false
+            } else {
+                us.retain(|(u_uri, _)| u_uri != &uri_clone);
+                !us.is_empty()
+            }
+        });
+        drop(workspace);
+
         let tree = Arc::new(tree.unwrap_or_else(|| parse_code(text)));
         let ir = parse_to_ir(&tree, text);
         self.process_document(ir, uri).await
@@ -167,7 +164,8 @@ impl RholangBackend {
     async fn link_symbols(&self) {
         let mut workspace = self.workspace.write().await;
         let mut global_symbols = HashMap::new();
-        for (uri, doc) in &workspace.documents {
+        let documents = workspace.documents.clone();
+        for (uri, doc) in &documents {
             for symbol in doc.symbol_table.collect_all_symbols() {
                 if matches!(symbol.symbol_type, SymbolType::Contract) {
                     global_symbols.insert(symbol.name.clone(), (uri.clone(), symbol.declaration_location));
@@ -175,7 +173,24 @@ impl RholangBackend {
             }
         }
         workspace.global_symbols = global_symbols;
-        info!("Linked symbols across {} files", workspace.documents.len());
+        info!("Linked symbols across {} files", documents.len());
+
+        // Resolve potentials
+        let mut resolutions = Vec::new();
+        for (doc_uri, doc) in &documents {
+            for (name, use_pos) in &doc.potential_global_refs {
+                if let Some((def_uri, def_pos)) = workspace.global_symbols.get(name).cloned() {
+                    resolutions.push(((def_uri, def_pos), (doc_uri.clone(), *use_pos)));
+                    trace!("Resolved potential global usage of '{}' at {:?} to def at {:?}", name, use_pos, def_pos);
+                }
+            }
+        }
+        for ((def_uri, def_pos), (use_uri, use_pos)) in resolutions {
+            workspace.global_inverted_index
+                .entry((def_uri, def_pos))
+                .or_insert_with(Vec::new)
+                .push((use_uri, use_pos));
+        }
     }
 
     /// Handles file system events by re-indexing changed .rho files that are not open.

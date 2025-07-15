@@ -61,13 +61,14 @@ pub struct LspDocument {
 /// Cached processed data for a document, including IR, symbols, and positions.
 #[derive(Debug, Clone)]
 pub struct CachedDocument {
-    pub ir: Arc<Node<'static>>, // Lifetime cast safe with Arc<Tree>
-    pub tree: Arc<Tree>,        // Shared ownership to extend lifetime
+    pub ir: Arc<Node<'static>>,
+    pub tree: Arc<Tree>,
     pub symbol_table: Arc<SymbolTable>,
     pub inverted_index: InvertedIndex,
     pub version: i32,
     pub text: String,
-    pub positions: Arc<HashMap<usize, (Position, Position)>>, // Cached start and end positions
+    pub positions: Arc<HashMap<usize, (Position, Position)>>,
+    pub potential_global_refs: Vec<(String, Position)>,
 }
 
 /// State of the entire workspace, including all documents and global symbols.

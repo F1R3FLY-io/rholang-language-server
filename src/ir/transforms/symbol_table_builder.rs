@@ -21,6 +21,7 @@ pub struct SymbolTableBuilder {
     current_table: RwLock<Arc<SymbolTable>>,  // Current scope's symbol table
     inverted_index: RwLock<InvertedIndex>,    // Tracks local symbol usages
     global_usages: RwLock<Vec<((Url, Position), (Url, Position))>>,  // Tracks cross-file usages
+    potential_global_refs: RwLock<Vec<(String, Position)>>,  // Potential unresolved global contract calls
     global_table: Arc<SymbolTable>,  // Global scope for cross-file symbols
 }
 
@@ -34,6 +35,7 @@ impl SymbolTableBuilder {
             current_table: RwLock::new(local_table),
             inverted_index: RwLock::new(HashMap::new()),
             global_usages: RwLock::new(Vec::new()),
+            potential_global_refs: RwLock::new(Vec::new()),
             global_table,
         }
     }
@@ -46,6 +48,11 @@ impl SymbolTableBuilder {
     /// Returns a clone of the global usage references.
     pub fn get_global_usages(&self) -> Vec<((Url, Position), (Url, Position))> {
         self.global_usages.read().unwrap().clone()
+    }
+
+    /// Returns a clone of the potential global references.
+    pub fn get_potential_global_refs(&self) -> Vec<(String, Position)> {
+        self.potential_global_refs.read().unwrap().clone()
     }
 
     /// Pushes a new scope onto the stack, linking it to the current scope as its parent.
@@ -69,13 +76,13 @@ impl SymbolTableBuilder {
     }
 
     /// Updates a node's metadata with a specific symbol table and optional symbol.
-    fn update_metadata<'a>(
+    fn update_metadata<'b>(
         &self,
-        node: Arc<Node<'a>>,
+        node: Arc<Node<'b>>,
         table: Arc<SymbolTable>,
         symbol: Option<Arc<Symbol>>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'a>> {
+    ) -> Arc<Node<'b>> {
         let mut data = metadata.as_ref().map_or(HashMap::new(), |m| m.data.clone());
         data.insert("symbol_table".to_string(), Arc::new(table) as Arc<dyn Any + Send + Sync>);
         if let Some(sym) = symbol {
@@ -85,12 +92,12 @@ impl SymbolTableBuilder {
     }
 
     /// Updates a node's metadata with the current symbol table and optional symbol.
-    fn update_with_current_table<'a>(
+    fn update_with_current_table<'b>(
         &self,
-        node: Arc<Node<'a>>,
+        node: Arc<Node<'b>>,
         symbol: Option<Arc<Symbol>>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'a>> {
+    ) -> Arc<Node<'b>> {
         let current_table = self.current_table.read().unwrap().clone();
         self.update_metadata(node, current_table, symbol, metadata)
     }
