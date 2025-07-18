@@ -1,8 +1,8 @@
 #[macro_export]
 macro_rules! with_lsp_client {
     ($test_name:ident, $comm_type:expr, $callback:expr) => {
-        #[test]
-        fn $test_name() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn $test_name() {
             $crate::lsp::client::init_logger().expect("Failed to initialize logger");
             let (event_sender, event_receiver) = std::sync::mpsc::channel::<$crate::lsp::events::LspEvent>();
 
@@ -11,12 +11,12 @@ macro_rules! with_lsp_client {
                 env!("CARGO_BIN_EXE_rholang-language-server").to_string(),
                 $comm_type,
                 event_sender,
-            ) {
+            ).await {
                 Ok(client) => {
                     let client = std::sync::Arc::new(client);
                     let event_thread = {
                         let client = std::sync::Arc::clone(&client);
-                        std::thread::spawn(move || {
+                        tokio::task::spawn_blocking(move || {
                             for event in event_receiver {
                                 match event {
                                     $crate::lsp::events::LspEvent::FileOpened { .. } => {
@@ -41,9 +41,9 @@ macro_rules! with_lsp_client {
                     assert!(result.is_ok(), "Shutdown failed: {}", result.unwrap_err());
                     let result = client.exit();
                     assert!(result.is_ok(), "Exit failed: {}", result.unwrap_err());
-                    let result = client.stop();
+                    let result = client.stop().await;
                     assert!(result.is_ok(), "Stop failed: {}", result.unwrap_err());
-                    event_thread.join().expect("Failed to join event thread");
+                    event_thread.await.expect("Failed to await event thread");
                 }
                 Err(e) => {
                     panic!("Failed to start client: {}", e);

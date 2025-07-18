@@ -293,5 +293,19 @@ fn format_node_helper(node: &Arc<Node>, level: usize, indent_size: usize) -> Str
                 .join("\n");
             format!("/* ERROR: \n{} */", children_str)
         }
+        Node::Disjunction { left, right, .. } => {
+            let left_text = format_node_helper(left, level, indent_size);
+            let right_text = format_node_helper(right, level, indent_size);
+            format!("{} \\/ {}", left_text, right_text)
+        }
+        Node::Conjunction { left, right, .. } => {
+            let left_text = format_node_helper(left, level, indent_size);
+            let right_text = format_node_helper(right, level, indent_size);
+            format!("{} /\\ {}", left_text, right_text)
+        }
+        Node::Negation { operand, .. } => {
+            let operand_text = format_node_helper(operand, level, indent_size);
+            format!("~{}", operand_text)
+        }
     }
 }

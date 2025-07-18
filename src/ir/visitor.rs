@@ -1,7 +1,8 @@
 use std::sync::Arc;
 use rpds::Vector;
 use archery::ArcK;
-use super::node::{Node, NodeBase, Metadata, CommentKind, SendType, BundleType, BinOperator, UnaryOperator, VarRefKind, Position};
+
+use super::node::{Node, Position, NodeBase, Metadata, CommentKind, SendType, BundleType, BinOperator, UnaryOperator, VarRefKind};
 
 /// Provides a visitor pattern for traversing and transforming the Rholang Intermediate Representation (IR) tree.
 /// This module enables implementors to define custom logic for processing each node type, facilitating operations
@@ -57,6 +58,9 @@ pub trait Visitor {
             Node::ReceiveSendSource { base, name, metadata } => self.visit_receive_send_source(node, base, name, metadata),
             Node::SendReceiveSource { base, name, inputs, metadata } => self.visit_send_receive_source(node, base, name, inputs, metadata),
             Node::Error { base, children, metadata } => self.visit_error(node, base, children, metadata),
+            Node::Disjunction { base, left, right, metadata } => self.visit_disjunction(node, base, left, right, metadata),
+            Node::Conjunction { base, left, right, metadata } => self.visit_conjunction(node, base, left, right, metadata),
+            Node::Negation { base, operand, metadata } => self.visit_negation(node, base, operand, metadata),
         }
     }
 
@@ -121,7 +125,7 @@ pub trait Visitor {
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'a>> {
         let new_channel = self.visit_node(channel);
-        let new_inputs = inputs.iter().map(|i| self.visit_node(i)).collect::<Vector<_, ArcK>>();
+        let new_inputs = inputs.iter().map(|i| self.visit_node(i)).collect::<Vector<Arc<Node<'a>>, ArcK>>();
         let new_cont = self.visit_node(cont);
         if Arc::ptr_eq(channel, &new_channel) &&
            inputs.iter().zip(new_inputs.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) &&
@@ -165,7 +169,7 @@ pub trait Visitor {
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'a>> {
         let new_channel = self.visit_node(channel);
-        let new_inputs = inputs.iter().map(|i| self.visit_node(i)).collect::<Vector<_, ArcK>>();
+        let new_inputs = inputs.iter().map(|i| self.visit_node(i)).collect::<Vector<Arc<Node<'a>>, ArcK>>();
         if Arc::ptr_eq(channel, &new_channel) &&
             inputs.iter().zip(new_inputs.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) {
             Arc::clone(node)
@@ -203,7 +207,7 @@ pub trait Visitor {
         proc: &Arc<Node<'a>>,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'a>> {
-        let new_decls = decls.iter().map(|d| self.visit_node(d)).collect::<Vector<_, ArcK>>();
+        let new_decls = decls.iter().map(|d| self.visit_node(d)).collect::<Vector<Arc<Node<'a>>, ArcK>>();
         let new_proc = self.visit_node(proc);
         if decls.iter().zip(new_decls.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) &&
            Arc::ptr_eq(proc, &new_proc) {
@@ -281,7 +285,7 @@ pub trait Visitor {
         proc: &Arc<Node<'a>>,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'a>> {
-        let new_decls = decls.iter().map(|d| self.visit_node(d)).collect::<Vector<_, ArcK>>();
+        let new_decls = decls.iter().map(|d| self.visit_node(d)).collect::<Vector<Arc<Node<'a>>, ArcK>>();
         let new_proc = self.visit_node(proc);
         if decls.iter().zip(new_decls.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) &&
            Arc::ptr_eq(proc, &new_proc) {
@@ -354,7 +358,7 @@ pub trait Visitor {
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'a>> {
         let new_expression = self.visit_node(expression);
-        let new_cases = cases.iter().map(|(p, r)| (self.visit_node(p), self.visit_node(r))).collect::<Vector<_, ArcK>>();
+        let new_cases = cases.iter().map(|(p, r)| (self.visit_node(p), self.visit_node(r))).collect::<Vector<(Arc<Node<'a>>, Arc<Node<'a>>), ArcK>>();
         if Arc::ptr_eq(expression, &new_expression) && cases.iter().zip(new_cases.iter()).all(|((p1, r1), (p2, r2))| Arc::ptr_eq(p1, p2) && Arc::ptr_eq(r1, r2)) {
             Arc::clone(node)
         } else {
@@ -388,9 +392,9 @@ pub trait Visitor {
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'a>> {
         let new_branches = branches.iter().map(|(i, p)| {
-            let new_inputs = i.iter().map(|n| self.visit_node(n)).collect::<Vector<_, ArcK>>();
+            let new_inputs = i.iter().map(|n| self.visit_node(n)).collect::<Vector<Arc<Node<'a>>, ArcK>>();
             (new_inputs, self.visit_node(p))
-        }).collect::<Vector<_, ArcK>>();
+        }).collect::<Vector<(Vector<Arc<Node<'a>>, ArcK>, Arc<Node<'a>>), ArcK>>();
         if branches.iter().zip(new_branches.iter()).all(|((i1, p1), (i2, p2))| i1.iter().zip(i2.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) && Arc::ptr_eq(p1, p2)) {
             Arc::clone(node)
         } else {
@@ -429,7 +433,7 @@ pub trait Visitor {
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'a>> {
         let new_name = self.visit_node(name);
-        let new_formals = formals.iter().map(|f| self.visit_node(f)).collect::<Vector<_, ArcK>>();
+        let new_formals = formals.iter().map(|f| self.visit_node(f)).collect::<Vector<Arc<Node<'a>>, ArcK>>();
         let new_formals_remainder = formals_remainder.as_ref().map(|r| self.visit_node(r));
         let new_proc = self.visit_node(proc);
         if Arc::ptr_eq(name, &new_name) &&
@@ -473,7 +477,7 @@ pub trait Visitor {
     ) -> Arc<Node<'a>> {
         let new_receipts = receipts.iter().map(|r| {
             r.iter().map(|b| self.visit_node(b)).collect::<Vector<Arc<Node<'a>>, ArcK>>()
-        }).collect::<Vector<_, ArcK>>();
+        }).collect::<Vector<Vector<Arc<Node<'a>>, ArcK>, ArcK>>();
         let new_proc = self.visit_node(proc);
         if receipts.iter().zip(new_receipts.iter()).all(|(r1, r2)| r1.iter().zip(r2.iter()).all(|(a, b)| Arc::ptr_eq(a, b))) && Arc::ptr_eq(proc, &new_proc) {
             Arc::clone(node)
@@ -650,7 +654,7 @@ pub trait Visitor {
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'a>> {
         let new_receiver = self.visit_node(receiver);
-        let new_args = args.iter().map(|a| self.visit_node(a)).collect::<Vector<_, ArcK>>();
+        let new_args = args.iter().map(|a| self.visit_node(a)).collect::<Vector<Arc<Node<'a>>, ArcK>>();
         if Arc::ptr_eq(receiver, &new_receiver) && args.iter().zip(new_args.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) {
             Arc::clone(node)
         } else {
@@ -898,7 +902,7 @@ pub trait Visitor {
         remainder: &Option<Arc<Node<'a>>>,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'a>> {
-        let new_elements = elements.iter().map(|e| self.visit_node(e)).collect::<Vector<_, ArcK>>();
+        let new_elements = elements.iter().map(|e| self.visit_node(e)).collect::<Vector<Arc<Node<'a>>, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         if elements.iter().zip(new_elements.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) && 
            remainder.as_ref().map_or(true, |r| new_remainder.as_ref().map_or(false, |nr| Arc::ptr_eq(r, nr))) {
@@ -935,7 +939,7 @@ pub trait Visitor {
         remainder: &Option<Arc<Node<'a>>>,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'a>> {
-        let new_elements = elements.iter().map(|e| self.visit_node(e)).collect::<Vector<_, ArcK>>();
+        let new_elements = elements.iter().map(|e| self.visit_node(e)).collect::<Vector<Arc<Node<'a>>, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         if elements.iter().zip(new_elements.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) && 
            remainder.as_ref().map_or(true, |r| new_remainder.as_ref().map_or(false, |nr| Arc::ptr_eq(r, nr))) {
@@ -972,7 +976,7 @@ pub trait Visitor {
         remainder: &Option<Arc<Node<'a>>>,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'a>> {
-        let new_pairs = pairs.iter().map(|(k, v)| (self.visit_node(k), self.visit_node(v))).collect::<Vector<_, ArcK>>();
+        let new_pairs = pairs.iter().map(|(k, v)| (self.visit_node(k), self.visit_node(v))).collect::<Vector<(Arc<Node<'a>>, Arc<Node<'a>>), ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         if pairs.iter().zip(new_pairs.iter()).all(|((k1, v1), (k2, v2))| Arc::ptr_eq(k1, k2) && Arc::ptr_eq(v1, v2)) && 
            remainder.as_ref().map_or(true, |r| new_remainder.as_ref().map_or(false, |nr| Arc::ptr_eq(r, nr))) {
@@ -1007,7 +1011,7 @@ pub trait Visitor {
         elements: &Vector<Arc<Node<'a>>, ArcK>,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'a>> {
-        let new_elements = elements.iter().map(|e| self.visit_node(e)).collect::<Vector<_, ArcK>>();
+        let new_elements = elements.iter().map(|e| self.visit_node(e)).collect::<Vector<Arc<Node<'a>>, ArcK>>();
         if elements.iter().zip(new_elements.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) {
             Arc::clone(node)
         } else {
@@ -1108,9 +1112,9 @@ pub trait Visitor {
         procs: &Vector<Arc<Node<'a>>, ArcK>,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'a>> {
-        let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<_, ArcK>>();
+        let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<Arc<Node<'a>>, ArcK>>();
         let new_names_remainder = names_remainder.as_ref().map(|r| self.visit_node(r));
-        let new_procs = procs.iter().map(|p| self.visit_node(p)).collect::<Vector<_, ArcK>>();
+        let new_procs = procs.iter().map(|p| self.visit_node(p)).collect::<Vector<Arc<Node<'a>>, ArcK>>();
         if names.iter().zip(new_names.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) &&
            names_remainder.as_ref().map_or(true, |r| new_names_remainder.as_ref().map_or(false, |nr| Arc::ptr_eq(r, nr))) &&
            procs.iter().zip(new_procs.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) {
@@ -1150,7 +1154,7 @@ pub trait Visitor {
         source: &Arc<Node<'a>>,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'a>> {
-        let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<_, ArcK>>();
+        let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<Arc<Node<'a>>, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         let new_source = self.visit_node(source);
         if names.iter().zip(new_names.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) &&
@@ -1192,7 +1196,7 @@ pub trait Visitor {
         source: &Arc<Node<'a>>,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'a>> {
-        let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<_, ArcK>>();
+        let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<Arc<Node<'a>>, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         let new_source = self.visit_node(source);
         if names.iter().zip(new_names.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) &&
@@ -1234,7 +1238,7 @@ pub trait Visitor {
         source: &Arc<Node<'a>>,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'a>> {
-        let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<_, ArcK>>();
+        let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<Arc<Node<'a>>, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         let new_source = self.visit_node(source);
         if names.iter().zip(new_names.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) &&
@@ -1374,7 +1378,7 @@ pub trait Visitor {
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'a>> {
         let new_name = self.visit_node(name);
-        let new_inputs = inputs.iter().map(|i| self.visit_node(i)).collect::<Vector<_, ArcK>>();
+        let new_inputs = inputs.iter().map(|i| self.visit_node(i)).collect::<Vector<Arc<Node<'a>>, ArcK>>();
         if Arc::ptr_eq(name, &new_name) && inputs.iter().zip(new_inputs.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) {
             Arc::clone(node)
         } else {
@@ -1407,13 +1411,76 @@ pub trait Visitor {
         children: &Vector<Arc<Node<'a>>, ArcK>,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'a>> {
-        let new_children = children.iter().map(|c| self.visit_node(c)).collect::<Vector<_, ArcK>>();
+        let new_children = children.iter().map(|c| self.visit_node(c)).collect::<Vector<Arc<Node<'a>>, ArcK>>();
         if children.iter().zip(new_children.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) {
             Arc::clone(node)
         } else {
             Arc::new(Node::Error {
                 base: base.clone(),
                 children: new_children,
+                metadata: metadata.clone(),
+            })
+        }
+    }
+
+    fn visit_disjunction<'a>(
+        &self,
+        node: &Arc<Node<'a>>,
+        base: &NodeBase<'a>,
+        left: &Arc<Node<'a>>,
+        right: &Arc<Node<'a>>,
+        metadata: &Option<Arc<Metadata>>,
+    ) -> Arc<Node<'a>> {
+        let new_left = self.visit_node(left);
+        let new_right = self.visit_node(right);
+        if Arc::ptr_eq(left, &new_left) && Arc::ptr_eq(right, &new_right) {
+            Arc::clone(node)
+        } else {
+            Arc::new(Node::Disjunction {
+                base: base.clone(),
+                left: new_left,
+                right: new_right,
+                metadata: metadata.clone(),
+            })
+        }
+    }
+
+    fn visit_conjunction<'a>(
+        &self,
+        node: &Arc<Node<'a>>,
+        base: &NodeBase<'a>,
+        left: &Arc<Node<'a>>,
+        right: &Arc<Node<'a>>,
+        metadata: &Option<Arc<Metadata>>,
+    ) -> Arc<Node<'a>> {
+        let new_left = self.visit_node(left);
+        let new_right = self.visit_node(right);
+        if Arc::ptr_eq(left, &new_left) && Arc::ptr_eq(right, &new_right) {
+            Arc::clone(node)
+        } else {
+            Arc::new(Node::Conjunction {
+                base: base.clone(),
+                left: new_left,
+                right: new_right,
+                metadata: metadata.clone(),
+            })
+        }
+    }
+
+    fn visit_negation<'a>(
+        &self,
+        node: &Arc<Node<'a>>,
+        base: &NodeBase<'a>,
+        operand: &Arc<Node<'a>>,
+        metadata: &Option<Arc<Metadata>>,
+    ) -> Arc<Node<'a>> {
+        let new_operand = self.visit_node(operand);
+        if Arc::ptr_eq(operand, &new_operand) {
+            Arc::clone(node)
+        } else {
+            Arc::new(Node::Negation {
+                base: base.clone(),
+                operand: new_operand,
                 metadata: metadata.clone(),
             })
         }

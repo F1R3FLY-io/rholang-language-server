@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{self, BufReader, Write};
+use std::io::{self, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, RwLock};
@@ -21,7 +21,7 @@ use tokio::net::windows::named_pipe::NamedPipeClient;
 
 use tokio::io::{AsyncWriteExt, split};
 use tokio::net::{TcpStream, UnixStream};
-use tokio::runtime::Runtime;
+use tokio::runtime::Handle;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use futures_util::{SinkExt, StreamExt};
 
@@ -77,7 +77,7 @@ impl JoinHandleExt for JoinHandle<()> {
 #[allow(dead_code)]
 pub struct LspClient {
     pub server: Mutex<Option<Child>>,
-    pub runtime: Runtime,
+    pub runtime_handle: Handle,
     pub sender: Mutex<Option<Sender<String>>>,
     pub receiver: Mutex<Receiver<String>>,
     pub language_id: String,
@@ -106,14 +106,13 @@ pub struct LspClient {
 
 impl LspClient {
     /// Starts the LSP client with the given configuration.
-    pub fn start(
+    pub async fn start(
         language_id: String,
         server_path: String,
         comm_type: CommType,
         event_sender: Sender<LspEvent>,
     ) -> io::Result<Self> {
-        let runtime = Runtime::new()?;
-        let runtime_handle = runtime.handle().clone();
+        let runtime_handle = Handle::current();
         let (sender, rx) = channel::<String>();
         let (tx, receiver) = channel::<String>();
 
@@ -171,8 +170,8 @@ impl LspClient {
                         .stderr(Stdio::piped())
                         .spawn()?;
                     let logger = Box::new(server.stderr.take().expect("Failed to open server stderr")) as Box<dyn LspStream>;
-                    thread::sleep(Duration::from_millis(100));
-                    let stream = runtime_handle.block_on(TcpStream::connect(format!("127.0.0.1:{}", port)))?;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    let stream = TcpStream::connect(format!("127.0.0.1:{}", port)).await?;
                     stream.set_nodelay(true)?;
                     let (read_half, write_half) = split(stream);
                     let write_stream = Arc::new(Mutex::new(write_half));
@@ -223,15 +222,15 @@ impl LspClient {
                         .stderr(Stdio::piped())
                         .spawn()?;
                     let logger = Box::new(server.stderr.take().expect("Failed to open server stderr")) as Box<dyn LspStream>;
-                    thread::sleep(Duration::from_millis(100));
+                    tokio::time::sleep(Duration::from_millis(100)).await;
                     #[cfg(windows)]
                     let (read_half, write_half) = {
-                        let client = runtime_handle.block_on(NamedPipeClient::connect(&path))?;
+                        let client = NamedPipeClient::connect(&path).await?;
                         split(client)
                     };
                     #[cfg(unix)]
                     let (read_half, write_half) = {
-                        let stream = runtime_handle.block_on(UnixStream::connect(&path))?;
+                        let stream = UnixStream::connect(&path).await?;
                         split(stream)
                     };
                     let write_stream = Arc::new(Mutex::new(write_half));
@@ -276,10 +275,10 @@ impl LspClient {
                         })?;
                     let logger = Box::new(server.stderr.take().expect("Failed to open server stderr")) as Box<dyn LspStream>;
                     info!("Waiting 500ms for server to start");
-                    thread::sleep(Duration::from_millis(500));
+                    tokio::time::sleep(Duration::from_millis(500)).await;
                     info!("Connecting to ws://127.0.0.1:{}", port);
-                    let ws_stream = runtime_handle
-                        .block_on(connect_async(format!("ws://127.0.0.1:{}", port)))
+                    let ws_stream = connect_async(format!("ws://127.0.0.1:{}", port))
+                        .await
                         .map_err(|e| {
                             error!("Failed to connect to WebSocket server: {}", e);
                             io::Error::new(
@@ -477,7 +476,7 @@ impl LspClient {
 
         let client = LspClient {
             server: Mutex::new(server),
-            runtime,
+            runtime_handle,
             sender: Mutex::new(Some(sender)),
             receiver: Mutex::new(receiver),
             language_id,
@@ -510,36 +509,36 @@ impl LspClient {
     }
 
     /// Stops the LSP client, closing connections and joining threads.
-    pub fn stop(&self) -> io::Result<()> {
+    pub async fn stop(&self) -> io::Result<()> {
         // Drop sender to close output channel
         {
             let mut sender = self.sender.lock().expect("Failed to lock sender");
             *sender = None;
         }
 
-        self.close_connections()?;
+        self.close_connections().await?;
         self.terminate_server()?;
         self.join_threads()?;
-        self.shutdown_streams()?;
+        self.async_shutdown_streams().await?;
         self.clear_streams();
         self.cleanup_files()?;
 
         Ok(())
     }
 
-    fn close_connections(&self) -> io::Result<()> {
+    async fn close_connections(&self) -> io::Result<()> {
         if let CommType::WebSocket { .. } = self.comm_type {
-            if let Some(ws_stream) = self.websocket_stream.lock().expect("Failed to lock websocket_stream").as_ref() {
+            if let Some(ws_stream) = self.websocket_stream.lock().expect("Failed to lock websocket_stream").as_mut() {
                 let mut stream = ws_stream.lock().expect("Failed to lock WebSocket stream");
-                if let Err(e) = self.runtime.block_on(stream.send(Message::Close(None))) {
+                if let Err(e) = stream.send(Message::Close(None)).await {
                     debug!("Failed to send WebSocket close: {}", e);
                 }
-                if let Err(e) = self.runtime.block_on(stream.flush()) {
+                if let Err(e) = stream.flush().await {
                     debug!("Failed to flush WebSocket stream: {}", e);
                 }
-                thread::sleep(Duration::from_millis(100));
             }
         }
+        tokio::time::sleep(Duration::from_millis(100)).await;
         Ok(())
     }
 
@@ -621,56 +620,76 @@ impl LspClient {
         Ok(())
     }
 
-    fn shutdown_streams(&self) -> io::Result<()> {
-        if let Some(tcp_write_stream) = self.tcp_write_stream.lock().expect("Failed to lock tcp_write_stream").as_ref() {
-            let mut stream = tcp_write_stream.lock().expect("Failed to lock TCP stream");
-            if let Err(e) = self.runtime.block_on(stream.shutdown()) {
+    async fn async_shutdown_streams(&self) -> io::Result<()> {
+        // Take the streams to drop them after shutdown
+        let mut tcp_opt = self.tcp_write_stream.lock().expect("Failed to lock tcp_write_stream").take();
+        if let Some(tcp) = tcp_opt.as_mut() {
+            let mut stream = tcp.lock().expect("Failed to lock TCP stream");
+            if let Err(e) = stream.shutdown().await {
                 if e.kind() != io::ErrorKind::NotConnected {
                     error!("Failed to shut down TCP write stream: {}", e);
                 }
             }
         }
-        #[cfg(windows)]
-        {
-            if let Some(pipe_write_stream) = self.pipe_write_stream.lock().expect("Failed to lock pipe_write_stream").as_ref() {
-                let mut stream = pipe_write_stream.lock().expect("Failed to lock named pipe stream");
-                if let Err(e) = self.runtime.block_on(stream.shutdown()) {
-                    if e.kind() != io::ErrorKind::NotConnected {
-                        error!("Failed to shut down named pipe write stream: {}", e);
+
+        if cfg!(windows) {
+            #[cfg(windows)]
+            {
+                let mut pipe_opt = self.pipe_write_stream.lock().expect("Failed to lock pipe_write_stream").take();
+                if let Some(pipe) = pipe_opt.as_mut() {
+                    let mut stream = pipe.lock().expect("Failed to lock named pipe stream");
+                    if let Err(e) = stream.shutdown().await {
+                        if e.kind() != io::ErrorKind::NotConnected {
+                            error!("Failed to shut down named pipe write stream: {}", e);
+                        }
                     }
                 }
             }
         }
-        #[cfg(unix)]
-        {
-            if let Some(unix_write_stream) = self.unix_write_stream.lock().expect("Failed to lock unix_write_stream").as_ref() {
-                let mut stream = unix_write_stream.lock().expect("Failed to lock Unix socket stream");
-                if let Err(e) = self.runtime.block_on(stream.shutdown()) {
-                    if e.kind() != io::ErrorKind::NotConnected {
-                        error!("Failed to shut down Unix socket stream: {}", e);
+
+        if cfg!(unix) {
+            #[cfg(unix)]
+            {
+                let mut unix_opt = self.unix_write_stream.lock().expect("Failed to lock unix_write_stream").take();
+                if let Some(unix) = unix_opt.as_mut() {
+                    let mut stream = unix.lock().expect("Failed to lock Unix socket stream");
+                    if let Err(e) = stream.shutdown().await {
+                        if e.kind() != io::ErrorKind::NotConnected {
+                            error!("Failed to shut down Unix socket stream: {}", e);
+                        }
                     }
                 }
             }
         }
-        if let Some(ws_stream) = self.websocket_stream.lock().expect("Failed to lock websocket_stream").as_ref() {
-            let mut stream = ws_stream.lock().expect("Failed to lock WebSocket stream");
-            if let Err(e) = self.runtime.block_on(stream.close()) {
+
+        let mut ws_opt = self.websocket_stream.lock().expect("Failed to lock websocket_stream").take();
+        if let Some(ws) = ws_opt.as_mut() {
+            let mut stream = ws.lock().expect("Failed to lock WebSocket stream");
+            if let Err(e) = stream.send(Message::Close(None)).await {
+                debug!("Failed to send WebSocket close: {}", e);
+            }
+            if let Err(e) = stream.flush().await {
+                debug!("Failed to flush WebSocket stream: {}", e);
+            }
+            if let Err(e) = stream.close().await {
                 debug!("Failed to close WebSocket stream: {}", e);
             }
         }
+
         Ok(())
     }
 
     fn clear_streams(&self) {
         *self.tcp_write_stream.lock().expect("Failed to lock tcp_write_stream") = None;
-        #[cfg(windows)]
-        {
+
+        #[cfg(windows)] {
             *self.pipe_write_stream.lock().expect("Failed to lock pipe_write_stream") = None;
         }
-        #[cfg(unix)]
-        {
+
+        #[cfg(unix)] {
             *self.unix_write_stream.lock().expect("Failed to lock unix_write_stream") = None;
         }
+
         *self.websocket_stream.lock().expect("Failed to lock websocket_stream") = None;
     }
 

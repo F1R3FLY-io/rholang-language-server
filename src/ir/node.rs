@@ -4,7 +4,8 @@ use std::sync::Arc;
 use tree_sitter::Node as TSNode;
 use rpds::Vector;
 use archery::ArcK;
-use tracing::trace;
+// use tracing::trace;
+use std::cmp::Ordering;
 
 pub type NodeVector<'a> = Vector<Arc<Node<'a>>, ArcK>;
 pub type NodePairVector<'a> = Vector<(Arc<Node<'a>>, Arc<Node<'a>>), ArcK>;
@@ -155,6 +156,12 @@ pub enum Node<'a> {
     SendReceiveSource { base: NodeBase<'a>, name: Arc<Node<'a>>, inputs: NodeVector<'a>, metadata: Option<Arc<Metadata>> },
     /// Represents a syntax error in the source code with its erroneous subtree.
     Error { base: NodeBase<'a>, children: NodeVector<'a>, metadata: Option<Arc<Metadata>> },
+    /// Pattern disjunction (e.g., `P | Q` in patterns).
+    Disjunction { base: NodeBase<'a>, left: Arc<Node<'a>>, right: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
+    /// Pattern conjunction (e.g., `P & Q` in patterns).
+    Conjunction { base: NodeBase<'a>, left: Arc<Node<'a>>, right: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
+    /// Pattern negation (e.g., `~P` in patterns).
+    Negation { base: NodeBase<'a>, operand: Arc<Node<'a>>, metadata: Option<Arc<Metadata>> },
 }
 
 #[derive(Clone, PartialEq, Debug, Hash)]
@@ -169,7 +176,7 @@ pub enum BinOperator { Or, And, Matches, Eq, Neq, Lt, Lte, Gt, Gte, Concat, Diff
 #[derive(Clone, PartialEq, Debug, Hash)]
 pub enum UnaryOperator { Not, Neg, Negation }
 
-#[derive(Clone, PartialEq, Debug, Hash)]
+#[derive(Clone, PartialEq, Debug, Hash, Eq, Ord, PartialOrd)]
 pub enum VarRefKind { Bind, Unforgeable }
 
 #[derive(Clone, PartialEq, Debug, Hash)]
@@ -207,7 +214,7 @@ pub fn compute_absolute_positions<'a>(root: &Arc<Node<'a>>) -> HashMap<usize, (P
     let mut positions = HashMap::new();
     let initial_prev_end = Position { row: 0, column: 0, byte: 0 };
     compute_positions_helper(root, initial_prev_end, &mut positions);
-    trace!("Computed positions for {} nodes", positions.len());
+    // trace!("Computed positions for {} nodes", positions.len());
     positions
 }
 
@@ -243,10 +250,10 @@ fn compute_positions_helper<'a>(
             byte: ts_node.end_byte(),
         };
         positions.insert(key, (start, end));
-        trace!(
-            "Node '{}': key={}, ts_node positions: start={:?}, end={:?}",
-            base.text().map_or("Unknown", |v| v), key, start, end
-        );
+        // trace!(
+        //     "Node '{}': key={}, ts_node positions: start={:?}, end={:?}",
+        //     base.text().map_or("Unknown", |v| v), key, start, end
+        // );
 
         let mut current_end = start;
         match &**node {
@@ -276,7 +283,7 @@ fn compute_positions_helper<'a>(
             Node::IfElse { condition, consequence, alternative, .. } => {
                 current_end = compute_positions_helper(condition, start, positions);
                 current_end = compute_positions_helper(consequence, current_end, positions);
-                alternative.as_ref().map_or(end, |alt| {
+                alternative.as_ref().map_or(current_end, |alt| {
                     compute_positions_helper(alt, current_end, positions)
                 })
             }
@@ -356,7 +363,7 @@ fn compute_positions_helper<'a>(
                 current_end = elements.iter().fold(start, |prev, elem| {
                     compute_positions_helper(elem, prev, positions)
                 });
-                remainder.as_ref().map_or(end, |rem| {
+                remainder.as_ref().map_or(current_end, |rem| {
                     compute_positions_helper(rem, current_end, positions)
                 })
             }
@@ -364,7 +371,7 @@ fn compute_positions_helper<'a>(
                 current_end = elements.iter().fold(start, |prev, elem| {
                     compute_positions_helper(elem, prev, positions)
                 });
-                remainder.as_ref().map_or(end, |rem| {
+                remainder.as_ref().map_or(current_end, |rem| {
                     compute_positions_helper(rem, current_end, positions)
                 })
             }
@@ -373,7 +380,7 @@ fn compute_positions_helper<'a>(
                     let key_end = compute_positions_helper(key, prev, positions);
                     compute_positions_helper(value, key_end, positions)
                 });
-                remainder.as_ref().map_or(end, |rem| {
+                remainder.as_ref().map_or(current_end, |rem| {
                     compute_positions_helper(rem, current_end, positions)
                 })
             }
@@ -384,7 +391,7 @@ fn compute_positions_helper<'a>(
             }
             Node::NameDecl { var, uri, .. } => {
                 current_end = compute_positions_helper(var, start, positions);
-                uri.as_ref().map_or(end, |u| {
+                uri.as_ref().map_or(current_end, |u| {
                     compute_positions_helper(u, current_end, positions)
                 })
             }
@@ -448,7 +455,26 @@ fn compute_positions_helper<'a>(
                     compute_positions_helper(child, prev, positions)
                 })
             }
-            _ => end, // Leaf nodes use Tree-Sitter’s end
+            Node::Comment { .. } => end,
+            Node::Wildcard { .. } => end,
+            Node::SimpleType { .. } => end,
+            Node::BoolLiteral { .. } => end,
+            Node::LongLiteral { .. } => end,
+            Node::StringLiteral { .. } => end,
+            Node::UriLiteral { .. } => end,
+            Node::Nil { .. } => end,
+            Node::Var { .. } => end,
+            Node::Disjunction { left, right, .. } => {
+                current_end = compute_positions_helper(left, start, positions);
+                compute_positions_helper(right, current_end, positions)
+            }
+            Node::Conjunction { left, right, .. } => {
+                current_end = compute_positions_helper(left, start, positions);
+                compute_positions_helper(right, current_end, positions)
+            }
+            Node::Negation { operand, .. } => {
+                compute_positions_helper(operand, start, positions)
+            }
         }
     } else {
         let relative_start = base.relative_start();
@@ -461,49 +487,57 @@ fn compute_positions_helper<'a>(
             },
             byte: prev_end.byte + relative_start.delta_bytes,
         };
-        let end = match &**node {
+        let end = compute_end_position(start, base.length(), base.text.as_ref().map(|s| s.as_str()));
+        positions.insert(key, (start, end));
+        // trace!(
+        //     "Node '{}': key={}, computed positions: start={:?}, end={:?}",
+        //     base.text().map_or("Unknown", |v| v), key, start, end
+        // );
+
+        let mut current_end = start;
+        match &**node {
             Node::Par { left, right, .. } => {
-                let left_end = compute_positions_helper(left, start, positions);
-                compute_positions_helper(right, left_end, positions)
+                current_end = compute_positions_helper(left, start, positions);
+                compute_positions_helper(right, current_end, positions)
             }
             Node::SendSync { channel, inputs, cont, .. } => {
-                let chan_end = compute_positions_helper(channel, start, positions);
-                let inputs_end = inputs.iter().fold(chan_end, |prev, input| {
+                current_end = compute_positions_helper(channel, start, positions);
+                current_end = inputs.iter().fold(current_end, |prev, input| {
                     compute_positions_helper(input, prev, positions)
                 });
-                compute_positions_helper(cont, inputs_end, positions)
+                compute_positions_helper(cont, current_end, positions)
             }
             Node::Send { channel, inputs, send_type_end, .. } => {
-                let _chan_end = compute_positions_helper(channel, start, positions);
+                compute_positions_helper(channel, start, positions);
                 inputs.iter().fold(*send_type_end, |prev, input| {
                     compute_positions_helper(input, prev, positions)
                 })
             }
             Node::New { decls, proc, .. } => {
-                let decls_end = decls.iter().fold(start, |prev, decl| {
+                current_end = decls.iter().fold(start, |prev, decl| {
                     compute_positions_helper(decl, prev, positions)
                 });
-                compute_positions_helper(proc, decls_end, positions)
+                compute_positions_helper(proc, current_end, positions)
             }
             Node::IfElse { condition, consequence, alternative, .. } => {
-                let cond_end = compute_positions_helper(condition, start, positions);
-                let cons_end = compute_positions_helper(consequence, cond_end, positions);
-                alternative.as_ref().map_or(cons_end, |alt| {
-                    compute_positions_helper(alt, cons_end, positions)
+                current_end = compute_positions_helper(condition, start, positions);
+                current_end = compute_positions_helper(consequence, current_end, positions);
+                alternative.as_ref().map_or(current_end, |alt| {
+                    compute_positions_helper(alt, current_end, positions)
                 })
             }
             Node::Let { decls, proc, .. } => {
-                let decls_end = decls.iter().fold(start, |prev, decl| {
+                current_end = decls.iter().fold(start, |prev, decl| {
                     compute_positions_helper(decl, prev, positions)
                 });
-                compute_positions_helper(proc, decls_end, positions)
+                compute_positions_helper(proc, current_end, positions)
             }
             Node::Bundle { proc, .. } => {
                 compute_positions_helper(proc, start, positions)
             }
             Node::Match { expression, cases, .. } => {
-                let expr_end = compute_positions_helper(expression, start, positions);
-                cases.iter().fold(expr_end, |prev, (pattern, proc)| {
+                current_end = compute_positions_helper(expression, start, positions);
+                cases.iter().fold(current_end, |prev, (pattern, proc)| {
                     let pat_end = compute_positions_helper(pattern, prev, positions);
                     compute_positions_helper(proc, pat_end, positions)
                 })
@@ -517,22 +551,24 @@ fn compute_positions_helper<'a>(
                 })
             }
             Node::Contract { name, formals, formals_remainder, proc, .. } => {
-                let name_end = compute_positions_helper(name, start, positions);
-                let formals_end = formals.iter().fold(name_end, |prev, formal| {
+                current_end = compute_positions_helper(name, start, positions);
+                current_end = formals.iter().fold(current_end, |prev, formal| {
                     compute_positions_helper(formal, prev, positions)
                 });
-                let formals_rem_end = formals_remainder.as_ref().map_or(formals_end, |rem| {
-                    compute_positions_helper(rem, formals_end, positions)
-                });
-                compute_positions_helper(proc, formals_rem_end, positions)
+                current_end = if let Some(rem) = formals_remainder {
+                    compute_positions_helper(rem, current_end, positions)
+                } else {
+                    current_end
+                };
+                compute_positions_helper(proc, current_end, positions)
             }
             Node::Input { receipts, proc, .. } => {
-                let receipts_end = receipts.iter().fold(start, |prev, receipt| {
+                current_end = receipts.iter().fold(start, |prev, receipt| {
                     receipt.iter().fold(prev, |acc, bind| {
                         compute_positions_helper(bind, acc, positions)
                     })
                 });
-                compute_positions_helper(proc, receipts_end, positions)
+                compute_positions_helper(proc, current_end, positions)
             }
             Node::Block { proc, .. } => {
                 compute_positions_helper(proc, start, positions)
@@ -541,15 +577,15 @@ fn compute_positions_helper<'a>(
                 compute_positions_helper(expr, start, positions)
             }
             Node::BinOp { left, right, .. } => {
-                let left_end = compute_positions_helper(left, start, positions);
-                compute_positions_helper(right, left_end, positions)
+                current_end = compute_positions_helper(left, start, positions);
+                compute_positions_helper(right, current_end, positions)
             }
             Node::UnaryOp { operand, .. } => {
                 compute_positions_helper(operand, start, positions)
             }
             Node::Method { receiver, args, .. } => {
-                let recv_end = compute_positions_helper(receiver, start, positions);
-                args.iter().fold(recv_end, |prev, arg| {
+                current_end = compute_positions_helper(receiver, start, positions);
+                args.iter().fold(current_end, |prev, arg| {
                     compute_positions_helper(arg, prev, positions)
                 })
             }
@@ -563,28 +599,28 @@ fn compute_positions_helper<'a>(
                 compute_positions_helper(var, start, positions)
             }
             Node::List { elements, remainder, .. } => {
-                let elems_end = elements.iter().fold(start, |prev, elem| {
+                current_end = elements.iter().fold(start, |prev, elem| {
                     compute_positions_helper(elem, prev, positions)
                 });
-                remainder.as_ref().map_or(elems_end, |rem| {
-                    compute_positions_helper(rem, elems_end, positions)
+                remainder.as_ref().map_or(current_end, |rem| {
+                    compute_positions_helper(rem, current_end, positions)
                 })
             }
             Node::Set { elements, remainder, .. } => {
-                let elems_end = elements.iter().fold(start, |prev, elem| {
+                current_end = elements.iter().fold(start, |prev, elem| {
                     compute_positions_helper(elem, prev, positions)
                 });
-                remainder.as_ref().map_or(elems_end, |rem| {
-                    compute_positions_helper(rem, elems_end, positions)
+                remainder.as_ref().map_or(current_end, |rem| {
+                    compute_positions_helper(rem, current_end, positions)
                 })
             }
             Node::Map { pairs, remainder, .. } => {
-                let pairs_end = pairs.iter().fold(start, |prev, (key, value)| {
+                current_end = pairs.iter().fold(start, |prev, (key, value)| {
                     let key_end = compute_positions_helper(key, prev, positions);
                     compute_positions_helper(value, key_end, positions)
                 });
-                remainder.as_ref().map_or(pairs_end, |rem| {
-                    compute_positions_helper(rem, pairs_end, positions)
+                remainder.as_ref().map_or(current_end, |rem| {
+                    compute_positions_helper(rem, current_end, positions)
                 })
             }
             Node::Tuple { elements, .. } => {
@@ -593,71 +629,92 @@ fn compute_positions_helper<'a>(
                 })
             }
             Node::NameDecl { var, uri, .. } => {
-                let var_end = compute_positions_helper(var, start, positions);
-                uri.as_ref().map_or(var_end, |u| {
-                    compute_positions_helper(u, var_end, positions)
+                current_end = compute_positions_helper(var, start, positions);
+                uri.as_ref().map_or(current_end, |u| {
+                    compute_positions_helper(u, current_end, positions)
                 })
             }
             Node::Decl { names, names_remainder, procs, .. } => {
-                let names_end = names.iter().fold(start, |prev, name| {
+                current_end = names.iter().fold(start, |prev, name| {
                     compute_positions_helper(name, prev, positions)
                 });
-                let names_rem_end = names_remainder.as_ref().map_or(names_end, |rem| {
-                    compute_positions_helper(rem, names_end, positions)
-                });
-                procs.iter().fold(names_rem_end, |prev, proc| {
+                current_end = if let Some(rem) = names_remainder {
+                    compute_positions_helper(rem, current_end, positions)
+                } else {
+                    current_end
+                };
+                procs.iter().fold(current_end, |prev, proc| {
                     compute_positions_helper(proc, prev, positions)
                 })
             }
             Node::LinearBind { names, remainder, source, .. } => {
-                let names_end = names.iter().fold(start, |prev, name| {
+                current_end = names.iter().fold(start, |prev, name| {
                     compute_positions_helper(name, prev, positions)
                 });
-                let rem_end = remainder.as_ref().map_or(names_end, |rem| {
-                    compute_positions_helper(rem, names_end, positions)
-                });
-                compute_positions_helper(source, rem_end, positions)
+                current_end = if let Some(rem) = remainder {
+                    compute_positions_helper(rem, current_end, positions)
+                } else {
+                    current_end
+                };
+                compute_positions_helper(source, current_end, positions)
             }
             Node::RepeatedBind { names, remainder, source, .. } => {
-                let names_end = names.iter().fold(start, |prev, name| {
+                current_end = names.iter().fold(start, |prev, name| {
                     compute_positions_helper(name, prev, positions)
                 });
-                let rem_end = remainder.as_ref().map_or(names_end, |rem| {
-                    compute_positions_helper(rem, names_end, positions)
-                });
-                compute_positions_helper(source, rem_end, positions)
+                current_end = if let Some(rem) = remainder {
+                    compute_positions_helper(rem, current_end, positions)
+                } else {
+                    current_end
+                };
+                compute_positions_helper(source, current_end, positions)
             }
             Node::PeekBind { names, remainder, source, .. } => {
-                let names_end = names.iter().fold(start, |prev, name| {
+                current_end = names.iter().fold(start, |prev, name| {
                     compute_positions_helper(name, prev, positions)
                 });
-                let rem_end = remainder.as_ref().map_or(names_end, |rem| {
-                    compute_positions_helper(rem, names_end, positions)
-                });
-                compute_positions_helper(source, rem_end, positions)
+                current_end = if let Some(rem) = remainder {
+                    compute_positions_helper(rem, current_end, positions)
+                } else {
+                    current_end
+                };
+                compute_positions_helper(source, current_end, positions)
             }
             Node::ReceiveSendSource { name, .. } => {
                 compute_positions_helper(name, start, positions)
             }
             Node::SendReceiveSource { name, inputs, .. } => {
-                let name_end = compute_positions_helper(name, start, positions);
-                inputs.iter().fold(name_end, |prev, input| {
+                current_end = compute_positions_helper(name, start, positions);
+                inputs.iter().fold(current_end, |prev, input| {
                     compute_positions_helper(input, prev, positions)
                 })
             }
+            Node::Comment { .. } => end,
+            Node::Wildcard { .. } => end,
+            Node::SimpleType { .. } => end,
+            Node::BoolLiteral { .. } => end,
+            Node::LongLiteral { .. } => end,
+            Node::StringLiteral { .. } => end,
+            Node::UriLiteral { .. } => end,
+            Node::Nil { .. } => end,
+            Node::Var { .. } => end,
             Node::Error { children, .. } => {
                 children.iter().fold(start, |prev, child| {
                     compute_positions_helper(child, prev, positions)
                 })
             }
-            _ => compute_end_position(start, base.length, base.text()),
-        };
-        positions.insert(key, (start, end));
-        trace!(
-            "Node '{}': key={}, computed positions: start={:?}, end={:?}",
-            base.text().map_or("Unknown", |v| v), key, start, end
-        );
-        end
+            Node::Disjunction { left, right, .. } => {
+                current_end = compute_positions_helper(left, start, positions);
+                compute_positions_helper(right, current_end, positions)
+            }
+            Node::Conjunction { left, right, .. } => {
+                current_end = compute_positions_helper(left, start, positions);
+                compute_positions_helper(right, current_end, positions)
+            }
+            Node::Negation { operand, .. } => {
+                compute_positions_helper(operand, start, positions)
+            }
+        }
     }
 }
 
@@ -671,13 +728,13 @@ fn compute_positions_helper<'a>(
 ///
 /// # Returns
 /// The computed absolute end position.
-pub fn compute_end_position(start: Position, length: usize, text: Option<&String>) -> Position {
+pub fn compute_end_position(start: Position, length: usize, text: Option<&str>) -> Position {
     let mut row = start.row;
     let mut column = start.column;
     let byte = start.byte + length;
 
-    if let Some(text) = text {
-        for c in text.chars() {
+    if let Some(t) = text {
+        for c in t.chars() {
             if c == '\n' {
                 row += 1;
                 column = 0;
@@ -686,27 +743,747 @@ pub fn compute_end_position(start: Position, length: usize, text: Option<&String
             }
         }
     } else {
-        column += length; // Fallback assumes single-byte chars
+        column += length; // Assume no newlines if text not available
     }
 
     Position { row, column, byte }
 }
 
-impl<'a> Node<'a> {
-    /// Computes the byte offset from a line and character position in the source text.
-    pub fn byte_offset_from_position(text: &str, line: usize, character: usize) -> Option<usize> {
-        let mut byte_offset = 0;
-        for (i, line_str) in text.lines().enumerate() {
-            if i == line {
-                let char_index = character.min(line_str.len());
-                byte_offset += line_str.as_bytes()[..char_index].len();
-                return Some(byte_offset);
+/// Matches a pattern against a concrete node, with substitution for variables.
+pub fn match_pat<'a>(pat: &Arc<Node<'a>>, concrete: &Arc<Node<'a>>, subst: &mut HashMap<String, Arc<Node<'a>>>) -> bool {
+    match (&**pat, &**concrete) {
+        (Node::Wildcard { .. }, _) => true,
+        (Node::Var { name: p_name, .. }, _) => {
+            if let Some(bound) = subst.get(p_name) {
+                bound.text() == concrete.text()
+            } else {
+                subst.insert(p_name.clone(), concrete.clone());
+                true
             }
-            byte_offset += line_str.len() + 1; // +1 for newline
         }
-        None
+        (Node::Quote { quotable: p_q, .. }, Node::Quote { quotable: c_q, .. }) => {
+            match_pat(p_q, c_q, subst)
+        }
+        (Node::Eval { name: p_n, .. }, Node::Eval { name: c_n, .. }) => {
+            match_pat(p_n, c_n, subst)
+        }
+        (Node::VarRef { kind: p_k, var: p_v, .. }, Node::VarRef { kind: c_k, var: c_v, .. }) => {
+            p_k == c_k && match_pat(p_v, c_v, subst)
+        }
+        (Node::List { elements: p_e, remainder: p_r, .. }, Node::List { elements: c_e, remainder: c_r, .. }) => {
+            if p_e.len() > c_e.len() { return false; }
+            for (p, c) in p_e.iter().zip(c_e.iter()) {
+                if !match_pat(p, c, subst) { return false; }
+            }
+            let rem_c_elements = c_e.iter().skip(p_e.len()).cloned().collect::<Vector<_, ArcK>>();
+            let rem_base = NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, None);
+            let rem_list = Arc::new(Node::List {
+                base: rem_base,
+                elements: rem_c_elements,
+                remainder: c_r.clone(),
+                metadata: None,
+            });
+            if let Some(r) = p_r {
+                match_pat(r, &rem_list, subst)
+            } else {
+                if let Node::List { elements, remainder, .. } = &*rem_list {
+                    elements.is_empty() && remainder.is_none()
+                } else {
+                    false
+                }
+            }
+        }
+        (Node::Tuple { elements: p_e, .. }, Node::Tuple { elements: c_e, .. }) => {
+            if p_e.len() != c_e.len() { false } else {
+                p_e.iter().zip(c_e.iter()).all(|(p, c)| match_pat(p, c, subst))
+            }
+        }
+        (Node::Set { elements: p_e, remainder: p_r, .. }, Node::Set { elements: c_e, remainder: c_r, .. }) => {
+            let mut p_sorted: Vec<&Arc<Node<'a>>> = p_e.iter().collect();
+            p_sorted.sort_by(|a, b| Node::node_cmp(&**a, &**b));
+            let mut c_sorted: Vec<&Arc<Node<'a>>> = c_e.iter().collect();
+            c_sorted.sort_by(|a, b| Node::node_cmp(&**a, &**b));
+            if p_sorted.len() > c_sorted.len() { return false; }
+            for (p, c) in p_sorted.iter().zip(c_sorted.iter()) {
+                if !match_pat(p, c, subst) { return false; }
+            }
+            let rem_c_elements = c_e.iter().skip(p_e.len()).cloned().collect::<Vector<_, ArcK>>();
+            let rem_base = NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, None);
+            let rem_set = Arc::new(Node::Set {
+                base: rem_base,
+                elements: rem_c_elements,
+                remainder: c_r.clone(),
+                metadata: None,
+            });
+            if let Some(r) = p_r {
+                match_pat(r, &rem_set, subst)
+            } else {
+                if let Node::Set { elements, remainder, .. } = &*rem_set {
+                    elements.is_empty() && remainder.is_none()
+                } else {
+                    false
+                }
+            }
+        }
+        (Node::Map { pairs: p_pairs, remainder: p_r, .. }, Node::Map { pairs: c_pairs, remainder: c_r, .. }) => {
+            let mut p_sorted: Vec<(&Arc<Node<'a>>, &Arc<Node<'a>>)> = p_pairs.iter().map(|(k, v)| (k, v)).collect();
+            p_sorted.sort_by(|(ka, _), (kb, _)| Node::node_cmp(&**ka, &**kb));
+            let mut c_sorted: Vec<(&Arc<Node<'a>>, &Arc<Node<'a>>)> = c_pairs.iter().map(|(k, v)| (k, v)).collect();
+            c_sorted.sort_by(|(ka, _), (kb, _)| Node::node_cmp(&**ka, &**kb));
+            if p_sorted.len() > c_sorted.len() { return false; }
+            for ((p_k, p_v), (c_k, c_v)) in p_sorted.iter().zip(c_sorted.iter()) {
+                if !match_pat(p_k, c_k, subst) || !match_pat(p_v, c_v, subst) { return false; }
+            }
+            let rem_c_pairs = c_pairs.iter().skip(p_pairs.len()).cloned().collect::<Vector<_, ArcK>>();
+            let rem_base = NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, None);
+            let rem_map = Arc::new(Node::Map {
+                base: rem_base,
+                pairs: rem_c_pairs,
+                remainder: c_r.clone(),
+                metadata: None,
+            });
+            if let Some(r) = p_r {
+                match_pat(r, &rem_map, subst)
+            } else {
+                if let Node::Map { pairs, remainder, .. } = &*rem_map {
+                    pairs.is_empty() && remainder.is_none()
+                } else {
+                    false
+                }
+            }
+        }
+        (Node::BoolLiteral { value: p, .. }, Node::BoolLiteral { value: c, .. }) => p == c,
+        (Node::LongLiteral { value: p, .. }, Node::LongLiteral { value: c, .. }) => p == c,
+        (Node::StringLiteral { value: p, .. }, Node::StringLiteral { value: c, .. }) => p == c,
+        (Node::UriLiteral { value: p, .. }, Node::UriLiteral { value: c, .. }) => p == c,
+        (Node::SimpleType { value: p, .. }, Node::SimpleType { value: c, .. }) => p == c,
+        (Node::Nil { .. }, Node::Nil { .. }) => true,
+        (Node::Disjunction { left: p_l, right: p_r, .. }, Node::Disjunction { left: c_l, right: c_r, .. }) => {
+            match_pat(p_l, c_l, subst) && match_pat(p_r, c_r, subst)
+        }
+        (Node::Conjunction { left: p_l, right: p_r, .. }, Node::Conjunction { left: c_l, right: c_r, .. }) => {
+            match_pat(p_l, c_l, subst) && match_pat(p_r, c_r, subst)
+        }
+        (Node::Negation { operand: p_o, .. }, Node::Negation { operand: c_o, .. }) => {
+            match_pat(p_o, c_o, subst)
+        }
+        (Node::Parenthesized { expr: p_e, .. }, Node::Parenthesized { expr: c_e, .. }) => {
+            match_pat(p_e, c_e, subst)
+        }
+        _ => false,
     }
+}
 
+/// Matches a contract against a call's channel and inputs.
+pub fn match_contract<'a>(channel: &Arc<Node<'a>>, inputs: &NodeVector<'a>, contract: &Arc<Node<'a>>) -> bool {
+    if let Node::Contract { name, formals, formals_remainder, .. } = &**contract {
+        let mut subst = HashMap::new();
+        if !match_pat(name, channel, &mut subst) {
+            return false;
+        }
+        let min_len = formals.len();
+        if formals_remainder.is_none() && inputs.len() != min_len {
+            return false;
+        }
+        if inputs.len() < min_len {
+            return false;
+        }
+        for (f, a) in formals.iter().zip(inputs.iter()) {
+            if !match_pat(f, a, &mut subst) {
+                return false;
+            }
+        }
+        if let Some(rem) = formals_remainder {
+            let remaining_elements = inputs.iter().skip(min_len).cloned().collect::<Vector<_, ArcK>>();
+            let rem_base = NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, None);
+            let remaining_list = Arc::new(Node::List {
+                base: rem_base,
+                elements: remaining_elements,
+                remainder: None,
+                metadata: None,
+            });
+            match_pat(rem, &remaining_list, &mut subst)
+        } else {
+            true
+        }
+    } else {
+        false
+    }
+}
+
+/// Collects all contract nodes from the IR tree.
+pub fn collect_contracts<'a>(node: &Arc<Node<'a>>, contracts: &mut Vec<Arc<Node<'a>>>) {
+    match &**node {
+        Node::Contract { .. } => contracts.push(node.clone()),
+        Node::Par { left, right, .. } => {
+            collect_contracts(left, contracts);
+            collect_contracts(right, contracts);
+        }
+        Node::SendSync { channel, inputs, cont, .. } => {
+            collect_contracts(channel, contracts);
+            for input in inputs {
+                collect_contracts(input, contracts);
+            }
+            collect_contracts(cont, contracts);
+        }
+        Node::Send { channel, inputs, .. } => {
+            collect_contracts(channel, contracts);
+            for input in inputs {
+                collect_contracts(input, contracts);
+            }
+        }
+        Node::New { decls, proc, .. } => {
+            for decl in decls {
+                collect_contracts(decl, contracts);
+            }
+            collect_contracts(proc, contracts);
+        }
+        Node::IfElse { condition, consequence, alternative, .. } => {
+            collect_contracts(condition, contracts);
+            collect_contracts(consequence, contracts);
+            if let Some(alt) = alternative {
+                collect_contracts(alt, contracts);
+            }
+        }
+        Node::Let { decls, proc, .. } => {
+            for decl in decls {
+                collect_contracts(decl, contracts);
+            }
+            collect_contracts(proc, contracts);
+        }
+        Node::Bundle { proc, .. } => collect_contracts(proc, contracts),
+        Node::Match { expression, cases, .. } => {
+            collect_contracts(expression, contracts);
+            for (pat, proc) in cases {
+                collect_contracts(pat, contracts);
+                collect_contracts(proc, contracts);
+            }
+        }
+        Node::Choice { branches, .. } => {
+            for (inputs, proc) in branches {
+                for input in inputs {
+                    collect_contracts(input, contracts);
+                }
+                collect_contracts(proc, contracts);
+            }
+        }
+        Node::Input { receipts, proc, .. } => {
+            for receipt in receipts {
+                for bind in receipt {
+                    collect_contracts(bind, contracts);
+                }
+            }
+            collect_contracts(proc, contracts);
+        }
+        Node::Block { proc, .. } => collect_contracts(proc, contracts),
+        Node::Parenthesized { expr, .. } => collect_contracts(expr, contracts),
+        Node::BinOp { left, right, .. } => {
+            collect_contracts(left, contracts);
+            collect_contracts(right, contracts);
+        }
+        Node::UnaryOp { operand, .. } => collect_contracts(operand, contracts),
+        Node::Method { receiver, args, .. } => {
+            collect_contracts(receiver, contracts);
+            for arg in args {
+                collect_contracts(arg, contracts);
+            }
+        }
+        Node::Eval { name, .. } => collect_contracts(name, contracts),
+        Node::Quote { quotable, .. } => collect_contracts(quotable, contracts),
+        Node::VarRef { var, .. } => collect_contracts(var, contracts),
+        Node::List { elements, remainder, .. } => {
+            for elem in elements {
+                collect_contracts(elem, contracts);
+            }
+            if let Some(rem) = remainder {
+                collect_contracts(rem, contracts);
+            }
+        }
+        Node::Set { elements, remainder, .. } => {
+            for elem in elements {
+                collect_contracts(elem, contracts);
+            }
+            if let Some(rem) = remainder {
+                collect_contracts(rem, contracts);
+            }
+        }
+        Node::Map { pairs, remainder, .. } => {
+            for (key, value) in pairs {
+                collect_contracts(key, contracts);
+                collect_contracts(value, contracts);
+            }
+            if let Some(rem) = remainder {
+                collect_contracts(rem, contracts);
+            }
+        }
+        Node::Tuple { elements, .. } => {
+            for elem in elements {
+                collect_contracts(elem, contracts);
+            }
+        }
+        Node::NameDecl { var, uri, .. } => {
+            collect_contracts(var, contracts);
+            if let Some(u) = uri {
+                collect_contracts(u, contracts);
+            }
+        }
+        Node::Decl { names, names_remainder, procs, .. } => {
+            for name in names {
+                collect_contracts(name, contracts);
+            }
+            if let Some(rem) = names_remainder {
+                collect_contracts(rem, contracts);
+            }
+            for proc in procs {
+                collect_contracts(proc, contracts);
+            }
+        }
+        Node::LinearBind { names, remainder, source, .. } => {
+            for name in names {
+                collect_contracts(name, contracts);
+            }
+            if let Some(rem) = remainder {
+                collect_contracts(rem, contracts);
+            }
+            collect_contracts(source, contracts);
+        }
+        Node::RepeatedBind { names, remainder, source, .. } => {
+            for name in names {
+                collect_contracts(name, contracts);
+            }
+            if let Some(rem) = remainder {
+                collect_contracts(rem, contracts);
+            }
+            collect_contracts(source, contracts);
+        }
+        Node::PeekBind { names, remainder, source, .. } => {
+            for name in names {
+                collect_contracts(name, contracts);
+            }
+            if let Some(rem) = remainder {
+                collect_contracts(rem, contracts);
+            }
+            collect_contracts(source, contracts);
+        }
+        Node::ReceiveSendSource { name, .. } => collect_contracts(name, contracts),
+        Node::SendReceiveSource { name, inputs, .. } => {
+            collect_contracts(name, contracts);
+            for input in inputs {
+                collect_contracts(input, contracts);
+            }
+        }
+        Node::Error { children, .. } => {
+            for child in children {
+                collect_contracts(child, contracts);
+            }
+        }
+        Node::Disjunction { left, right, .. } => {
+            collect_contracts(left, contracts);
+            collect_contracts(right, contracts);
+        }
+        Node::Conjunction { left, right, .. } => {
+            collect_contracts(left, contracts);
+            collect_contracts(right, contracts);
+        }
+        Node::Negation { operand, .. } => collect_contracts(operand, contracts),
+        _ => {},
+    }
+}
+
+/// Collects all call nodes (Send and SendSync) from the IR tree.
+pub fn collect_calls<'a>(node: &Arc<Node<'a>>, calls: &mut Vec<Arc<Node<'a>>>) {
+    match &**node {
+        Node::Send { .. } | Node::SendSync { .. } => calls.push(node.clone()),
+        Node::Par { left, right, .. } => {
+            collect_calls(left, calls);
+            collect_calls(right, calls);
+        }
+        Node::New { decls, proc, .. } => {
+            for decl in decls {
+                collect_calls(decl, calls);
+            }
+            collect_calls(proc, calls);
+        }
+        Node::IfElse { condition, consequence, alternative, .. } => {
+            collect_calls(condition, calls);
+            collect_calls(consequence, calls);
+            if let Some(alt) = alternative {
+                collect_calls(alt, calls);
+            }
+        }
+        Node::Let { decls, proc, .. } => {
+            for decl in decls {
+                collect_calls(decl, calls);
+            }
+            collect_calls(proc, calls);
+        }
+        Node::Bundle { proc, .. } => collect_calls(proc, calls),
+        Node::Match { expression, cases, .. } => {
+            collect_calls(expression, calls);
+            for (pat, proc) in cases {
+                collect_calls(pat, calls);
+                collect_calls(proc, calls);
+            }
+        }
+        Node::Choice { branches, .. } => {
+            for (inputs, proc) in branches {
+                for input in inputs {
+                    collect_calls(input, calls);
+                }
+                collect_calls(proc, calls);
+            }
+        }
+        Node::Contract { name, formals, formals_remainder, proc, .. } => {
+            collect_calls(name, calls);
+            for formal in formals {
+                collect_calls(formal, calls);
+            }
+            if let Some(rem) = formals_remainder {
+                collect_calls(rem, calls);
+            }
+            collect_calls(proc, calls);
+        }
+        Node::Input { receipts, proc, .. } => {
+            for receipt in receipts {
+                for bind in receipt {
+                    collect_calls(bind, calls);
+                }
+            }
+            collect_calls(proc, calls);
+        }
+        Node::Block { proc, .. } => collect_calls(proc, calls),
+        Node::Parenthesized { expr, .. } => collect_calls(expr, calls),
+        Node::BinOp { left, right, .. } => {
+            collect_calls(left, calls);
+            collect_calls(right, calls);
+        }
+        Node::UnaryOp { operand, .. } => collect_calls(operand, calls),
+        Node::Method { receiver, args, .. } => {
+            collect_calls(receiver, calls);
+            for arg in args {
+                collect_calls(arg, calls);
+            }
+        }
+        Node::Eval { name, .. } => collect_calls(name, calls),
+        Node::Quote { quotable, .. } => collect_calls(quotable, calls),
+        Node::VarRef { var, .. } => collect_calls(var, calls),
+        Node::List { elements, remainder, .. } => {
+            for elem in elements {
+                collect_calls(elem, calls);
+            }
+            if let Some(rem) = remainder {
+                collect_calls(rem, calls);
+            }
+        }
+        Node::Set { elements, remainder, .. } => {
+            for elem in elements {
+                collect_calls(elem, calls);
+            }
+            if let Some(rem) = remainder {
+                collect_calls(rem, calls);
+            }
+        }
+        Node::Map { pairs, remainder, .. } => {
+            for (key, value) in pairs {
+                collect_calls(key, calls);
+                collect_calls(value, calls);
+            }
+            if let Some(rem) = remainder {
+                collect_calls(rem, calls);
+            }
+        }
+        Node::Tuple { elements, .. } => {
+            for elem in elements {
+                collect_calls(elem, calls);
+            }
+        }
+        Node::NameDecl { var, uri, .. } => {
+            collect_calls(var, calls);
+            if let Some(u) = uri {
+                collect_calls(u, calls);
+            }
+        }
+        Node::Decl { names, names_remainder, procs, .. } => {
+            for name in names {
+                collect_calls(name, calls);
+            }
+            if let Some(rem) = names_remainder {
+                collect_calls(rem, calls);
+            }
+            for proc in procs {
+                collect_calls(proc, calls);
+            }
+        }
+        Node::LinearBind { names, remainder, source, .. } => {
+            for name in names {
+                collect_calls(name, calls);
+            }
+            if let Some(rem) = remainder {
+                collect_calls(rem, calls);
+            }
+            collect_calls(source, calls);
+        }
+        Node::RepeatedBind { names, remainder, source, .. } => {
+            for name in names {
+                collect_calls(name, calls);
+            }
+            if let Some(rem) = remainder {
+                collect_calls(rem, calls);
+            }
+            collect_calls(source, calls);
+        }
+        Node::PeekBind { names, remainder, source, .. } => {
+            for name in names {
+                collect_calls(name, calls);
+            }
+            if let Some(rem) = remainder {
+                collect_calls(rem, calls);
+            }
+            collect_calls(source, calls);
+        }
+        Node::ReceiveSendSource { name, .. } => collect_calls(name, calls),
+        Node::SendReceiveSource { name, inputs, .. } => {
+            collect_calls(name, calls);
+            for input in inputs {
+                collect_calls(input, calls);
+            }
+        }
+        Node::Error { children, .. } => {
+            for child in children {
+                collect_calls(child, calls);
+            }
+        }
+        Node::Disjunction { left, right, .. } => {
+            collect_calls(left, calls);
+            collect_calls(right, calls);
+        }
+        Node::Conjunction { left, right, .. } => {
+            collect_calls(left, calls);
+            collect_calls(right, calls);
+        }
+        Node::Negation { operand, .. } => collect_calls(operand, calls),
+        _ => {},
+    }
+}
+
+/// Traverses the tree with path tracking for finding node at position.
+pub fn find_node_at_position_with_path<'a>(
+    root: &Arc<Node<'a>>,
+    positions: &HashMap<usize, (Position, Position)>,
+    position: Position,
+) -> Option<(Arc<Node<'a>>, Vec<Arc<Node<'a>>>)> {
+    let mut path = Vec::new();
+    let mut best: Option<(Arc<Node<'a>>, Vec<Arc<Node<'a>>>, usize)> = None;
+    traverse_with_path(root, position, positions, &mut path, &mut best, 0);
+    best.map(|(node, p, _)| (node, p))
+}
+
+fn traverse_with_path<'a>(
+    node: &Arc<Node<'a>>,
+    pos: Position,
+    positions: &HashMap<usize, (Position, Position)>,
+    path: &mut Vec<Arc<Node<'a>>>,
+    best: &mut Option<(Arc<Node<'a>>, Vec<Arc<Node<'a>>>, usize)>,
+    depth: usize,
+) {
+    path.push(node.clone());
+    let key = node.base().ts_node().map_or(0, |n| n.id());
+    if let Some(&(start, end)) = positions.get(&key) {
+        if start.byte <= pos.byte && pos.byte <= end.byte {
+            let is_better = best.as_ref().map_or(true, |(_, _, b_depth)| depth > *b_depth);
+            if is_better {
+                *best = Some((node.clone(), path.clone(), depth));
+            }
+        }
+    }
+    match &**node {
+        Node::Par { left, right, .. } => {
+            traverse_with_path(left, pos, positions, path, best, depth + 1);
+            traverse_with_path(right, pos, positions, path, best, depth + 1);
+        }
+        Node::SendSync { channel, inputs, cont, .. } => {
+            traverse_with_path(channel, pos, positions, path, best, depth + 1);
+            for input in inputs {
+                traverse_with_path(input, pos, positions, path, best, depth + 1);
+            }
+            traverse_with_path(cont, pos, positions, path, best, depth + 1);
+        }
+        Node::Send { channel, inputs, .. } => {
+            traverse_with_path(channel, pos, positions, path, best, depth + 1);
+            for input in inputs {
+                traverse_with_path(input, pos, positions, path, best, depth + 1);
+            }
+        }
+        Node::New { decls, proc, .. } => {
+            for decl in decls {
+                traverse_with_path(decl, pos, positions, path, best, depth + 1);
+            }
+            traverse_with_path(proc, pos, positions, path, best, depth + 1);
+        }
+        Node::IfElse { condition, consequence, alternative, .. } => {
+            traverse_with_path(condition, pos, positions, path, best, depth + 1);
+            traverse_with_path(consequence, pos, positions, path, best, depth + 1);
+            if let Some(alt) = alternative {
+                traverse_with_path(alt, pos, positions, path, best, depth + 1);
+            }
+        }
+        Node::Let { decls, proc, .. } => {
+            for decl in decls {
+                traverse_with_path(decl, pos, positions, path, best, depth + 1);
+            }
+            traverse_with_path(proc, pos, positions, path, best, depth + 1);
+        }
+        Node::Bundle { proc, .. } => traverse_with_path(proc, pos, positions, path, best, depth + 1),
+        Node::Match { expression, cases, .. } => {
+            traverse_with_path(expression, pos, positions, path, best, depth + 1);
+            for (pat, proc) in cases {
+                traverse_with_path(pat, pos, positions, path, best, depth + 1);
+                traverse_with_path(proc, pos, positions, path, best, depth + 1);
+            }
+        }
+        Node::Choice { branches, .. } => {
+            for (inputs, proc) in branches {
+                for input in inputs {
+                    traverse_with_path(input, pos, positions, path, best, depth + 1);
+                }
+                traverse_with_path(proc, pos, positions, path, best, depth + 1);
+            }
+        }
+        Node::Contract { name, formals, formals_remainder, proc, .. } => {
+            traverse_with_path(name, pos, positions, path, best, depth + 1);
+            for formal in formals {
+                traverse_with_path(formal, pos, positions, path, best, depth + 1);
+            }
+            if let Some(rem) = formals_remainder {
+                traverse_with_path(rem, pos, positions, path, best, depth + 1);
+            }
+            traverse_with_path(proc, pos, positions, path, best, depth + 1);
+        }
+        Node::Input { receipts, proc, .. } => {
+            for receipt in receipts {
+                for bind in receipt {
+                    traverse_with_path(bind, pos, positions, path, best, depth + 1);
+                }
+            }
+            traverse_with_path(proc, pos, positions, path, best, depth + 1);
+        }
+        Node::Block { proc, .. } => traverse_with_path(proc, pos, positions, path, best, depth + 1),
+        Node::Parenthesized { expr, .. } => traverse_with_path(expr, pos, positions, path, best, depth + 1),
+        Node::BinOp { left, right, .. } => {
+            traverse_with_path(left, pos, positions, path, best, depth + 1);
+            traverse_with_path(right, pos, positions, path, best, depth + 1);
+        }
+        Node::UnaryOp { operand, .. } => traverse_with_path(operand, pos, positions, path, best, depth + 1),
+        Node::Method { receiver, args, .. } => {
+            traverse_with_path(receiver, pos, positions, path, best, depth + 1);
+            for arg in args {
+                traverse_with_path(arg, pos, positions, path, best, depth + 1);
+            }
+        }
+        Node::Eval { name, .. } => traverse_with_path(name, pos, positions, path, best, depth + 1),
+        Node::Quote { quotable, .. } => traverse_with_path(quotable, pos, positions, path, best, depth + 1),
+        Node::VarRef { var, .. } => traverse_with_path(var, pos, positions, path, best, depth + 1),
+        Node::List { elements, remainder, .. } => {
+            for elem in elements {
+                traverse_with_path(elem, pos, positions, path, best, depth + 1);
+            }
+            if let Some(rem) = remainder {
+                traverse_with_path(rem, pos, positions, path, best, depth + 1);
+            }
+        }
+        Node::Set { elements, remainder, .. } => {
+            for elem in elements {
+                traverse_with_path(elem, pos, positions, path, best, depth + 1);
+            }
+            if let Some(rem) = remainder {
+                traverse_with_path(rem, pos, positions, path, best, depth + 1);
+            }
+        }
+        Node::Map { pairs, remainder, .. } => {
+            for (key, value) in pairs {
+                traverse_with_path(key, pos, positions, path, best, depth + 1);
+                traverse_with_path(value, pos, positions, path, best, depth + 1);
+            }
+            if let Some(rem) = remainder {
+                traverse_with_path(rem, pos, positions, path, best, depth + 1);
+            }
+        }
+        Node::Tuple { elements, .. } => {
+            for elem in elements {
+                traverse_with_path(elem, pos, positions, path, best, depth + 1);
+            }
+        }
+        Node::NameDecl { var, uri, .. } => {
+            traverse_with_path(var, pos, positions, path, best, depth + 1);
+            if let Some(u) = uri {
+                traverse_with_path(u, pos, positions, path, best, depth + 1);
+            }
+        }
+        Node::Decl { names, names_remainder, procs, .. } => {
+            for name in names {
+                traverse_with_path(name, pos, positions, path, best, depth + 1);
+            }
+            if let Some(rem) = names_remainder {
+                traverse_with_path(rem, pos, positions, path, best, depth + 1);
+            }
+            for proc in procs {
+                traverse_with_path(proc, pos, positions, path, best, depth + 1);
+            }
+        }
+        Node::LinearBind { names, remainder, source, .. } => {
+            for name in names {
+                traverse_with_path(name, pos, positions, path, best, depth + 1);
+            }
+            if let Some(rem) = remainder {
+                traverse_with_path(rem, pos, positions, path, best, depth + 1);
+            }
+            traverse_with_path(source, pos, positions, path, best, depth + 1);
+        }
+        Node::RepeatedBind { names, remainder, source, .. } => {
+            for name in names {
+                traverse_with_path(name, pos, positions, path, best, depth + 1);
+            }
+            if let Some(rem) = remainder {
+                traverse_with_path(rem, pos, positions, path, best, depth + 1);
+            }
+            traverse_with_path(source, pos, positions, path, best, depth + 1);
+        }
+        Node::PeekBind { names, remainder, source, .. } => {
+            for name in names {
+                traverse_with_path(name, pos, positions, path, best, depth + 1);
+            }
+            if let Some(rem) = remainder {
+                traverse_with_path(rem, pos, positions, path, best, depth + 1);
+            }
+            traverse_with_path(source, pos, positions, path, best, depth + 1);
+        }
+        Node::ReceiveSendSource { name, .. } => traverse_with_path(name, pos, positions, path, best, depth + 1),
+        Node::SendReceiveSource { name, inputs, .. } => {
+            traverse_with_path(name, pos, positions, path, best, depth + 1);
+            for input in inputs {
+                traverse_with_path(input, pos, positions, path, best, depth + 1);
+            }
+        }
+        Node::Error { children, .. } => {
+            for child in children {
+                traverse_with_path(child, pos, positions, path, best, depth + 1);
+            }
+        }
+        Node::Disjunction { left, right, .. } => {
+            traverse_with_path(left, pos, positions, path, best, depth + 1);
+            traverse_with_path(right, pos, positions, path, best, depth + 1);
+        }
+        Node::Conjunction { left, right, .. } => {
+            traverse_with_path(left, pos, positions, path, best, depth + 1);
+            traverse_with_path(right, pos, positions, path, best, depth + 1);
+        }
+        Node::Negation { operand, .. } => traverse_with_path(operand, pos, positions, path, best, depth + 1),
+        _ => {},
+    }
+    path.pop();
+}
+
+impl<'a> Node<'a> {
     /// Returns the starting line number of the node within the source code.
     ///
     /// # Arguments
@@ -1022,6 +1799,23 @@ impl<'a> Node<'a> {
                 children: children.clone(),
                 metadata: metadata.clone(),
             }),
+            Node::Disjunction { left, right, metadata, .. } => Arc::new(Node::Disjunction {
+                base: new_base,
+                left: left.clone(),
+                right: right.clone(),
+                metadata: metadata.clone(),
+            }),
+            Node::Conjunction { left, right, metadata, .. } => Arc::new(Node::Conjunction {
+                base: new_base,
+                left: left.clone(),
+                right: right.clone(),
+                metadata: metadata.clone(),
+            }),
+            Node::Negation { operand, metadata, .. } => Arc::new(Node::Negation {
+                base: new_base,
+                operand: operand.clone(),
+                metadata: metadata.clone(),
+            }),
         }
     }
 
@@ -1179,6 +1973,15 @@ impl<'a> Node<'a> {
             Node::Error { children, .. } => {
                 for child in children { child.validate()?; }
             }
+            Node::Disjunction { left, right, .. } => {
+                left.validate()?;
+                right.validate()?;
+            }
+            Node::Conjunction { left, right, .. } => {
+                left.validate()?;
+                right.validate()?;
+            }
+            Node::Negation { operand, .. } => operand.validate()?,
             _ => {}
         }
         Ok(())
@@ -1424,6 +2227,23 @@ impl<'a> Node<'a> {
             Node::Error { base, children, .. } => Arc::new(Node::Error {
                 base: base.clone(),
                 children: children.clone(),
+                metadata: new_metadata,
+            }),
+            Node::Disjunction { base, left, right, .. } => Arc::new(Node::Disjunction {
+                base: base.clone(),
+                left: left.clone(),
+                right: right.clone(),
+                metadata: new_metadata,
+            }),
+            Node::Conjunction { base, left, right, .. } => Arc::new(Node::Conjunction {
+                base: base.clone(),
+                left: left.clone(),
+                right: right.clone(),
+                metadata: new_metadata,
+            }),
+            Node::Negation { base, operand, .. } => Arc::new(Node::Negation {
+                base: base.clone(),
+                operand: operand.clone(),
                 metadata: new_metadata,
             }),
         }
@@ -1686,6 +2506,24 @@ impl<'a> Node<'a> {
         Node::Error { base, children, metadata }
     }
 
+    /// Constructs a new `Disjunction` node with the given attributes.
+    pub fn new_disjunction(ts_node: Option<TSNode<'a>>, left: Arc<Node<'a>>, right: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+        let base = NodeBase::new(ts_node, relative_start, length, text);
+        Node::Disjunction { base, left, right, metadata }
+    }
+
+    /// Constructs a new `Conjunction` node with the given attributes.
+    pub fn new_conjunction(ts_node: Option<TSNode<'a>>, left: Arc<Node<'a>>, right: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+        let base = NodeBase::new(ts_node, relative_start, length, text);
+        Node::Conjunction { base, left, right, metadata }
+    }
+
+    /// Constructs a new `Negation` node with the given attributes.
+    pub fn new_negation(ts_node: Option<TSNode<'a>>, operand: Arc<Node<'a>>, metadata: Option<Arc<Metadata>>, relative_start: RelativePosition, length: usize, text: Option<String>) -> Self {
+        let base = NodeBase::new(ts_node, relative_start, length, text);
+        Node::Negation { base, operand, metadata }
+    }
+
     /// Returns the textual representation of the node.
     /// If source text is available, returns it; otherwise, formats the node using the IR formatter.
     pub fn text(&self) -> String {
@@ -1739,6 +2577,9 @@ impl<'a> Node<'a> {
             Node::ReceiveSendSource { base, .. } => base,
             Node::SendReceiveSource { base, .. } => base,
             Node::Error { base, .. } => base,
+            Node::Disjunction { base, .. } => base,
+            Node::Conjunction { base, .. } => base,
+            Node::Negation { base, .. } => base,
         }
     }
 
@@ -1785,7 +2626,126 @@ impl<'a> Node<'a> {
             Node::ReceiveSendSource { metadata, .. } => metadata.as_ref(),
             Node::SendReceiveSource { metadata, .. } => metadata.as_ref(),
             Node::Error { metadata, .. } => metadata.as_ref(),
+            Node::Disjunction { metadata, .. } => metadata.as_ref(),
+            Node::Conjunction { metadata, .. } => metadata.as_ref(),
+            Node::Negation { metadata, .. } => metadata.as_ref(),
         }
+    }
+
+    // Helper function for structural comparison
+    pub fn node_cmp(a: &Node<'a>, b: &Node<'a>) -> Ordering {
+        let tag_a = a.tag();
+        let tag_b = b.tag();
+        if tag_a != tag_b {
+            return tag_a.cmp(&tag_b);
+        }
+        match (a, b) {
+            (Node::Var { name: na, .. }, Node::Var { name: nb, .. }) => na.cmp(nb),
+            (Node::BoolLiteral { value: va, .. }, Node::BoolLiteral { value: vb, .. }) => va.cmp(vb),
+            (Node::LongLiteral { value: va, .. }, Node::LongLiteral { value: vb, .. }) => va.cmp(vb),
+            (Node::StringLiteral { value: va, .. }, Node::StringLiteral { value: vb, .. }) => va.cmp(vb),
+            (Node::UriLiteral { value: va, .. }, Node::UriLiteral { value: vb, .. }) => va.cmp(vb),
+            (Node::SimpleType { value: va, .. }, Node::SimpleType { value: vb, .. }) => va.cmp(vb),
+            (Node::Nil { .. }, Node::Nil { .. }) => Ordering::Equal,
+            (Node::Quote { quotable: qa, .. }, Node::Quote { quotable: qb, .. }) => Node::node_cmp(qa, qb),
+            (Node::Eval { name: na, .. }, Node::Eval { name: nb, .. }) => Node::node_cmp(na, nb),
+            (Node::VarRef { kind: ka, var: va, .. }, Node::VarRef { kind: kb, var: vb, .. }) => ka.cmp(kb).then_with(|| Node::node_cmp(va, vb)),
+            (Node::Disjunction { left: la, right: ra, .. }, Node::Disjunction { left: lb, right: rb, .. }) => Node::node_cmp(la, lb).then_with(|| Node::node_cmp(ra, rb)),
+            (Node::Conjunction { left: la, right: ra, .. }, Node::Conjunction { left: lb, right: rb, .. }) => Node::node_cmp(la, lb).then_with(|| Node::node_cmp(ra, rb)),
+            (Node::Negation { operand: oa, .. }, Node::Negation { operand: ob, .. }) => Node::node_cmp(oa, ob),
+            (Node::Parenthesized { expr: ea, .. }, Node::Parenthesized { expr: eb, .. }) => Node::node_cmp(ea, eb),
+            (Node::List { elements: ea, remainder: ra, .. }, Node::List { elements: eb, remainder: rb, .. }) => {
+                let mut ea_sorted: Vec<&Arc<Node<'a>>> = ea.iter().collect();
+                ea_sorted.sort_by(|a, b| Node::node_cmp(&**a, &**b));
+                let mut eb_sorted: Vec<&Arc<Node<'a>>> = eb.iter().collect();
+                eb_sorted.sort_by(|a, b| Node::node_cmp(&**a, &**b));
+                ea_sorted.cmp(&eb_sorted).then_with(|| ra.cmp(rb))
+            }
+            (Node::Tuple { elements: ea, .. }, Node::Tuple { elements: eb, .. }) => ea.cmp(eb),
+            (Node::Set { elements: ea, remainder: ra, .. }, Node::Set { elements: eb, remainder: rb, .. }) => {
+                let mut ea_sorted: Vec<&Arc<Node<'a>>> = ea.iter().collect();
+                ea_sorted.sort_by(|a, b| Node::node_cmp(&**a, &**b));
+                let mut eb_sorted: Vec<&Arc<Node<'a>>> = eb.iter().collect();
+                eb_sorted.sort_by(|a, b| Node::node_cmp(&**a, &**b));
+                ea_sorted.cmp(&eb_sorted).then_with(|| ra.cmp(rb))
+            }
+            (Node::Map { pairs: pa, remainder: ra, .. }, Node::Map { pairs: pb, remainder: rb, .. }) => {
+                let mut pa_sorted: Vec<(&Arc<Node<'a>>, &Arc<Node<'a>>)> = pa.iter().map(|(k, v)| (k, v)).collect();
+                pa_sorted.sort_by(|(ka, _), (kb, _)| Node::node_cmp(&**ka, &**kb));
+                let mut pb_sorted: Vec<(&Arc<Node<'a>>, &Arc<Node<'a>>)> = pb.iter().map(|(k, v)| (k, v)).collect();
+                pb_sorted.sort_by(|(ka, _), (kb, _)| Node::node_cmp(&**ka, &**kb));
+                pa_sorted.cmp(&pb_sorted).then_with(|| ra.cmp(rb))
+            }
+            _ => Ordering::Equal, // For unmatched or leaf variants without comparable fields
+        }
+    }
+
+    fn tag(&self) -> u32 {
+        match self {
+            Node::Par { .. } => 0,
+            Node::SendSync { .. } => 1,
+            Node::Send { .. } => 2,
+            Node::New { .. } => 3,
+            Node::IfElse { .. } => 4,
+            Node::Let { .. } => 5,
+            Node::Bundle { .. } => 6,
+            Node::Match { .. } => 7,
+            Node::Choice { .. } => 8,
+            Node::Contract { .. } => 9,
+            Node::Input { .. } => 10,
+            Node::Block { .. } => 11,
+            Node::Parenthesized { .. } => 12,
+            Node::BinOp { .. } => 13,
+            Node::UnaryOp { .. } => 14,
+            Node::Method { .. } => 15,
+            Node::Eval { .. } => 16,
+            Node::Quote { .. } => 17,
+            Node::VarRef { .. } => 18,
+            Node::BoolLiteral { .. } => 19,
+            Node::LongLiteral { .. } => 20,
+            Node::StringLiteral { .. } => 21,
+            Node::UriLiteral { .. } => 22,
+            Node::Nil { .. } => 23,
+            Node::List { .. } => 24,
+            Node::Set { .. } => 25,
+            Node::Map { .. } => 26,
+            Node::Tuple { .. } => 27,
+            Node::Var { .. } => 28,
+            Node::NameDecl { .. } => 29,
+            Node::Decl { .. } => 30,
+            Node::LinearBind { .. } => 31,
+            Node::RepeatedBind { .. } => 32,
+            Node::PeekBind { .. } => 33,
+            Node::Comment { .. } => 34,
+            Node::Wildcard { .. } => 35,
+            Node::SimpleType { .. } => 36,
+            Node::ReceiveSendSource { .. } => 37,
+            Node::SendReceiveSource { .. } => 38,
+            Node::Error { .. } => 39,
+            Node::Disjunction { .. } => 40,
+            Node::Conjunction { .. } => 41,
+            Node::Negation { .. } => 42,
+        }
+    }
+}
+
+impl PartialEq for Node<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for Node<'_> {}
+
+impl PartialOrd for Node<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Node<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        Node::node_cmp(self, other)
     }
 }
 
@@ -1860,7 +2820,7 @@ mod tests {
     }
 
     #[test]
-    fn test_position_property() {
+    fn test_prop_position_consistency() {
         fn prop(proc: RholangProc) -> TestResult {
             let code = proc.to_code();
             let tree = parse_code(&code);
@@ -1868,9 +2828,9 @@ mod tests {
                 return TestResult::discard();
             }
             let ir = parse_to_ir(&tree, &code);
-            let root = Arc::new(ir.clone());
-            let start = ir.absolute_start(&root);
-            let end = ir.absolute_end(&root);
+            let root = Arc::new(ir);
+            let start = root.absolute_start(&root);
+            let end = root.absolute_end(&root);
             assert!(start.byte <= end.byte, "Start byte should be <= end byte");
             assert!(start.row <= end.row, "Start row should be <= end row");
             if start.row == end.row {
@@ -1878,7 +2838,7 @@ mod tests {
             }
             TestResult::passed()
         }
-        QuickCheck::new().tests(100).max_tests(1000).quickcheck(prop as fn(RholangProc) -> TestResult);
+        QuickCheck::new().quickcheck(prop as fn(RholangProc) -> TestResult);
     }
 
     #[test]
@@ -1950,5 +2910,68 @@ mod tests {
                 assert!(!children.is_empty(), "Error node should have children");
             }
         }
+    }
+
+    #[test]
+    fn test_match_pat_simple() {
+        // let root = Arc::new(Node::Nil { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, Some("".to_string())), metadata: None });
+        let wild = Arc::new(Node::Wildcard { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("_".to_string())), metadata: None });
+        let var_pat = Arc::new(Node::Var { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("x".to_string())), name: "x".to_string(), metadata: None });
+        let var_con = Arc::new(Node::Var { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("y".to_string())), name: "y".to_string(), metadata: None });
+        let string_pat = Arc::new(Node::StringLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 3, Some("\"foo\"".to_string())), value: "foo".to_string(), metadata: None });
+        let string_con = Arc::new(Node::StringLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 3, Some("\"foo\"".to_string())), value: "foo".to_string(), metadata: None });
+        let string_con_diff = Arc::new(Node::StringLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 3, Some("\"bar\"".to_string())), value: "bar".to_string(), metadata: None });
+
+        let mut subst = HashMap::new();
+        assert!(match_pat(&wild, &var_con, &mut subst));
+        assert!(match_pat(&var_pat, &var_con, &mut subst));
+        assert_eq!(subst.get("x"), Some(&var_con));
+        assert!(match_pat(&string_pat, &string_con, &mut subst));
+        assert!(!match_pat(&string_pat, &string_con_diff, &mut subst));
+    }
+
+    #[test]
+    fn test_match_pat_repeat() {
+        let var_pat = Arc::new(Node::Var { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("x".to_string())), name: "x".to_string(), metadata: None });
+        let con1 = Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("1".to_string())), value: 1, metadata: None });
+        let con2 = Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("1".to_string())), value: 1, metadata: None });
+        let con_diff = Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("2".to_string())), value: 2, metadata: None });
+
+        let mut subst = HashMap::new();
+        assert!(match_pat(&var_pat, &con1, &mut subst));
+        assert!(match_pat(&var_pat, &con2, &mut subst));
+        assert!(!match_pat(&var_pat, &con_diff, &mut subst));
+    }
+
+    #[test]
+    fn test_match_contract_basic() {
+        let channel = Arc::new(Node::Var { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 3, Some("foo".to_string())), name: "foo".to_string(), metadata: None });
+        let inputs = Vector::new_with_ptr_kind().push_back(Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("1".to_string())), value: 1, metadata: None }));
+        let contract_name = Arc::new(Node::Var { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 3, Some("foo".to_string())), name: "foo".to_string(), metadata: None });
+        let contract_formals = Vector::new_with_ptr_kind().push_back(Arc::new(Node::Var { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("x".to_string())), name: "x".to_string(), metadata: None }));
+        let contract = Arc::new(Node::Contract { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, None), name: contract_name, formals: contract_formals, formals_remainder: None, proc: Arc::new(Node::Nil { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 3, Some("Nil".to_string())), metadata: None }), metadata: None });
+        assert!(match_contract(&channel, &inputs, &contract));
+
+        let bad_inputs = Vector::new_with_ptr_kind();
+        assert!(!match_contract(&channel, &bad_inputs, &contract));
+    }
+
+    #[test]
+    fn test_prop_match_pat_no_crash() {
+        fn prop(pat: RholangProc, concrete: RholangProc) -> TestResult {
+            let pat_code = pat.to_code();
+            let concrete_code = concrete.to_code();
+            let pat_tree = parse_code(&pat_code);
+            let concrete_tree = parse_code(&concrete_code);
+            if pat_tree.root_node().has_error() || concrete_tree.root_node().has_error() {
+                return TestResult::discard();
+            }
+            let pat_ir = parse_to_ir(&pat_tree, &pat_code);
+            let concrete_ir = parse_to_ir(&concrete_tree, &concrete_code);
+            let mut subst = HashMap::new();
+            let _ = match_pat(&pat_ir, &concrete_ir, &mut subst);
+            TestResult::passed()
+        }
+        QuickCheck::new().quickcheck(prop as fn(RholangProc, RholangProc) -> TestResult);
     }
 }

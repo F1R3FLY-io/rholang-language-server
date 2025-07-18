@@ -34,7 +34,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use walkdir::WalkDir;
 
 use crate::ir::pipeline::Pipeline;
-use crate::ir::node::{Node, Position as IrPosition, compute_absolute_positions};
+use crate::ir::node::{Node, Position as IrPosition, compute_absolute_positions, collect_contracts, collect_calls, match_contract, find_node_at_position_with_path};
 use crate::ir::symbol_table::{Symbol, SymbolTable, SymbolType};
 use crate::ir::transforms::symbol_table_builder::{SymbolTableBuilder, InvertedIndex, find_node_at_position};
 use crate::ir::transforms::document_symbol_visitor::{collect_document_symbols, collect_workspace_symbols};
@@ -79,6 +79,8 @@ impl RholangBackend {
                 global_symbols: HashMap::new(),
                 global_table: Arc::new(SymbolTable::new(None)),
                 global_inverted_index: HashMap::new(),
+                global_contracts: Vec::new(),
+                global_calls: Vec::new(),
             })),
             file_watcher: Arc::new(Mutex::new(None)),
             file_events: Arc::new(Mutex::new(rx)),
@@ -108,17 +110,25 @@ impl RholangBackend {
             .and_then(|m| m.data.get("symbol_table"))
             .map(|st| Arc::clone(st.downcast_ref::<Arc<SymbolTable>>().unwrap()))
             .ok_or("Failed to extract symbol table")?;
+        builder.resolve_local_potentials(&symbol_table);
         let version = self.version_counter.fetch_add(1, Ordering::SeqCst);
 
         debug!("Processed document {}: {} symbols, {} usages, version {}",
             uri, symbol_table.collect_all_symbols().len(), inverted_index.len(), version);
+
+        let mut contracts = Vec::new();
+        let mut calls = Vec::new();
+        collect_contracts(&transformed_ir, &mut contracts);
+        collect_calls(&transformed_ir, &mut calls);
+        debug!("Collected {} contracts and {} calls in {}", contracts.len(), calls.len(), uri);
+
         Ok(CachedDocument {
             ir: unsafe { std::mem::transmute(transformed_ir) },
             tree: Arc::new(parse_code(&ir.text())),
             symbol_table,
             inverted_index,
             version,
-            text: ir.text(),
+            text: Rope::from_str(&ir.text()),
             positions,
             potential_global_refs,
         })
@@ -146,11 +156,21 @@ impl RholangBackend {
                 !us.is_empty()
             }
         });
+        workspace.global_contracts.retain(|(u, _)| u != &uri_clone);
+        workspace.global_calls.retain(|(u, _)| u != &uri_clone);
         drop(workspace);
 
         let tree = Arc::new(tree.unwrap_or_else(|| parse_code(text)));
         let ir = parse_to_ir(&tree, text);
-        self.process_document(ir, uri).await
+        let cached = self.process_document(ir, uri).await?;
+        let mut workspace = self.workspace.write().await;
+        let mut contracts = Vec::new();
+        collect_contracts(&cached.ir, &mut contracts);
+        let mut calls = Vec::new();
+        collect_calls(&cached.ir, &mut calls);
+        workspace.global_contracts.extend(contracts.into_iter().map(|c| (uri.clone(), c)));
+        workspace.global_calls.extend(calls.into_iter().map(|c| (uri.clone(), c)));
+        Ok(cached)
     }
 
     /// Links contract symbols across all documents in the workspace for cross-file resolution.
@@ -188,6 +208,8 @@ impl RholangBackend {
                 .or_insert_with(Vec::new)
                 .push((use_uri, use_pos));
         }
+
+        // No additional linking for contracts/calls, as linear match is used
     }
 
     /// Handles file system events by re-indexing changed .rho files that are not open.
@@ -213,38 +235,31 @@ impl RholangBackend {
 
     /// Indexes all .rho files in the given directory (non-recursively).
     async fn index_directory(&self, dir: &Path) {
-        match std::fs::read_dir(dir) {
-            Ok(entries) => {
-                for entry in entries {
-                    match entry {
-                        Ok(entry) => {
-                            let path = entry.path();
-                            if entry.file_type().expect("Failed to get file type").is_file()
-                                && path.extension().map_or(false, |ext| ext == "rho") {
-                                let uri = Url::from_file_path(&path).expect("Failed to create URI from path");
-                                if !self.documents_by_uri.read().await.contains_key(&uri)
-                                    && !self.workspace.read().await.documents.contains_key(&uri) {
-                                    if let Ok(text) = std::fs::read_to_string(&path) {
-                                        match self.index_file(&uri, &text, 0, None).await {
-                                            Ok(cached_doc) => {
-                                                self.workspace.write().await.documents.insert(uri.clone(), Arc::new(cached_doc));
-                                                debug!("Indexed sibling file: {}", uri);
-                                            }
-                                            Err(e) => warn!("Failed to index sibling file {}: {}", uri, e),
-                                        }
+        for result in WalkDir::new(dir) {
+            match result {
+                Ok(entry) => {
+                    if entry.file_type().is_file() && entry.path().extension().map_or(false, |ext| ext == "rho") {
+                        let uri = Url::from_file_path(entry.path()).expect("Failed to create URI from path");
+                        if !self.documents_by_uri.read().await.contains_key(&uri)
+                            && !self.workspace.read().await.documents.contains_key(&uri) {
+                            if let Ok(text) = std::fs::read_to_string(entry.path()) {
+                                match self.index_file(&uri, &text, 0, None).await {
+                                    Ok(cached_doc) => {
+                                        self.workspace.write().await.documents.insert(uri.clone(), Arc::new(cached_doc));
+                                        debug!("Indexed file: {}", uri);
                                     }
+                                    Err(e) => warn!("Failed to index file {}: {}", uri, e),
                                 }
                             }
                         }
-                        Err(e) => warn!("Failed to read directory entry: {}", e),
                     }
                 }
-                self.link_symbols().await;
-            }
-            Err(e) => {
-                warn!("Failed to read directory {:?} for sibling indexing: {}", dir, e);
+                Err(e) => {
+                    warn!("Failed to read directory {:?} for sibling indexing: {}", dir, e);
+                }
             }
         }
+        self.link_symbols().await;
     }
 
     /// Generates the next unique document ID.
@@ -374,12 +389,26 @@ impl RholangBackend {
             if let Some(node) = find_node_at_position(&doc.ir, &doc.positions, position) {
                 let symbol_table = node.metadata()
                     .and_then(|m| m.data.get("symbol_table"))
-                    .map(|st| Arc::clone(st.downcast_ref::<Arc<SymbolTable>>().unwrap()))
-                    .unwrap_or_else(|| Arc::clone(&doc.symbol_table));
+                    .and_then(|t| t.downcast_ref::<Arc<SymbolTable>>())
+                    .cloned()
+                    .unwrap_or_else(|| doc.symbol_table.clone());
                 return Some((node, symbol_table, doc.inverted_index.clone()));
             }
         }
         None
+    }
+
+    fn position_to_range(position: IrPosition, name_len: usize) -> Range {
+        Range {
+            start: LspPosition {
+                line: position.row as u32,
+                character: position.column as u32,
+            },
+            end: LspPosition {
+                line: position.row as u32,
+                character: (position.column + name_len) as u32,
+            },
+        }
     }
 
     /// Retrieves the symbol at the specified LSP position in the document.
@@ -392,11 +421,7 @@ impl RholangBackend {
         };
         if let Some(doc) = opt_doc {
             let text = &doc.text;
-            let byte_offset = Node::byte_offset_from_position(
-                text,
-                position.line as usize,
-                position.character as usize
-            );
+            let byte_offset = Self::byte_offset_from_position(text, position.line as usize, position.character as usize);
             if let Some(byte) = byte_offset {
                 let pos = IrPosition {
                     row: position.line as usize,
@@ -407,45 +432,42 @@ impl RholangBackend {
                     if let Node::Var { name, .. } = &*node {
                         if let Some(symbol) = symbol_table.lookup(name) {
                             debug!("Found symbol '{}' at {}:{} in {}",
-                                   name, position.line, position.character, uri);
+                                name, position.line, position.character, uri);
                             return Some(symbol);
                         } else {
                             // Search global symbols for unbound references
                             let workspace = self.workspace.read().await;
-                            if let Some((def_uri, def_pos)) = workspace.global_symbols.get(name) {
+                            if let Some((def_uri, def_pos)) = workspace.global_symbols.get(name).cloned() {
                                 debug!("Found global symbol '{}' for unbound reference at {}:{} in {}",
-                                       name, position.line, position.character, uri);
+                                    name, position.line, position.character, uri);
                                 return Some(Arc::new(Symbol {
                                     name: name.to_string(),
                                     symbol_type: SymbolType::Contract,
                                     declaration_uri: def_uri.clone(),
-                                    declaration_location: *def_pos,
-                                    definition_location: Some(*def_pos),
+                                    declaration_location: def_pos,
+                                    definition_location: Some(def_pos),
                                 }));
                             } else {
                                 debug!("Symbol '{}' at {}:{} in {} not found in symbol table or global",
-                                       name, position.line, position.character, uri);
+                                    name, position.line, position.character, uri);
                             }
                         }
                     } else {
                         debug!("Node at {}:{} in {} is not a Var node",
-                               position.line, position.character, uri);
+                            position.line, position.character, uri);
                     }
                 } else {
-                    debug!("No node found at position {}:{} in {}",
-                           position.line, position.character, uri);
+                    debug!("Invalid position {}:{} in {}",
+                        position.line, position.character, uri);
                 }
             } else {
-                debug!("Invalid position {}:{} in {}",
-                       position.line, position.character, uri);
+                debug!("Document not found: {}", uri);
             }
-        } else {
-            debug!("Document not found: {}", uri);
         }
         None
     }
 
-    /// Collects all locations where the given symbol is referenced, including local and global usages.
+    /// Retrieves all occurrences of the symbol, including declaration (if requested), definition (if distinct), and usages.
     async fn get_symbol_references(&self, symbol: &Symbol, include_declaration: bool) -> Vec<(Url, Range)> {
         let mut locations = Vec::new();
         let decl_uri = symbol.declaration_uri.clone();
@@ -459,9 +481,9 @@ impl RholangBackend {
             debug!("Added declaration of '{}' at {}:{:?}", symbol.name, decl_uri, decl_pos);
         }
 
-        // Add definition location if present and different from declaration
+        // Add definition location if it exists and differs from declaration
         if let Some(def_pos) = symbol.definition_location {
-            if def_pos != symbol.declaration_location {
+            if def_pos != decl_pos {
                 let def_range = Self::position_to_range(def_pos, name_len);
                 locations.push((decl_uri.clone(), def_range));
                 debug!("Added definition of '{}' at {}:{:?}", symbol.name, decl_uri, def_pos);
@@ -495,18 +517,9 @@ impl RholangBackend {
         locations
     }
 
-    /// Converts an IR position to an LSP range, using the symbol name length for the end position.
-    fn position_to_range(position: IrPosition, name_len: usize) -> Range {
-        Range {
-            start: LspPosition {
-                line: position.row as u32,
-                character: position.column as u32,
-            },
-            end: LspPosition {
-                line: position.row as u32,
-                character: (position.column + name_len) as u32,
-            },
-        }
+    /// Computes the byte offset from a line and character position in the source text.
+    pub fn byte_offset_from_position(text: &Rope, line: usize, character: usize) -> Option<usize> {
+        text.try_line_to_byte(line).ok().map(|b| b + text.line(line).char_to_byte(character.min(text.line(line).len_chars())))
     }
 }
 
@@ -670,14 +683,28 @@ impl LanguageServer for RholangBackend {
             }
             Err(e) => error!("Failed to index file: {}", e),
         }
-        match self.validate(document.clone(), &text, version).await {
-            Ok(diagnostics) => {
-                if document.version().await == version {
-                    self.client.publish_diagnostics(uri, diagnostics, Some(version)).await;
+
+        // Spawn validation in blocking task with separate runtime to avoid runtime interference
+        let backend = self.clone();
+        let uri_clone = uri.clone();
+        let document_clone = document.clone();
+        let text_clone = text.clone();
+        tokio::spawn(tokio::task::spawn_blocking(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to create runtime for validation");
+            rt.block_on(async {
+                match backend.validate(document_clone.clone(), &text_clone, version).await {
+                    Ok(diagnostics) => {
+                        if document_clone.version().await == version {
+                            backend.client.publish_diagnostics(uri_clone, diagnostics, Some(version)).await;
+                        }
+                    }
+                    Err(e) => error!("Validation failed for URI={}: {}", uri_clone, e),
                 }
-            }
-            Err(e) => error!("Validation failed for URI={}: {}", uri, e),
-        }
+            });
+        }));
     }
 
     /// Handles changes to a text document, applying incremental updates and re-validating.
@@ -691,9 +718,23 @@ impl LanguageServer for RholangBackend {
                     Ok(cached_doc) => {
                         self.workspace.write().await.documents.insert(uri.clone(), Arc::new(cached_doc));
                         self.link_symbols().await;
-                        if let Ok(diagnostics) = self.validate(document.clone(), &text, version).await {
-                            self.client.publish_diagnostics(uri.clone(), diagnostics, Some(version)).await;
-                        }
+
+                        // Spawn validation in blocking task with separate runtime to avoid runtime interference
+                        let backend = self.clone();
+                        let uri_clone = uri.clone();
+                        let document_clone = document.clone();
+                        let text_clone = text.clone();
+                        tokio::spawn(tokio::task::spawn_blocking(move || {
+                            let rt = tokio::runtime::Builder::new_current_thread()
+                                .enable_all()
+                                .build()
+                                .expect("Failed to create runtime for validation");
+                            rt.block_on(async {
+                                if let Ok(diagnostics) = backend.validate(document_clone.clone(), &text_clone, version).await {
+                                    backend.client.publish_diagnostics(uri_clone, diagnostics, Some(version)).await;
+                                }
+                            });
+                        }));
                     }
                     Err(e) => warn!("Failed to update {}: {}", uri, e),
                 }
@@ -771,36 +812,127 @@ impl LanguageServer for RholangBackend {
         }))
     }
 
-    /// Handles going to a symbol's declaration.
-    async fn goto_declaration(&self, params: GotoDeclarationParams) -> LspResult<Option<GotoDeclarationResponse>> {
-        let uri = params.text_document_position_params.text_document.uri;
-        let position = params.text_document_position_params.position;
+    /// Handles going to a symbol's definition.
+    async fn goto_definition(&self, params: GotoDefinitionParams) -> LspResult<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri.clone();
+        let lsp_pos = params.text_document_position_params.position;
 
-        if let Some(symbol) = self.get_symbol_at_position(&uri, position).await {
-            let location = Location {
-                uri: symbol.declaration_uri.clone(),
-                range: Self::position_to_range(symbol.declaration_location, symbol.name.len()),
-            };
-            debug!("Goto declaration for '{}' at {}", symbol.name, location.uri);
-            Ok(Some(GotoDeclarationResponse::Scalar(location)))
+        debug!("goto_definition request for {} at {:?}", uri, lsp_pos);
+
+        let byte = {
+            let workspace = self.workspace.read().await;
+            if let Some(doc) = workspace.documents.get(&uri) {
+                let text = &doc.text;
+                Self::byte_offset_from_position(text, lsp_pos.line as usize, lsp_pos.character as usize)
+            } else {
+                debug!("Document {} not found in workspace", uri);
+                return Ok(None);
+            }
+        };
+
+        let ir_pos = IrPosition {
+            row: lsp_pos.line as usize,
+            column: lsp_pos.character as usize,
+            byte: byte.unwrap_or(0),
+        };
+
+        debug!("Computed IR position: {:?}", ir_pos);
+
+        let workspace = self.workspace.read().await;
+        if let Some(doc) = workspace.documents.get(&uri) {
+            debug!("Document found in workspace: {}", uri);
+            if let Some((node, path)) = find_node_at_position_with_path(&doc.ir, &doc.positions, ir_pos) {
+                debug!("Found node at position: '{}'", node.text());
+                if path.len() >= 2 {
+                    let parent = path[path.len() - 2].clone();
+                    let is_channel = match &*parent {
+                        Node::Send { channel, .. } | Node::SendSync { channel, .. } => Arc::ptr_eq(channel, &node),
+                        _ => false,
+                    };
+                    debug!("Is channel in Send/SendSync: {}", is_channel);
+                    if is_channel {
+                        if let Node::Send { channel, inputs, .. } | Node::SendSync { channel, inputs, .. } = &*parent {
+                            let matching = workspace.global_contracts.iter().filter(|(_, contract)| match_contract(channel, inputs, contract)).map(|(u, c)| {
+                                let file_ir = workspace.documents.get(u).expect("Document not found").ir.clone();
+                                debug!("Matched contract in {}: '{}'", u, c.text());
+                                let name = if let Node::Contract { name, .. } = &**c {
+                                    debug!("Contact name: {:?}", name);
+                                    name
+                                } else {
+                                    debug!("Unreachable!");
+                                    unreachable!()
+                                };
+                                debug!("Found contract name");
+                                Location {
+                                    uri: u.clone(),
+                                    range: Self::position_to_range(name.absolute_start(&file_ir), name.text().len()),
+                                }
+                            }).collect::<Vec<_>>();
+                            debug!("Found {} matching contracts", matching.len());
+                            if matching.is_empty() {
+                                drop(workspace);
+                                debug!("No matching contracts; falling back to symbol lookup");
+                                if let Some(symbol) = self.get_symbol_at_position(&uri, lsp_pos).await {
+                                    let pos = symbol.definition_location.unwrap_or(symbol.declaration_location);
+                                    let range = Self::position_to_range(pos, symbol.name.len());
+                                    let loc = Location { uri: symbol.declaration_uri.clone(), range };
+                                    Ok(Some(GotoDefinitionResponse::Scalar(loc)))
+                                } else {
+                                    Ok(None)
+                                }
+                            } else if matching.len() == 1 {
+                                Ok(Some(GotoDefinitionResponse::Scalar(matching[0].clone())))
+                            } else {
+                                Ok(Some(GotoDefinitionResponse::Array(matching)))
+                            }
+                        } else {
+                            unreachable!()
+                        }
+                    } else {
+                        drop(workspace);
+                        debug!("Not a channel; falling back to symbol lookup");
+                        if let Some(symbol) = self.get_symbol_at_position(&uri, lsp_pos).await {
+                            let pos = symbol.definition_location.unwrap_or(symbol.declaration_location);
+                            let range = Self::position_to_range(pos, symbol.name.len());
+                            let loc = Location { uri: symbol.declaration_uri.clone(), range };
+                            Ok(Some(GotoDefinitionResponse::Scalar(loc)))
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                } else {
+                    drop(workspace);
+                    debug!("Path too short; falling back to symbol lookup");
+                    if let Some(symbol) = self.get_symbol_at_position(&uri, lsp_pos).await {
+                        let pos = symbol.definition_location.unwrap_or(symbol.declaration_location);
+                        let range = Self::position_to_range(pos, symbol.name.len());
+                        let loc = Location { uri: symbol.declaration_uri.clone(), range };
+                        Ok(Some(GotoDefinitionResponse::Scalar(loc)))
+                    } else {
+                        Ok(None)
+                    }
+                }
+            } else {
+                debug!("No node found at position {:?} in {}", ir_pos, uri);
+                Ok(None)
+            }
         } else {
+            debug!("Document {} not found in workspace for goto_definition", uri);
             Ok(None)
         }
     }
 
-    /// Handles going to a symbol's definition.
-    async fn goto_definition(&self, params: GotoDefinitionParams) -> LspResult<Option<GotoDefinitionResponse>> {
-        let uri = params.text_document_position_params.text_document.uri;
+    /// Handles going to a symbol's declaration.
+    async fn goto_declaration(&self, params: GotoDeclarationParams) -> LspResult<Option<GotoDeclarationResponse>> {
+        let uri = params.text_document_position_params.text_document.uri.clone();
         let position = params.text_document_position_params.position;
 
+        debug!("goto_declaration request for {} at {:?}", uri, position);
+
         if let Some(symbol) = self.get_symbol_at_position(&uri, position).await {
-            let def_pos = symbol.definition_location.unwrap_or(symbol.declaration_location);
-            let location = Location {
-                uri: symbol.declaration_uri.clone(),
-                range: Self::position_to_range(def_pos, symbol.name.len()),
-            };
-            debug!("Goto definition for '{}' at {}", symbol.name, location.uri);
-            Ok(Some(GotoDefinitionResponse::Scalar(location)))
+            let range = Self::position_to_range(symbol.declaration_location, symbol.name.len());
+            let loc = Location { uri: symbol.declaration_uri.clone(), range };
+            Ok(Some(GotoDeclarationResponse::Scalar(loc)))
         } else {
             Ok(None)
         }
@@ -808,32 +940,106 @@ impl LanguageServer for RholangBackend {
 
     /// Handles finding all references to a symbol.
     async fn references(&self, params: ReferenceParams) -> LspResult<Option<Vec<Location>>> {
-        let uri = params.text_document_position.text_document.uri;
-        let position = params.text_document_position.position;
-        let include_declaration = params.context.include_declaration;
+        let uri = params.text_document_position.text_document.uri.clone();
+        let lsp_pos = params.text_document_position.position;
+        let include_decl = params.context.include_declaration;
 
-        debug!("Finding references at {}:{:?}", uri, position);
+        debug!("references request for {} at {:?} (include_decl: {})", uri, lsp_pos, include_decl);
 
-        // Step 1: Identify the symbol at the given position
-        let symbol = match self.get_symbol_at_position(&uri, position).await {
-            Some(s) => s,
-            None => {
-                debug!("No symbol found at {}:{:?}", uri, position);
+        let byte = {
+            let workspace = self.workspace.read().await;
+            if let Some(doc) = workspace.documents.get(&uri) {
+                let text = &doc.text;
+                Self::byte_offset_from_position(text, lsp_pos.line as usize, lsp_pos.character as usize)
+            } else {
+                debug!("Document {} not found in workspace", uri);
                 return Ok(None);
             }
         };
 
-        // Step 2: Collect all references including the declaration
-        let references = self.get_symbol_references(&symbol, include_declaration).await;
-        debug!("Collected {} references for '{}'", references.len(), symbol.name);
+        let ir_pos = IrPosition {
+            row: lsp_pos.line as usize,
+            column: lsp_pos.character as usize,
+            byte: byte.unwrap_or(0),
+        };
 
-        // Step 3: Convert to LSP Location objects
-        let locations: Vec<Location> = references.into_iter()
-            .map(|(uri, range)| Location { uri, range })
-            .collect();
+        debug!("Computed IR position: {:?}", ir_pos);
 
-        debug!("Returning {} reference locations for '{}'", locations.len(), symbol.name);
-        Ok(Some(locations))
+        let workspace = self.workspace.read().await;
+        if let Some(doc) = workspace.documents.get(&uri) {
+            debug!("Document found in workspace: {}", uri);
+            if let Some((node, path)) = find_node_at_position_with_path(&doc.ir, &doc.positions, ir_pos) {
+                debug!("Found node at position: '{}'", node.text());
+                if path.len() >= 2 {
+                    let parent = path[path.len() - 2].clone();
+                    let is_name = match &*parent {
+                        Node::Contract { name, .. } => Arc::ptr_eq(name, &node),
+                        _ => false,
+                    };
+                    debug!("Is name in Contract: {}", is_name);
+                    if is_name {
+                        if let Node::Contract { .. } = &*parent {
+                            let contract = parent.clone();
+                            let matching_calls = workspace.global_calls.iter().filter(|(_, call)| {
+                                match &**call {
+                                    Node::Send { channel, inputs, .. } | Node::SendSync { channel, inputs, .. } => {
+                                        match_contract(channel, inputs, &contract)
+                                    }
+                                    _ => false,
+                                }
+                            }).cloned().collect::<Vec<_>>();
+                            debug!("Found {} matching calls for contract", matching_calls.len());
+                            let mut locations = matching_calls.iter().map(|(u, call)| {
+                                let file_ir = workspace.documents.get(u).expect("Document not found").ir.clone();
+                                debug!("Matched call in {}: '{}'", u, call.text());
+                                match &**call {
+                                    Node::Send { channel, .. } | Node::SendSync { channel, .. } => {
+                                        Location {
+                                            uri: u.clone(),
+                                            range: Self::position_to_range(channel.absolute_start(&file_ir), channel.text().len()),
+                                        }
+                                    }
+                                    _ => unreachable!()
+                                }
+                            }).collect::<Vec<_>>();
+                            if include_decl {
+                                let decl_range = Self::position_to_range(node.absolute_start(&doc.ir), node.text().len());
+                                locations.push(Location { uri: uri.clone(), range: decl_range });
+                            }
+                            Ok(Some(locations))
+                        } else {
+                            unreachable!()
+                        }
+                    } else {
+                        drop(workspace);
+                        debug!("Not a contract name; falling back to symbol references");
+                        if let Some(symbol) = self.get_symbol_at_position(&uri, lsp_pos).await {
+                            let refs = self.get_symbol_references(&symbol, include_decl).await;
+                            let locations = refs.into_iter().map(|(u, r)| Location { uri: u, range: r }).collect();
+                            Ok(Some(locations))
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                } else {
+                    drop(workspace);
+                    debug!("Path too short; falling back to symbol references");
+                    if let Some(symbol) = self.get_symbol_at_position(&uri, lsp_pos).await {
+                        let refs = self.get_symbol_references(&symbol, include_decl).await;
+                        let locations = refs.into_iter().map(|(u, r)| Location { uri: u, range: r }).collect();
+                        Ok(Some(locations))
+                    } else {
+                        Ok(None)
+                    }
+                }
+            } else {
+                debug!("No node found at position {:?} in {}", ir_pos, uri);
+                Ok(None)
+            }
+        } else {
+            debug!("Document {} not found in workspace for references", uri);
+            Ok(None)
+        }
     }
 
     /// Provides document symbols for the given document.

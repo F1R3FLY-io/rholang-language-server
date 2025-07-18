@@ -50,20 +50,42 @@ impl SymbolTableBuilder {
         self.potential_global_refs.read().unwrap().clone()
     }
 
+    /// Resolves potentials that can be bound locally after full traversal (e.g., forward references in same file).
+    pub fn resolve_local_potentials(&self, symbol_table: &Arc<SymbolTable>) {
+        let potentials = self.potential_global_refs.write().expect("Failed to lock potential_global_refs").clone();
+        let mut to_remove = Vec::new();
+        for (i, (name, use_pos)) in potentials.iter().enumerate() {
+            if let Some(symbol) = symbol_table.lookup(name) {
+                if symbol.declaration_uri == self.current_uri {
+                    self.inverted_index.write().expect("Failed to lock inverted_index")
+                        .entry(symbol.declaration_location)
+                        .or_insert_with(Vec::new)
+                        .push(*use_pos);
+                    trace!("Resolved local potential '{}' at {:?}", name, use_pos);
+                    to_remove.push(i);
+                }
+            }
+        }
+        let mut potentials_guard = self.potential_global_refs.write().expect("Failed to lock potential_global_refs");
+        for &i in to_remove.iter().rev() {
+            potentials_guard.swap_remove(i);
+        }
+    }
+
     /// Pushes a new scope onto the stack, linking it to the current scope as its parent.
     fn push_scope(&self) -> Arc<SymbolTable> {
-        let current = self.current_table.read().unwrap().clone();
+        let current = self.current_table.read().expect("Failed to lock current_table").clone();
         let new_table = Arc::new(SymbolTable::new(Some(current)));
-        *self.current_table.write().unwrap() = new_table.clone();
+        *self.current_table.write().expect("Failed to lock current_table") = new_table.clone();
         trace!("Pushed new scope");
         new_table
     }
 
     /// Pops the current scope, reverting to its parent if one exists.
     fn pop_scope(&self) {
-        let current = self.current_table.read().unwrap().clone();
+        let current = self.current_table.read().expect("Failed to lock current_table").clone();
         if let Some(parent) = current.parent() {
-            *self.current_table.write().unwrap() = parent;
+            *self.current_table.write().expect("Failed to lock current_table") = parent;
             trace!("Popped scope");
         } else {
             trace!("No parent scope to pop to; retaining current scope");
@@ -93,7 +115,7 @@ impl SymbolTableBuilder {
         symbol: Option<Arc<Symbol>>,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node<'b>> {
-        let current_table = self.current_table.read().unwrap().clone();
+        let current_table = self.current_table.read().expect("Failed to lock current_table").clone();
         self.update_metadata(node, current_table, symbol, metadata)
     }
 
@@ -127,162 +149,229 @@ impl SymbolTableBuilder {
                 vars
             }
             Node::Quote { quotable, .. } => self.collect_bound_vars(quotable),
+            Node::Disjunction { left, right, .. } => {
+                let mut vars = self.collect_bound_vars(left);
+                vars.extend(self.collect_bound_vars(right));
+                vars
+            }
+            Node::Conjunction { left, right, .. } => {
+                let mut vars = self.collect_bound_vars(left);
+                vars.extend(self.collect_bound_vars(right));
+                vars
+            }
+            Node::Negation { operand, .. } => self.collect_bound_vars(operand),
+            Node::Parenthesized { expr, .. } => self.collect_bound_vars(expr),
             _ => vec![],
         }
     }
+
 }
 
-/// Finds the deepest node at a given position for lookup.
-pub fn find_node_at_position(
-    root: &Arc<Node<'static>>,
-    positions: &HashMap<usize, (Position, Position)>,
+fn traverse<'a>(
+    node: &Arc<Node<'a>>,
     position: Position,
-) -> Option<Arc<Node<'static>>> {
-    debug!("Starting node lookup at position {:?}", position);
-    let mut best: Option<(Arc<Node<'static>>, (Position, Position), usize)> = None;
-
-    fn traverse(
-        node: &Arc<Node<'static>>,
-        pos: Position,
-        positions: &HashMap<usize, (Position, Position)>,
-        best: &mut Option<(Arc<Node<'static>>, (Position, Position), usize)>,
-        depth: usize,
-    ) {
-        let key = node.base().ts_node().map_or(0, |n| n.id());
-        if let Some(&(start, end)) = positions.get(&key) {
-            debug!(
-                "Visiting node '{}' at key={} depth={}: start={:?}, end={:?}, contains={}",
-                node.text(), key, depth, start, end, start.byte <= pos.byte && pos.byte <= end.byte
-            );
-            if start.byte <= pos.byte && pos.byte <= end.byte {
-                let is_better = best.as_ref().map_or(true, |(_, (b_start, b_end), b_depth)| {
-                    let curr_len = end.byte - start.byte;
-                    let best_len = b_end.byte - b_start.byte;
-                    curr_len < best_len || (curr_len == best_len && depth > *b_depth)
-                });
-                if is_better {
-                    debug!("Updating best match to '{}' at depth {}", node.text(), depth);
-                    *best = Some((node.clone(), (start, end), depth));
-                }
+    positions: &HashMap<usize, (Position, Position)>,
+    best: &mut Option<(Arc<Node<'a>>, Position, usize)>,
+    depth: usize,
+) {
+    let key = node.base().ts_node().map_or(0, |n| n.id());
+    if let Some(&(start, end)) = positions.get(&key) {
+        if start.byte <= position.byte && position.byte <= end.byte {
+            // let size = (end.byte - start.byte) as usize;
+            let is_better = best.as_ref().map_or(true, |(_, _, b_depth)| depth > *b_depth);
+            if is_better {
+                *best = Some((node.clone(), start, depth));
             }
-        } else {
-            debug!("No position data for node '{}' at key={}", node.text(), key);
-        }
-        match &**node {
-            Node::Par { left, right, .. } => {
-                traverse(left, pos, positions, best, depth + 1);
-                traverse(right, pos, positions, best, depth + 1);
-            }
-            Node::SendSync { channel, inputs, cont, .. } => {
-                traverse(channel, pos, positions, best, depth + 1);
-                for input in inputs { traverse(input, pos, positions, best, depth + 1); }
-                traverse(cont, pos, positions, best, depth + 1);
-            }
-            Node::Send { channel, inputs, .. } => {
-                traverse(channel, pos, positions, best, depth + 1);
-                for input in inputs { traverse(input, pos, positions, best, depth + 1); }
-            }
-            Node::New { decls, proc, .. } => {
-                for decl in decls { traverse(decl, pos, positions, best, depth + 1); }
-                traverse(proc, pos, positions, best, depth + 1);
-            }
-            Node::IfElse { condition, consequence, alternative, .. } => {
-                traverse(condition, pos, positions, best, depth + 1);
-                traverse(consequence, pos, positions, best, depth + 1);
-                if let Some(alt) = alternative { traverse(alt, pos, positions, best, depth + 1); }
-            }
-            Node::Let { decls, proc, .. } => {
-                for decl in decls { traverse(decl, pos, positions, best, depth + 1); }
-                traverse(proc, pos, positions, best, depth + 1);
-            }
-            Node::Bundle { proc, .. } => traverse(proc, pos, positions, best, depth + 1),
-            Node::Match { expression, cases, .. } => {
-                traverse(expression, pos, positions, best, depth + 1);
-                for (pat, proc) in cases {
-                    traverse(pat, pos, positions, best, depth + 1);
-                    traverse(proc, pos, positions, best, depth + 1);
-                }
-            }
-            Node::Choice { branches, .. } => {
-                for (inputs, proc) in branches {
-                    for input in inputs { traverse(input, pos, positions, best, depth + 1); }
-                    traverse(proc, pos, positions, best, depth + 1);
-                }
-            }
-            Node::Contract { name, formals, formals_remainder, proc, .. } => {
-                traverse(name, pos, positions, best, depth + 1);
-                for formal in formals { traverse(formal, pos, positions, best, depth + 1); }
-                if let Some(rem) = formals_remainder { traverse(rem, pos, positions, best, depth + 1); }
-                traverse(proc, pos, positions, best, depth + 1);
-            }
-            Node::Input { receipts, proc, .. } => {
-                for receipt in receipts { for bind in receipt { traverse(bind, pos, positions, best, depth + 1); } }
-                traverse(proc, pos, positions, best, depth + 1);
-            }
-            Node::Block { proc, .. } => traverse(proc, pos, positions, best, depth + 1),
-            Node::BinOp { left, right, .. } => {
-                traverse(left, pos, positions, best, depth + 1);
-                traverse(right, pos, positions, best, depth + 1);
-            }
-            Node::UnaryOp { operand, .. } => traverse(operand, pos, positions, best, depth + 1),
-            Node::Method { receiver, args, .. } => {
-                traverse(receiver, pos, positions, best, depth + 1);
-                for arg in args { traverse(arg, pos, positions, best, depth + 1); }
-            }
-            Node::Eval { name, .. } => traverse(name, pos, positions, best, depth + 1),
-            Node::Quote { quotable, .. } => traverse(quotable, pos, positions, best, depth + 1),
-            Node::VarRef { var, .. } => traverse(var, pos, positions, best, depth + 1),
-            Node::List { elements, remainder, .. } => {
-                for elem in elements { traverse(elem, pos, positions, best, depth + 1); }
-                if let Some(rem) = remainder { traverse(rem, pos, positions, best, depth + 1); }
-            }
-            Node::Set { elements, remainder, .. } => {
-                for elem in elements { traverse(elem, pos, positions, best, depth + 1); }
-                if let Some(rem) = remainder { traverse(rem, pos, positions, best, depth + 1); }
-            }
-            Node::Map { pairs, remainder, .. } => {
-                for (key, value) in pairs {
-                    traverse(key, pos, positions, best, depth + 1);
-                    traverse(value, pos, positions, best, depth + 1);
-                }
-                if let Some(rem) = remainder { traverse(rem, pos, positions, best, depth + 1); }
-            }
-            Node::Tuple { elements, .. } => {
-                for elem in elements { traverse(elem, pos, positions, best, depth + 1); }
-            }
-            Node::NameDecl { var, uri, .. } => {
-                traverse(var, pos, positions, best, depth + 1);
-                if let Some(u) = uri { traverse(u, pos, positions, best, depth + 1); }
-            }
-            Node::Decl { names, names_remainder, procs, .. } => {
-                for name in names { traverse(name, pos, positions, best, depth + 1); }
-                if let Some(rem) = names_remainder { traverse(rem, pos, positions, best, depth + 1); }
-                for proc in procs { traverse(proc, pos, positions, best, depth + 1); }
-            }
-            Node::LinearBind { names, remainder, source, .. } => {
-                for name in names { traverse(name, pos, positions, best, depth + 1); }
-                if let Some(rem) = remainder { traverse(rem, pos, positions, best, depth + 1); }
-                traverse(source, pos, positions, best, depth + 1);
-            }
-            Node::RepeatedBind { names, remainder, source, .. } => {
-                for name in names { traverse(name, pos, positions, best, depth + 1); }
-                if let Some(rem) = remainder { traverse(rem, pos, positions, best, depth + 1); }
-                traverse(source, pos, positions, best, depth + 1);
-            }
-            Node::PeekBind { names, remainder, source, .. } => {
-                for name in names { traverse(name, pos, positions, best, depth + 1); }
-                if let Some(rem) = remainder { traverse(rem, pos, positions, best, depth + 1); }
-                traverse(source, pos, positions, best, depth + 1);
-            }
-            Node::ReceiveSendSource { name, .. } => traverse(name, pos, positions, best, depth + 1),
-            Node::SendReceiveSource { name, inputs, .. } => {
-                traverse(name, pos, positions, best, depth + 1);
-                for input in inputs { traverse(input, pos, positions, best, depth + 1); }
-            }
-            _ => {}
         }
     }
+    match &**node {
+        Node::Par { left, right, .. } => {
+            traverse(left, position, positions, best, depth + 1);
+            traverse(right, position, positions, best, depth + 1);
+        }
+        Node::SendSync { channel, inputs, cont, .. } => {
+            traverse(channel, position, positions, best, depth + 1);
+            for input in inputs {
+                traverse(input, position, positions, best, depth + 1);
+            }
+            traverse(cont, position, positions, best, depth + 1);
+        }
+        Node::Send { channel, inputs, .. } => {
+            traverse(channel, position, positions, best, depth + 1);
+            for input in inputs {
+                traverse(input, position, positions, best, depth + 1);
+            }
+        }
+        Node::New { decls, proc, .. } => {
+            for decl in decls {
+                traverse(decl, position, positions, best, depth + 1);
+            }
+            traverse(proc, position, positions, best, depth + 1);
+        }
+        Node::IfElse { condition, consequence, alternative, .. } => {
+            traverse(condition, position, positions, best, depth + 1);
+            traverse(consequence, position, positions, best, depth + 1);
+            if let Some(alt) = alternative {
+                traverse(alt, position, positions, best, depth + 1);
+            }
+        }
+        Node::Let { decls, proc, .. } => {
+            for decl in decls {
+                traverse(decl, position, positions, best, depth + 1);
+            }
+            traverse(proc, position, positions, best, depth + 1);
+        }
+        Node::Bundle { proc, .. } => traverse(proc, position, positions, best, depth + 1),
+        Node::Match { expression, cases, .. } => {
+            traverse(expression, position, positions, best, depth + 1);
+            for (pat, proc) in cases {
+                traverse(pat, position, positions, best, depth + 1);
+                traverse(proc, position, positions, best, depth + 1);
+            }
+        }
+        Node::Choice { branches, .. } => {
+            for (inputs, proc) in branches {
+                for input in inputs {
+                    traverse(input, position, positions, best, depth + 1);
+                }
+                traverse(proc, position, positions, best, depth + 1);
+            }
+        }
+        Node::Contract { name, formals, formals_remainder, proc, .. } => {
+            traverse(name, position, positions, best, depth + 1);
+            for formal in formals {
+                traverse(formal, position, positions, best, depth + 1);
+            }
+            if let Some(rem) = formals_remainder {
+                traverse(rem, position, positions, best, depth + 1);
+            }
+            traverse(proc, position, positions, best, depth + 1);
+        }
+        Node::Input { receipts, proc, .. } => {
+            for receipt in receipts {
+                for bind in receipt {
+                    traverse(bind, position, positions, best, depth + 1);
+                }
+            }
+            traverse(proc, position, positions, best, depth + 1);
+        }
+        Node::Block { proc, .. } => traverse(proc, position, positions, best, depth + 1),
+        Node::Parenthesized { expr, .. } => traverse(expr, position, positions, best, depth + 1),
+        Node::BinOp { left, right, .. } => {
+            traverse(left, position, positions, best, depth + 1);
+            traverse(right, position, positions, best, depth + 1);
+        }
+        Node::UnaryOp { operand, .. } => traverse(operand, position, positions, best, depth + 1),
+        Node::Method { receiver, args, .. } => {
+            traverse(receiver, position, positions, best, depth + 1);
+            for arg in args {
+                traverse(arg, position, positions, best, depth + 1);
+            }
+        }
+        Node::Eval { name, .. } => traverse(name, position, positions, best, depth + 1),
+        Node::Quote { quotable, .. } => traverse(quotable, position, positions, best, depth + 1),
+        Node::VarRef { var, .. } => traverse(var, position, positions, best, depth + 1),
+        Node::List { elements, remainder, .. } => {
+            for elem in elements {
+                traverse(elem, position, positions, best, depth + 1);
+            }
+            if let Some(rem) = remainder {
+                traverse(rem, position, positions, best, depth + 1);
+            }
+        }
+        Node::Set { elements, remainder, .. } => {
+            for elem in elements {
+                traverse(elem, position, positions, best, depth + 1);
+            }
+            if let Some(rem) = remainder {
+                traverse(rem, position, positions, best, depth + 1);
+            }
+        }
+        Node::Map { pairs, remainder, .. } => {
+            for (key, value) in pairs {
+                traverse(key, position, positions, best, depth + 1);
+                traverse(value, position, positions, best, depth + 1);
+            }
+            if let Some(rem) = remainder {
+                traverse(rem, position, positions, best, depth + 1);
+            }
+        }
+        Node::Tuple { elements, .. } => {
+            for elem in elements {
+                traverse(elem, position, positions, best, depth + 1);
+            }
+        }
+        Node::NameDecl { var, uri, .. } => {
+            traverse(var, position, positions, best, depth + 1);
+            if let Some(u) = uri {
+                traverse(u, position, positions, best, depth + 1);
+            }
+        }
+        Node::Decl { names, names_remainder, procs, .. } => {
+            for name in names {
+                traverse(name, position, positions, best, depth + 1);
+            }
+            if let Some(rem) = names_remainder {
+                traverse(rem, position, positions, best, depth + 1);
+            }
+            for proc in procs {
+                traverse(proc, position, positions, best, depth + 1);
+            }
+        }
+        Node::LinearBind { names, remainder, source, .. } => {
+            for name in names {
+                traverse(name, position, positions, best, depth + 1);
+            }
+            if let Some(rem) = remainder {
+                traverse(rem, position, positions, best, depth + 1);
+            }
+            traverse(source, position, positions, best, depth + 1);
+        }
+        Node::RepeatedBind { names, remainder, source, .. } => {
+            for name in names {
+                traverse(name, position, positions, best, depth + 1);
+            }
+            if let Some(rem) = remainder {
+                traverse(rem, position, positions, best, depth + 1);
+            }
+            traverse(source, position, positions, best, depth + 1);
+        }
+        Node::PeekBind { names, remainder, source, .. } => {
+            for name in names {
+                traverse(name, position, positions, best, depth + 1);
+            }
+            if let Some(rem) = remainder {
+                traverse(rem, position, positions, best, depth + 1);
+            }
+            traverse(source, position, positions, best, depth + 1);
+        }
+        Node::ReceiveSendSource { name, .. } => traverse(name, position, positions, best, depth + 1),
+        Node::SendReceiveSource { name, inputs, .. } => {
+            traverse(name, position, positions, best, depth + 1);
+            for input in inputs {
+                traverse(input, position, positions, best, depth + 1);
+            }
+        }
+        Node::Error { children, .. } => {
+            for child in children {
+                traverse(child, position, positions, best, depth + 1);
+            }
+        }
+        Node::Disjunction { left, right, .. } => {
+            traverse(left, position, positions, best, depth + 1);
+            traverse(right, position, positions, best, depth + 1);
+        }
+        Node::Conjunction { left, right, .. } => {
+            traverse(left, position, positions, best, depth + 1);
+            traverse(right, position, positions, best, depth + 1);
+        }
+        Node::Negation { operand, .. } => traverse(operand, position, positions, best, depth + 1),
+        _ => {},
+    }
+}
 
+pub fn find_node_at_position<'a>(root: &Arc<Node<'a>>, positions: &HashMap<usize, (Position, Position)>, position: Position) -> Option<Arc<Node<'a>>> {
+    let mut best: Option<(Arc<Node<'a>>, Position, usize)> = None;
     traverse(root, position, positions, &mut best, 0);
     if let Some(node) = best.map(|(node, _, _)| node) {
         debug!("Found best match: '{}'", node.text());
@@ -754,7 +843,9 @@ impl Visitor for SymbolTableBuilder {
                 let usage_location = node.absolute_start(&self.root);
                 let is_declaration = usage_location == symbol.declaration_location;
                 let is_definition = symbol.definition_location.map_or(false, |def| usage_location == def);
-                if !is_declaration && !is_definition {
+                if is_declaration || is_definition {
+                    trace!("Skipped recording for {} of '{}' at {:?}", if is_declaration {"declaration"} else {"definition"}, name, usage_location);
+                } else {
                     if symbol.declaration_uri == self.current_uri {
                         self.inverted_index.write().unwrap()
                             .entry(symbol.declaration_location)
@@ -765,8 +856,6 @@ impl Visitor for SymbolTableBuilder {
                         self.potential_global_refs.write().unwrap().push((name.clone(), usage_location));
                         trace!("Added global reference for '{}' at {:?}", name, usage_location);
                     }
-                } else {
-                    trace!("Skipped recording for {} of '{}' at {:?}", if is_declaration {"declaration"} else {"definition"}, name, usage_location);
                 }
             } else {
                 let usage_location = node.absolute_start(&self.root);
@@ -783,13 +872,67 @@ impl Visitor for SymbolTableBuilder {
         });
         self.update_with_current_table(new_node, referenced_symbol, metadata)
     }
+
+    fn visit_disjunction<'a>(
+        &self,
+        _node: &Arc<Node<'a>>,
+        base: &NodeBase<'a>,
+        left: &Arc<Node<'a>>,
+        right: &Arc<Node<'a>>,
+        metadata: &Option<Arc<Metadata>>,
+    ) -> Arc<Node<'a>> {
+        let new_left = self.visit_node(left);
+        let new_right = self.visit_node(right);
+        let new_node = Arc::new(Node::Disjunction {
+            base: base.clone(),
+            left: new_left,
+            right: new_right,
+            metadata: metadata.clone(),
+        });
+        self.update_with_current_table(new_node, None, metadata)
+    }
+
+    fn visit_conjunction<'a>(
+        &self,
+        _node: &Arc<Node<'a>>,
+        base: &NodeBase<'a>,
+        left: &Arc<Node<'a>>,
+        right: &Arc<Node<'a>>,
+        metadata: &Option<Arc<Metadata>>,
+    ) -> Arc<Node<'a>> {
+        let new_left = self.visit_node(left);
+        let new_right = self.visit_node(right);
+        let new_node = Arc::new(Node::Conjunction {
+            base: base.clone(),
+            left: new_left,
+            right: new_right,
+            metadata: metadata.clone(),
+        });
+        self.update_with_current_table(new_node, None, metadata)
+    }
+
+    fn visit_negation<'a>(
+        &self,
+        _node: &Arc<Node<'a>>,
+        base: &NodeBase<'a>,
+        operand: &Arc<Node<'a>>,
+        metadata: &Option<Arc<Metadata>>,
+    ) -> Arc<Node<'a>> {
+        let new_operand = self.visit_node(operand);
+        let new_node = Arc::new(Node::Negation {
+            base: base.clone(),
+            operand: new_operand,
+            metadata: metadata.clone(),
+        });
+        self.update_with_current_table(new_node, None, metadata)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tree_sitter::{parse_code, parse_to_ir};
-    use crate::ir::node::compute_absolute_positions;
+    use crate::ir::node::{RelativePosition, compute_absolute_positions};
     use tower_lsp::lsp_types::Url;
 
     #[test]
@@ -800,6 +943,7 @@ mod tests {
         let ir = parse_to_ir(&tree, code);
         let root: Arc<Node<'static>> = unsafe { std::mem::transmute(ir) };
         let global_table = Arc::new(SymbolTable::new(None));
+
         let builder = SymbolTableBuilder::new(root.clone(), uri.clone(), global_table.clone());
         let transformed = builder.visit_node(&root);
 
@@ -830,7 +974,7 @@ mod tests {
         let ir = parse_to_ir(&tree, code);
         let root: Arc<Node<'static>> = unsafe { std::mem::transmute(ir) };
         let global_table = Arc::new(SymbolTable::new(None));
-        let builder = SymbolTableBuilder::new(root.clone(), uri, global_table.clone());
+        let builder = SymbolTableBuilder::new(root.clone(), uri, global_table);
         let transformed = builder.visit_node(&root);
 
         if let Node::New { proc, .. } = &*transformed {
@@ -971,5 +1115,41 @@ mod tests {
         } else {
             panic!("Expected Contract node");
         }
+    }
+
+    #[test]
+    fn test_match_pat_set() {
+        let p_e = Vector::new_with_ptr_kind().push_back(Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("1".to_string())), value: 1, metadata: None })).push_back(Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("2".to_string())), value: 2, metadata: None }));
+        let pat = Arc::new(Node::Set { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, None), elements: p_e, remainder: None, metadata: None });
+        let c_e = Vector::new_with_ptr_kind().push_back(Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("2".to_string())), value: 2, metadata: None })).push_back(Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("1".to_string())), value: 1, metadata: None }));
+        let concrete = Arc::new(Node::Set { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, None), elements: c_e, remainder: None, metadata: None });
+        let mut subst = HashMap::new();
+        assert!(crate::ir::node::match_pat(&pat, &concrete, &mut subst));
+    }
+
+    #[test]
+    fn test_match_pat_map() {
+        let p_pair1 = (Arc::new(Node::StringLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 3, Some("\"a\"".to_string())), value: "a".to_string(), metadata: None }), Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("1".to_string())), value: 1, metadata: None }));
+        let p_pair2 = (Arc::new(Node::StringLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 3, Some("\"b\"".to_string())), value: "b".to_string(), metadata: None }), Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("2".to_string())), value: 2, metadata: None }));
+        let p_pairs = Vector::new_with_ptr_kind().push_back(p_pair1).push_back(p_pair2);
+        let pat = Arc::new(Node::Map { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, None), pairs: p_pairs, remainder: None, metadata: None });
+        let c_pair1 = (Arc::new(Node::StringLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 3, Some("\"b\"".to_string())), value: "b".to_string(), metadata: None }), Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("2".to_string())), value: 2, metadata: None }));
+        let c_pair2 = (Arc::new(Node::StringLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 3, Some("\"a\"".to_string())), value: "a".to_string(), metadata: None }), Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("1".to_string())), value: 1, metadata: None }));
+        let c_pairs = Vector::new_with_ptr_kind().push_back(c_pair1).push_back(c_pair2);
+        let concrete = Arc::new(Node::Map { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, None), pairs: c_pairs, remainder: None, metadata: None });
+        let mut subst = HashMap::new();
+        assert!(crate::ir::node::match_pat(&pat, &concrete, &mut subst));
+    }
+
+    #[test]
+    fn test_match_pat_disjunction() {
+        let p_left = Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("1".to_string())), value: 1, metadata: None });
+        let p_right = Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("2".to_string())), value: 2, metadata: None });
+        let pat = Arc::new(Node::Disjunction { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, None), left: p_left, right: p_right, metadata: None });
+        let c_left = Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("1".to_string())), value: 1, metadata: None });
+        let c_right = Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("2".to_string())), value: 2, metadata: None });
+        let concrete = Arc::new(Node::Disjunction { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, None), left: c_left, right: c_right, metadata: None });
+        let mut subst = HashMap::new();
+        assert!(crate::ir::node::match_pat(&pat, &concrete, &mut subst));
     }
 }

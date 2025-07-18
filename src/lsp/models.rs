@@ -66,7 +66,7 @@ pub struct CachedDocument {
     pub symbol_table: Arc<SymbolTable>,
     pub inverted_index: InvertedIndex,
     pub version: i32,
-    pub text: String,
+    pub text: Rope,
     pub positions: Arc<HashMap<usize, (Position, Position)>>,
     pub potential_global_refs: Vec<(String, Position)>,
 }
@@ -74,8 +74,10 @@ pub struct CachedDocument {
 /// State of the entire workspace, including all documents and global symbols.
 #[derive(Debug)]
 pub struct WorkspaceState {
-    pub documents: HashMap<Url, Arc<CachedDocument>>, // Cached parsed data
-    pub global_symbols: HashMap<String, (Url, Position)>, // Global symbol table
-    pub global_table: Arc<SymbolTable>, // Global scope for contracts
-    pub global_inverted_index: HashMap<(Url, Position), Vec<(Url, Position)>>, // Cross-file usages
+    pub documents: HashMap<Url, Arc<CachedDocument>>,
+    pub global_symbols: HashMap<String, (Url, Position)>,
+    pub global_table: Arc<SymbolTable>,
+    pub global_inverted_index: HashMap<(Url, Position), Vec<(Url, Position)>>,
+    pub global_contracts: Vec<(Url, Arc<Node<'static>>)>,
+    pub global_calls: Vec<(Url, Arc<Node<'static>>)>,
 }
