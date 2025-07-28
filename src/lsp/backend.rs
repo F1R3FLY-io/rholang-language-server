@@ -718,26 +718,28 @@ impl LanguageServer for RholangBackend {
                     Ok(cached_doc) => {
                         self.workspace.write().await.documents.insert(uri.clone(), Arc::new(cached_doc));
                         self.link_symbols().await;
-
-                        // Spawn validation in blocking task with separate runtime to avoid runtime interference
-                        let backend = self.clone();
-                        let uri_clone = uri.clone();
-                        let document_clone = document.clone();
-                        let text_clone = text.clone();
-                        tokio::spawn(tokio::task::spawn_blocking(move || {
-                            let rt = tokio::runtime::Builder::new_current_thread()
-                                .enable_all()
-                                .build()
-                                .expect("Failed to create runtime for validation");
-                            rt.block_on(async {
-                                if let Ok(diagnostics) = backend.validate(document_clone.clone(), &text_clone, version).await {
-                                    backend.client.publish_diagnostics(uri_clone, diagnostics, Some(version)).await;
-                                }
-                            });
-                        }));
                     }
                     Err(e) => warn!("Failed to update {}: {}", uri, e),
                 }
+                // Spawn validation in blocking task with separate runtime to avoid runtime interference
+                let backend = self.clone();
+                let uri_clone = uri.clone();
+                let document_clone = document.clone();
+                let text_clone = text.clone();
+                tokio::spawn(tokio::task::spawn_blocking(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("Failed to create runtime for validation");
+                    rt.block_on(async {
+                        match backend.validate(document_clone.clone(), &text_clone, version).await {
+                            Ok(diagnostics) => {
+                                backend.client.publish_diagnostics(uri_clone, diagnostics, Some(version)).await;
+                            }
+                            Err(e) => error!("Validation failed for URI={}: {}", uri_clone, e),
+                        }
+                    });
+                }));
             } else {
                 warn!("Failed to apply changes to document with URI={}", uri);
             }
