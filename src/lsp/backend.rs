@@ -691,11 +691,14 @@ impl LanguageServer for RholangBackend {
                     Ok(cached_doc) => {
                         self.workspace.write().await.documents.insert(uri.clone(), Arc::new(cached_doc));
                         self.link_symbols().await;
-                        if let Ok(diagnostics) = self.validate(document.clone(), &text, version).await {
-                            self.client.publish_diagnostics(uri.clone(), diagnostics, Some(version)).await;
-                        }
                     }
                     Err(e) => warn!("Failed to update {}: {}", uri, e),
+                }
+                match self.validate(document.clone(), &text, version).await {
+                    Ok(diagnostics) => {
+                        self.client.publish_diagnostics(uri, diagnostics, Some(version)).await;
+                    }
+                    Err(e) => error!("Validation failed for URI={}: {}", uri, e),
                 }
             } else {
                 warn!("Failed to apply changes to document with URI={}", uri);
