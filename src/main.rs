@@ -400,13 +400,14 @@ async fn serve_connection<R, W>(
     rnode_client: Option<LspClient<tonic::transport::Channel>>,
     conn_manager: &ConnectionManager,
     client_process_id: Option<u32>,
+    pid_channel: Option<tokio::sync::mpsc::Sender<u32>>,
 ) where
     R: tokio::io::AsyncRead + Send + Unpin + 'static,
     W: tokio::io::AsyncWrite + Send + Unpin + 'static,
 {
     info!("Accepted connection from {}", addr);
     let (service, socket) = LspService::new(|client| {
-        Arc::new(RholangBackend::new(client, rnode_client, client_process_id))
+        Arc::new(RholangBackend::new(client, rnode_client, client_process_id, pid_channel.clone()))
     });
     let (conn_tx, conn_rx) = oneshot::channel::<()>();
     conn_manager.add_connection(conn_tx).await;
@@ -480,11 +481,28 @@ async fn run_stdio_server(
     conn_manager: ConnectionManager
 ) -> io::Result<()> {
     info!("Starting server with stdin/stdout communication.");
+
+    // Create reactive channel for PID events
+    let (pid_tx, mut pid_rx) = tokio::sync::mpsc::channel::<u32>(1);
+
     let (service, socket) = LspService::build(|client| {
-        RholangBackend::new(client, rnode_client.clone(), config.client_process_id)
+        RholangBackend::new(client, rnode_client.clone(), config.client_process_id, Some(pid_tx.clone()))
     }).finish();
     let stdin = BufReader::new(tokio::io::stdin()); // Wrap stdin in BufReader
     let stdout = tokio::io::stdout();
+
+    // Spawn reactive listener for PID events
+    let conn_manager_clone = conn_manager.clone();
+    let conn_manager_clone2 = conn_manager.clone();
+    tokio::spawn(async move {
+        if let Some(pid) = pid_rx.recv().await {
+            info!("Received client PID from LSP initialization: {}", pid);
+            let monitor_task = tokio::spawn(async move {
+                monitor_client_process(pid, conn_manager_clone).await;
+            });
+            conn_manager_clone2.add_task(monitor_task);
+        }
+    });
 
     let shutdown_notify = conn_manager.shutdown_notify.clone();
     let server_task = tokio::spawn(async move {
@@ -523,7 +541,7 @@ async fn run_socket_server(
                 match result {
                     Ok((stream, addr)) => {
                         let (read, write) = tokio::io::split(stream);
-                        serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id).await;
+                        serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None).await;
                         conn_manager.remove_closed_connections().await;
                     }
                     Err(e) => {
@@ -561,7 +579,7 @@ async fn run_websocket_server(
                             Ok(ws_stream) => {
                                 let ws_adapter = WebSocketStreamAdapter::new(ws_stream);
                                 let (read, write) = tokio::io::split(ws_adapter);
-                                serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id).await;
+                                serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None).await;
                                 conn_manager.remove_closed_connections().await;
                             }
                             Err(e) => {
@@ -600,7 +618,7 @@ async fn run_named_pipe_server(
                 _ = server.connect() => {
                     let addr = format!("named_pipe:{}", pipe_path);
                     let (read, write) = tokio::io::split(server);
-                    serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id).await;
+                    serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None).await;
                     conn_manager.remove_closed_connections().await;
                 }
                 _ = conn_manager.shutdown_notify.notified() => {
@@ -633,7 +651,7 @@ async fn run_named_pipe_server(
                         Ok((stream, addr)) => {
                             let addr = format!("unix_socket:{:?}", addr);
                             let (read, write) = tokio::io::split(stream);
-                            serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id).await;
+                            serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None).await;
                             conn_manager.remove_closed_connections().await;
                         }
                         Err(e) => {

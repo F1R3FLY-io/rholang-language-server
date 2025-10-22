@@ -184,6 +184,24 @@ fn collect_linear_binds(branch_node: TSNode, rope: &Rope, prev_end: Position) ->
     (linear_binds, current_prev_end)
 }
 
+/// Optimized comment detection using kind_id for O(1) comparison
+#[inline(always)]
+fn is_comment(kind_id: u16) -> bool {
+    // Get the kind IDs for comment nodes
+    // These are compile-time constants after the first call
+    static LINE_COMMENT_KIND: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+    static BLOCK_COMMENT_KIND: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
+    let language: tree_sitter::Language = rholang_tree_sitter::LANGUAGE.into();
+    let line_comment_kind = *LINE_COMMENT_KIND.get_or_init(|| {
+        language.id_for_node_kind("line_comment", true)
+    });
+    let block_comment_kind = *BLOCK_COMMENT_KIND.get_or_init(|| {
+        language.id_for_node_kind("block_comment", true)
+    });
+
+    kind_id == line_comment_kind || kind_id == block_comment_kind
+}
 
 /// Converts Tree-Sitter nodes to IR nodes with accurate relative positions.
 fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (Arc<Node>, Position) {
@@ -239,8 +257,13 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
             let mut current_prev_end = absolute_start;
             let mut all_nodes = Vec::new();
 
+            // Comments are named nodes in extras, so filter them efficiently
             for child in ts_node.named_children(&mut ts_node.walk()) {
-                // Comments are now named nodes in the grammar, so they appear in named_children
+                // Skip comments - they're in extras and don't belong in the IR
+                let kind_id = child.kind_id();
+                if is_comment(kind_id) {
+                    continue;
+                }
                 debug!("Before converting child '{}': current_prev_end = {:?}", child.kind(), current_prev_end);
                 let (node, end) = convert_ts_node_to_ir(child, rope, current_prev_end);
                 debug!("After converting child '{}': end = {:?}", child.kind(), end);

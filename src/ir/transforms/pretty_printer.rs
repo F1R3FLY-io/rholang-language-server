@@ -1795,33 +1795,15 @@ Nil"#;
         let ir = crate::tree_sitter::parse_to_ir(&tree, &rope);
 
         let actual = format(&ir, true, &rope).expect("Failed to format tree");
-        // Note: Tree-Sitter's line_comment pattern uses /[^\n]*/ which excludes the newline.
-        // The comment node ends at column 20 (not including the newline character).
+        // Comments are in extras and filtered out of the IR, so only Nil remains
         let expected = indoc! {r#"
-            {:type "par"
-             :start_line 0
+            {:type "nil"
+             :start_line 1
              :start_column 0
              :end_line 1
              :end_column 3
-             :position 0
-             :length 24
-             :left {:type "comment"
-                    :start_line 0
-                    :start_column 0
-                    :end_line 0
-                    :end_column 20
-                    :position 0
-                    :length 20
-                    :kind "Line"
-                    :metadata {:version 0}}
-             :right {:type "nil"
-                     :start_line 1
-                     :start_column 0
-                     :end_line 1
-                     :end_column 3
-                     :position 21
-                     :length 3
-                     :metadata {:version 0}}
+             :position 21
+             :length 3
              :metadata {:version 0}}"#}.trim();
         assert_eq!(actual, expected);
     }

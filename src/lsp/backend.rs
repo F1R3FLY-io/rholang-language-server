@@ -39,6 +39,7 @@ use crate::ir::symbol_table::{Symbol, SymbolTable, SymbolType};
 use crate::ir::transforms::symbol_table_builder::{SymbolTableBuilder, InvertedIndex};
 use crate::ir::transforms::document_symbol_visitor::{collect_document_symbols, collect_workspace_symbols};
 use crate::lsp::models::{CachedDocument, LspDocument, LspDocumentHistory, LspDocumentState, WorkspaceState};
+use crate::lsp::semantic_validator::SemanticValidator;
 use crate::rnode_apis::lsp::{lsp_client::LspClient, DiagnosticSeverity as LspDiagnosticSeverity, ValidateRequest};
 use crate::rnode_apis::lsp::validate_response;
 use crate::tree_sitter::{parse_code, parse_to_ir};
@@ -46,6 +47,23 @@ use crate::tree_sitter::{parse_code, parse_to_ir};
 use rholang_parser::RholangParser;
 use rholang_parser::parser::errors::ParsingError;
 use validated::Validated;
+
+/// Document change event for debouncing
+#[derive(Debug, Clone)]
+struct DocumentChangeEvent {
+    uri: Url,
+    version: i32,
+    document: Arc<LspDocument>,
+    text: Arc<String>,
+}
+
+/// Workspace indexing task for progressive indexing
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct IndexingTask {
+    uri: Url,
+    text: String,
+    priority: u8,  // 0 = high (current file), 1 = normal
+}
 
 /// The Rholang language server backend, managing state and handling LSP requests.
 #[derive(Debug, Clone)]
@@ -55,7 +73,13 @@ pub struct RholangBackend {
     documents_by_id: Arc<RwLock<HashMap<u32, Arc<LspDocument>>>>,
     serial_document_id: Arc<AtomicU32>,
     rnode_client: Option<Arc<AsyncMutex<LspClient<Channel>>>>,
+    semantic_validator: Option<SemanticValidator>,
     client_process_id: Arc<Mutex<Option<u32>>>,
+    pid_channel: Option<tokio::sync::mpsc::Sender<u32>>,
+    // Reactive channels
+    doc_change_tx: tokio::sync::mpsc::Sender<DocumentChangeEvent>,
+    validation_cancel: Arc<Mutex<HashMap<Url, tokio::sync::oneshot::Sender<()>>>>,
+    indexing_tx: tokio::sync::mpsc::Sender<IndexingTask>,
     workspace: Arc<RwLock<WorkspaceState>>,
     file_watcher: Arc<Mutex<Option<RecommendedWatcher>>>,
     file_events: Arc<Mutex<Receiver<notify::Result<notify::Event>>>>,
@@ -66,16 +90,50 @@ pub struct RholangBackend {
 
 impl RholangBackend {
     /// Creates a new instance of the Rholang backend with the given client and connections.
-    pub fn new(client: Client, rnode_client: Option<LspClient<Channel>>, client_process_id: Option<u32>) -> Self {
+    pub fn new(
+        client: Client,
+        rnode_client: Option<LspClient<Channel>>,
+        client_process_id: Option<u32>,
+        pid_channel: Option<tokio::sync::mpsc::Sender<u32>>,
+    ) -> Self {
         let rnode_client = rnode_client.map(|c| Arc::new(AsyncMutex::new(c)));
+
+        // Initialize semantic validator if RNode is not present and interpreter feature is enabled
+        let semantic_validator = if rnode_client.is_none() {
+            match SemanticValidator::new() {
+                Ok(validator) => {
+                    info!("Initialized Rholang semantic validator");
+                    Some(validator)
+                }
+                Err(e) => {
+                    warn!("Failed to initialize semantic validator: {}", e);
+                    None
+                }
+            }
+        } else {
+            info!("RNode client present, semantic validator disabled");
+            None
+        };
+
         let (tx, rx) = std::sync::mpsc::channel();
-        Self {
-            client,
+
+        // Create reactive channels
+        let (doc_change_tx, doc_change_rx) = tokio::sync::mpsc::channel::<DocumentChangeEvent>(100);
+        let (indexing_tx, indexing_rx) = tokio::sync::mpsc::channel::<IndexingTask>(100);
+        let validation_cancel = Arc::new(Mutex::new(HashMap::new()));
+
+        let backend = Self {
+            client: client.clone(),
             documents_by_uri: Arc::new(RwLock::new(HashMap::new())),
             documents_by_id: Arc::new(RwLock::new(HashMap::new())),
             serial_document_id: Arc::new(AtomicU32::new(0)),
-            rnode_client,
+            rnode_client: rnode_client.clone(),
+            semantic_validator: semantic_validator.clone(),
             client_process_id: Arc::new(Mutex::new(client_process_id)),
+            pid_channel,
+            doc_change_tx: doc_change_tx.clone(),
+            validation_cancel: validation_cancel.clone(),
+            indexing_tx: indexing_tx.clone(),
             workspace: Arc::new(RwLock::new(WorkspaceState {
                 documents: HashMap::new(),
                 global_symbols: HashMap::new(),
@@ -89,7 +147,190 @@ impl RholangBackend {
             file_sender: Arc::new(Mutex::new(tx)),
             version_counter: Arc::new(AtomicI32::new(0)),
             root_dir: Arc::new(RwLock::new(None)),
-        }
+        };
+
+        // Spawn document change debouncer
+        Self::spawn_document_debouncer(backend.clone(), doc_change_rx);
+
+        // Spawn progressive indexer
+        Self::spawn_progressive_indexer(backend.clone(), indexing_rx);
+
+        backend
+    }
+
+    /// Spawns the document change debouncer task
+    fn spawn_document_debouncer(
+        backend: RholangBackend,
+        mut doc_change_rx: tokio::sync::mpsc::Receiver<DocumentChangeEvent>,
+    ) {
+        tokio::spawn(async move {
+            use std::collections::HashMap;
+            use tokio::time::{sleep, Duration};
+
+            let mut pending_changes: HashMap<Url, DocumentChangeEvent> = HashMap::new();
+            let debounce_duration = Duration::from_millis(300);
+
+            loop {
+                // Wait for a change or timeout
+                tokio::select! {
+                    Some(event) = doc_change_rx.recv() => {
+                        // Store/update pending change
+                        pending_changes.insert(event.uri.clone(), event);
+                    }
+                    _ = sleep(debounce_duration), if !pending_changes.is_empty() => {
+                        // Timeout reached, process all pending changes
+                        for (uri, event) in pending_changes.drain() {
+                            // Cancel any in-flight validation for this URI
+                            if let Some(cancel_tx) = backend.validation_cancel.lock().unwrap().remove(&uri) {
+                                let _ = cancel_tx.send(());
+                                trace!("Cancelled previous validation for {}", uri);
+                            }
+
+                            // Create cancellation token for this validation
+                            let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+                            backend.validation_cancel.lock().unwrap().insert(uri.clone(), cancel_tx);
+
+                            // Spawn validation with cancellation
+                            let backend_clone = backend.clone();
+                            let uri_clone = uri.clone();
+                            let document = event.document.clone();
+                            let text = event.text.clone();
+                            let version = event.version;
+
+                            tokio::spawn(async move {
+                                tokio::select! {
+                                    result = backend_clone.validate(document.clone(), &text, version) => {
+                                        match result {
+                                            Ok(diagnostics) => {
+                                                if document.version().await == version {
+                                                    backend_clone.client.publish_diagnostics(
+                                                        uri_clone.clone(),
+                                                        diagnostics,
+                                                        Some(version)
+                                                    ).await;
+                                                }
+                                                // Remove cancellation token
+                                                backend_clone.validation_cancel.lock().unwrap().remove(&uri_clone);
+                                            }
+                                            Err(e) => error!("Validation failed for {}: {}", uri_clone, e),
+                                        }
+                                    }
+                                    _ = cancel_rx => {
+                                        debug!("Validation cancelled for {}", uri_clone);
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /// Spawns the progressive workspace indexer task
+    fn spawn_progressive_indexer(
+        backend: RholangBackend,
+        mut indexing_rx: tokio::sync::mpsc::Receiver<IndexingTask>,
+    ) {
+        tokio::spawn(async move {
+            use std::collections::BinaryHeap;
+            use std::cmp::Ordering;
+
+            #[derive(Eq, PartialEq)]
+            struct PrioritizedTask(u8, IndexingTask);
+
+            impl Ord for PrioritizedTask {
+                fn cmp(&self, other: &Self) -> Ordering {
+                    // Reverse order: lower priority value = higher priority
+                    other.0.cmp(&self.0)
+                }
+            }
+
+            impl PartialOrd for PrioritizedTask {
+                fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+                    Some(self.cmp(other))
+                }
+            }
+
+            let mut queue = BinaryHeap::new();
+
+            loop {
+                // Collect tasks
+                if let Some(task) = indexing_rx.recv().await {
+                    queue.push(PrioritizedTask(task.priority, task));
+
+                    // Drain any immediately available tasks
+                    while let Ok(task) = indexing_rx.try_recv() {
+                        queue.push(PrioritizedTask(task.priority, task));
+                    }
+
+                    // Process queue by priority
+                    while let Some(PrioritizedTask(_, task)) = queue.pop() {
+                        match backend.index_file(&task.uri, &task.text, 0, None).await {
+                            Ok(cached_doc) => {
+                                backend.workspace.write().await.documents.insert(
+                                    task.uri.clone(),
+                                    Arc::new(cached_doc)
+                                );
+                                trace!("Indexed {} (priority {})", task.uri, task.priority);
+                            }
+                            Err(e) => warn!("Failed to index {}: {}", task.uri, e),
+                        }
+                    }
+
+                    // After batch, link symbols
+                    backend.link_symbols().await;
+                }
+            }
+        });
+    }
+
+    /// Spawns a file watcher event batcher to handle rapid file system changes
+    fn spawn_file_watcher(
+        backend: RholangBackend,
+        file_events: Arc<Mutex<Receiver<notify::Result<notify::Event>>>>,
+    ) {
+        use std::collections::HashSet;
+        use tokio::time::{Duration, Instant};
+
+        task::spawn_blocking(move || {
+            let mut pending_paths: HashSet<PathBuf> = HashSet::new();
+            let batch_duration = Duration::from_millis(100);
+            let mut last_event_time = Instant::now();
+
+            loop {
+                // Try to receive an event with timeout
+                match file_events.lock().unwrap().recv_timeout(batch_duration) {
+                    Ok(Ok(event)) => {
+                        // Collect paths from event
+                        for path in event.paths {
+                            if path.extension().map_or(false, |ext| ext == "rho") {
+                                pending_paths.insert(path);
+                            }
+                        }
+                        last_event_time = Instant::now();
+                    }
+                    Ok(Err(e)) => {
+                        warn!("File watcher error: {}", e);
+                    }
+                    Err(_timeout) => {
+                        // Timeout - check if we should process batch
+                        if !pending_paths.is_empty() && last_event_time.elapsed() >= batch_duration {
+                            // Process batch
+                            let paths: Vec<PathBuf> = pending_paths.drain().collect();
+                            info!("Processing batch of {} file changes", paths.len());
+
+                            for path in paths {
+                                let backend = backend.clone();
+                                tokio::spawn(async move {
+                                    backend.handle_file_change(path).await;
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        });
     }
 
     /// Processes a parsed IR node through the transformation pipeline to build symbols and metadata.
@@ -286,52 +527,89 @@ impl RholangBackend {
             return Ok(Vec::new());
         }
 
-        // Local validation
-        let local_diagnostics = {
-            let parser = RholangParser::new();
-            match parser.parse(&text) {
-                Validated::Good(_) => {
-                    debug!("Syntax validation successful for code snippet");
-                    Vec::new()
-                }
-                Validated::Fail(failures) => {
-                    let total_errors: usize = failures.iter().map(|f| f.errors.len().get()).sum();
-                    error!("Syntax validation failed with {} errors", total_errors);
-                    failures.into_iter().flat_map(|failure| {
-                        failure.errors.into_iter().map(|err| {
-                            let range = Range {
-                                start: LspPosition {
-                                    line: (err.span.start.line - 1) as u32,
-                                    character: (err.span.start.col - 1) as u32,
-                                },
-                                end: LspPosition {
-                                    line: (err.span.end.line - 1) as u32,
-                                    character: (err.span.end.col - 1) as u32,
-                                },
-                            };
-                            let message = match err.error {
-                                ParsingError::SyntaxError { sexp } => format!("Syntax error: {}", sexp),
-                                ParsingError::MissingToken(token) => format!("Missing token: {}", token),
-                                ParsingError::Unexpected(c) => format!("Unexpected character: {}", c),
-                                ParsingError::UnexpectedVar => "Unexpected variable".to_string(),
-                                ParsingError::UnexpectedMatchAfter { rule, offender } => format!("Unexpected {} after {}", offender, rule),
-                                ParsingError::NumberOutOfRange => "Number out of range".to_string(),
-                                ParsingError::DuplicateNameDecl { first, second } => format!("Duplicate name declaration at {} and {}", first, second),
-                                ParsingError::MalformedLetDecl { lhs_arity, rhs_arity } => format!("Malformed let declaration: LHS arity {} != RHS arity {}", lhs_arity, rhs_arity),
-                                ParsingError::UnexpectedQuote => "Unexpected quote character".to_string(),
-                            };
-                            Diagnostic {
-                                range,
-                                severity: Some(DiagnosticSeverity::ERROR),
-                                source: Some("rholang-parser".to_string()),
-                                message,
-                                ..Default::default()
-                            }
-                        }).collect::<Vec<_>>()
+        // Local validation with parser reuse for semantic validation
+        let parser = RholangParser::new();
+        let parse_result = parser.parse(&text);
+
+        let (local_diagnostics, parsed_ast) = match parse_result {
+            Validated::Good(procs) => {
+                debug!("Syntax validation successful for code snippet");
+                // Keep the parsed AST for semantic validation
+                (Vec::new(), Some(procs))
+            }
+            Validated::Fail(failures) => {
+                let total_errors: usize = failures.iter().map(|f| f.errors.len().get()).sum();
+                error!("Syntax validation failed with {} errors", total_errors);
+                let diagnostics = failures.into_iter().flat_map(|failure| {
+                    failure.errors.into_iter().map(|err| {
+                        let range = Range {
+                            start: LspPosition {
+                                line: (err.span.start.line - 1) as u32,
+                                character: (err.span.start.col - 1) as u32,
+                            },
+                            end: LspPosition {
+                                line: (err.span.end.line - 1) as u32,
+                                character: (err.span.end.col - 1) as u32,
+                            },
+                        };
+                        let message = match err.error {
+                            ParsingError::SyntaxError { sexp } => format!("Syntax error: {}", sexp),
+                            ParsingError::MissingToken(token) => format!("Missing token: {}", token),
+                            ParsingError::Unexpected(c) => format!("Unexpected character: {}", c),
+                            ParsingError::UnexpectedVar => "Unexpected variable".to_string(),
+                            ParsingError::UnexpectedMatchAfter { rule, offender } => format!("Unexpected {} after {}", offender, rule),
+                            ParsingError::NumberOutOfRange => "Number out of range".to_string(),
+                            ParsingError::DuplicateNameDecl { first, second } => format!("Duplicate name declaration at {} and {}", first, second),
+                            ParsingError::MalformedLetDecl { lhs_arity, rhs_arity } => format!("Malformed let declaration: LHS arity {} != RHS arity {}", lhs_arity, rhs_arity),
+                            ParsingError::UnexpectedQuote => "Unexpected quote character".to_string(),
+                        };
+                        Diagnostic {
+                            range,
+                            severity: Some(DiagnosticSeverity::ERROR),
+                            source: Some("rholang-parser".to_string()),
+                            message,
+                            ..Default::default()
+                        }
                     }).collect::<Vec<_>>()
-                }
+                }).collect::<Vec<_>>();
+                (diagnostics, None)
             }
         };
+
+        // Semantic validation using interpreter (if no syntax errors and validator available)
+        // OPTIMIZATION: Pass pre-parsed AST to avoid redundant parsing
+        if local_diagnostics.is_empty() {
+            if let Some(validator) = &self.semantic_validator {
+                if let Some(procs) = parsed_ast {
+                    if procs.len() == 1 {
+                        debug!("Running optimized semantic validation with pre-parsed AST for URI={}", state.uri);
+                        let ast = procs.into_iter().next().unwrap();
+                        let semantic_diagnostics = validator.validate_parsed(ast, &parser);
+                        if !semantic_diagnostics.is_empty() {
+                            info!("Semantic validation found {} errors for URI={} (version={})",
+                                  semantic_diagnostics.len(), state.uri, version);
+                            return Ok(semantic_diagnostics);
+                        }
+                        debug!("Semantic validation passed for URI={}", state.uri);
+                    } else {
+                        // Multiple procs - validate each one separately
+                        let num_procs = procs.len();
+                        debug!("Multiple top-level processes detected ({}), validating each separately", num_procs);
+                        let mut all_diagnostics = Vec::new();
+                        for ast in &procs {
+                            let diagnostics = validator.validate_parsed(*ast, &parser);
+                            all_diagnostics.extend(diagnostics);
+                        }
+                        if !all_diagnostics.is_empty() {
+                            info!("Semantic validation found {} errors across {} processes for URI={} (version={})",
+                                  all_diagnostics.len(), num_procs, state.uri, version);
+                            return Ok(all_diagnostics);
+                        }
+                        debug!("Semantic validation passed for all {} processes", num_procs);
+                    }
+                }
+            }
+        }
 
         if let Some(rnode_client) = &self.rnode_client {
             if !local_diagnostics.is_empty() {
@@ -818,13 +1096,24 @@ impl LanguageServer for RholangBackend {
         info!("Received initialize: {:?}", params);
 
         if let Some(client_pid) = params.process_id {
-            let mut locked_pid = self.client_process_id.lock().unwrap();
-            if let Some(cmdline_pid) = *locked_pid {
-                if cmdline_pid != client_pid {
-                    warn!("Client PID mismatch: command line ({}) vs LSP ({})", cmdline_pid, client_pid);
+            {
+                let mut locked_pid = self.client_process_id.lock().unwrap();
+                if let Some(cmdline_pid) = *locked_pid {
+                    if cmdline_pid != client_pid {
+                        warn!("Client PID mismatch: command line ({}) vs LSP ({})", cmdline_pid, client_pid);
+                    }
+                }
+                *locked_pid = Some(client_pid);
+            } // Drop the lock here before await
+
+            // Send PID through reactive channel to trigger monitoring
+            if let Some(ref tx) = self.pid_channel {
+                if let Err(e) = tx.send(client_pid).await {
+                    warn!("Failed to send client PID through channel: {}", e);
+                } else {
+                    info!("Sent client PID {} for monitoring", client_pid);
                 }
             }
-            *locked_pid = Some(client_pid);
         }
 
         let mut root_guard = self.root_dir.write().await;
@@ -833,20 +1122,29 @@ impl LanguageServer for RholangBackend {
                 *root_guard = Some(root_path.clone());
                 drop(root_guard);
 
+                // Queue all .rho files for progressive indexing
+                let mut file_count = 0;
                 for entry in WalkDir::new(&root_path).into_iter().filter_map(|e| e.ok()) {
                     if entry.path().extension().map_or(false, |ext| ext == "rho") {
                         let uri = Url::from_file_path(entry.path()).unwrap();
                         let text = std::fs::read_to_string(entry.path()).unwrap_or_default();
-                        match self.index_file(&uri, &text, 0, None).await {
-                            Ok(cached_doc) => {
-                                self.workspace.write().await.documents.insert(uri.clone(), Arc::new(cached_doc));
-                            }
-                            Err(e) => warn!("Failed to index file {}: {}", uri, e),
+
+                        // All files get priority 1 during initialization
+                        // Files will be prioritized to 0 when opened via did_open
+                        let task = IndexingTask {
+                            uri: uri.clone(),
+                            text,
+                            priority: 1,
+                        };
+
+                        if let Err(e) = self.indexing_tx.send(task).await {
+                            error!("Failed to queue indexing task for {}: {}", uri, e);
+                        } else {
+                            file_count += 1;
                         }
                     }
                 }
-                self.link_symbols().await;
-                info!("Indexed {} .rho files", self.workspace.read().await.documents.len());
+                info!("Queued {} .rho files for progressive indexing", file_count);
 
                 let tx = self.file_sender.lock().unwrap().clone();
                 let mut watcher = RecommendedWatcher::new(
@@ -856,20 +1154,8 @@ impl LanguageServer for RholangBackend {
                 watcher.watch(&root_path, RecursiveMode::Recursive).map_err(|_| jsonrpc::Error::internal_error())?;
                 *self.file_watcher.lock().unwrap() = Some(watcher);
 
-                let file_events = self.file_events.clone();
-                let backend = self.clone();
-                task::spawn_blocking(move || {
-                    while let Ok(event) = file_events.lock().unwrap().recv() {
-                        if let Ok(event) = event {
-                            for path in event.paths {
-                                let backend = backend.clone();
-                                tokio::spawn(async move {
-                                    backend.handle_file_change(path).await;
-                                });
-                            }
-                        }
-                    }
-                });
+                // Spawn file watcher event batcher
+                Self::spawn_file_watcher(self.clone(), self.file_events.clone());
             } else {
                 warn!("Failed to convert root_uri to path: {}. Skipping workspace indexing and file watching.", root_uri);
             }
@@ -929,20 +1215,8 @@ impl LanguageServer for RholangBackend {
                     }
                     *self.file_watcher.lock().unwrap() = Some(watcher);
 
-                    let file_events = self.file_events.clone();
-                    let backend = self.clone();
-                    task::spawn_blocking(move || {
-                        while let Ok(event) = file_events.lock().unwrap().recv() {
-                            if let Ok(event) = event {
-                                for path in event.paths {
-                                    let backend = backend.clone();
-                                    tokio::spawn(async move {
-                                        backend.handle_file_change(path).await;
-                                    });
-                                }
-                            }
-                        }
-                    });
+                    // Spawn file watcher event batcher
+                    Self::spawn_file_watcher(self.clone(), self.file_events.clone());
                 }
             }
         } else {
@@ -1008,21 +1282,19 @@ impl LanguageServer for RholangBackend {
                     }
                     Err(e) => warn!("Failed to update {}: {}", uri, e),
                 }
-                // Spawn async validation task
-                let backend = self.clone();
-                let uri_clone = uri.clone();
-                let document_clone = document.clone();
-                let text_clone = text.clone();
-                tokio::spawn(async move {
-                    match backend.validate(document_clone.clone(), &text_clone, version).await {
-                        Ok(diagnostics) => {
-                            if document_clone.version().await == version {
-                                backend.client.publish_diagnostics(uri_clone, diagnostics, Some(version)).await;
-                            }
-                        }
-                        Err(e) => error!("Validation failed for URI={}: {}", uri_clone, e),
-                    }
-                });
+
+                // Send change event to debouncer instead of immediate validation
+                let text_arc = Arc::new(text.to_string());
+                let event = DocumentChangeEvent {
+                    uri: uri.clone(),
+                    version,
+                    document: document.clone(),
+                    text: text_arc,
+                };
+
+                if let Err(e) = self.doc_change_tx.send(event).await {
+                    error!("Failed to send document change event: {}", e);
+                }
             } else {
                 warn!("Failed to apply changes to document with URI={}", uri);
             }

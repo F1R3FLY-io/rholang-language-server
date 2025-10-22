@@ -35,6 +35,9 @@ uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
 validated = "1.0.0"
 
+# Rholang interpreter (optional for semantic validation)
+rholang = { path = "../f1r3node/rholang", optional = true }
+
 # Platform-specific dependencies
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.27", features = ["signal"] }
@@ -49,9 +52,15 @@ test_utils = { path = "test_utils" }
 tonic-build = "0.13"
 
 [features]
-default = ["websocket"]
+default = ["websocket", "interpreter"]
 websocket = ["tokio-tungstenite"]
+interpreter = ["rholang"]
 
 [[bin]]
 name = "dummy_client"
 path = "test_utils/src/bin/dummy_client.rs"
+
+# Patch git dependencies to use local paths for development
+[patch.'https://github.com/F1R3FLY-io/rholang-rs']
+rholang-parser = { path = "/home/dylon/Workspace/f1r3fly.io/rholang-rs/rholang-parser/" }
+rholang-tree-sitter = { path = "/home/dylon/Workspace/f1r3fly.io/rholang-rs/rholang-tree-sitter/" }
