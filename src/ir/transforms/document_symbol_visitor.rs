@@ -42,32 +42,24 @@ impl<'a> DocumentSymbolVisitor<'a> {
     }
 
     /// Computes the LSP Range for a node using its precomputed positions.
-    fn node_range(&self, node: &Arc<Node<'static>>) -> Range {
-        if let Some(ts_node) = node.base().ts_node() {
-            let node_id = ts_node.id();
-            self.positions.get(&node_id).map_or_else(
-                || {
-                    debug!("No position found for node ID {}, using default range", node_id);
-                    Range::default()
+    fn node_range(&self, node: &Arc<Node>) -> Range {
+        let key = &**node as *const Node as usize;
+        self.positions.get(&key).map_or_else(
+            || {
+                debug!("No position found for node, using default range");
+                Range::default()
+            },
+            |(start, end)| Range {
+                start: tower_lsp::lsp_types::Position {
+                    line: start.row as u32,
+                    character: start.column as u32,
                 },
-                |(start, end)| Range {
-                    start: tower_lsp::lsp_types::Position {
-                        line: start.row as u32,
-                        character: start.column as u32,
-                    },
-                    end: tower_lsp::lsp_types::Position {
-                        line: end.row as u32,
-                        character: end.column as u32,
-                    },
+                end: tower_lsp::lsp_types::Position {
+                    line: end.row as u32,
+                    character: end.column as u32,
                 },
-            )
-        } else {
-            debug!(
-                "Node '{}' has no Tree-Sitter node, using default range",
-                node.text()
-            );
-            Range::default()
-        }
+            },
+        )
     }
 
     /// Converts a `Symbol` to a `DocumentSymbol` with an empty children vector, skipping empty names.
@@ -87,9 +79,9 @@ impl<'a> DocumentSymbolVisitor<'a> {
             },
         };
         let kind = match symbol.symbol_type {
-            crate::ir::symbol_table::SymbolType::Variable => SymbolKind::VARIABLE,
-            crate::ir::symbol_table::SymbolType::Contract => SymbolKind::FUNCTION,
-            crate::ir::symbol_table::SymbolType::Parameter => SymbolKind::VARIABLE,
+            SymbolType::Variable => SymbolKind::VARIABLE,
+            SymbolType::Contract => SymbolKind::FUNCTION,
+            SymbolType::Parameter => SymbolKind::VARIABLE,
         };
         Some(DocumentSymbol {
             name: symbol.name.clone(),
@@ -108,18 +100,16 @@ impl<'a> DocumentSymbolVisitor<'a> {
 impl<'a> Visitor for DocumentSymbolVisitor<'a> {
     fn visit_contract<'b>(
         &self,
-        node: &Arc<Node<'b>>,
-        _base: &NodeBase<'b>,
-        name: &Arc<Node<'b>>,
-        formals: &Vector<Arc<Node<'b>>, ArcK>,
-        formals_remainder: &Option<Arc<Node<'b>>>,
-        proc: &Arc<Node<'b>>,
+        node: &Arc<Node>,
+        _base: &NodeBase,
+        name: &Arc<Node>,
+        formals: &Vector<Arc<Node>, ArcK>,
+        formals_remainder: &Option<Arc<Node>>,
+        proc: &Arc<Node>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'b>> {
-        let static_node: Arc<Node<'static>> = unsafe { std::mem::transmute(node.clone()) };
-        let range = self.node_range(&static_node);
-        let static_name: Arc<Node<'static>> = unsafe { std::mem::transmute(name.clone()) };
-        let selection_range = self.node_range(&static_name);
+    ) -> Arc<Node> {
+        let range = self.node_range(&node);
+        let selection_range = self.node_range(&name);
         let contract_name = if let Node::Var { name, .. } = &**name {
             name.clone()
         } else {
@@ -142,7 +132,7 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
                 .and_then(|st| st.downcast_ref::<Arc<SymbolTable>>())
             {
                 let params: Vec<_> = symbol_table.current_symbols().iter().map(|s| s.name.clone()).collect();
-                debug!("Collecting symbols for contract '{}': parameters {:?}", contract_name, params);
+                debug!("Collected symbols for contract '{}': parameters {:?}", contract_name, params);
                 let mut contract_symbol = DocumentSymbol {
                     name: contract_name.clone(),
                     detail: None,
@@ -175,14 +165,13 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
     fn visit_new<'b>(
         &self,
-        node: &Arc<Node<'b>>,
-        _base: &NodeBase<'b>,
-        decls: &Vector<Arc<Node<'b>>, ArcK>,
-        proc: &Arc<Node<'b>>,
+        node: &Arc<Node>,
+        _base: &NodeBase,
+        decls: &Vector<Arc<Node>, ArcK>,
+        proc: &Arc<Node>,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'b>> {
-        let static_node: Arc<Node<'static>> = unsafe { std::mem::transmute(node.clone()) };
-        let range = self.node_range(&static_node);
+    ) -> Arc<Node> {
+        let range = self.node_range(&node);
         let visitor = DocumentSymbolVisitor::new(self.positions);
         for decl in decls {
             visitor.visit_node(decl);
@@ -207,14 +196,13 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
     fn visit_let<'b>(
         &self,
-        node: &Arc<Node<'b>>,
-        _base: &NodeBase<'b>,
-        decls: &Vector<Arc<Node<'b>>, ArcK>,
-        proc: &Arc<Node<'b>>,
+        node: &Arc<Node>,
+        _base: &NodeBase,
+        decls: &Vector<Arc<Node>, ArcK>,
+        proc: &Arc<Node>,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'b>> {
-        let static_node: Arc<Node<'static>> = unsafe { std::mem::transmute(node.clone()) };
-        let range = self.node_range(&static_node);
+    ) -> Arc<Node> {
+        let range = self.node_range(&node);
         let visitor = DocumentSymbolVisitor::new(self.positions);
         for decl in decls {
             visitor.visit_node(decl);
@@ -239,15 +227,14 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
     fn visit_name_decl<'b>(
         &self,
-        node: &Arc<Node<'b>>,
-        _base: &NodeBase<'b>,
-        var: &Arc<Node<'b>>,
-        _uri: &Option<Arc<Node<'b>>>,
+        node: &Arc<Node>,
+        _base: &NodeBase,
+        var: &Arc<Node>,
+        _uri: &Option<Arc<Node>>,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'b>> {
+    ) -> Arc<Node> {
         if let Node::Var { name, .. } = &**var {
-            let static_node: Arc<Node<'static>> = unsafe { std::mem::transmute(node.clone()) };
-            let range = self.node_range(&static_node);
+            let range = self.node_range(&node);
             let symbol = DocumentSymbol {
                 name: name.clone(),
                 detail: None,
@@ -267,17 +254,16 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
     fn visit_decl<'b>(
         &self,
-        node: &Arc<Node<'b>>,
-        _base: &NodeBase<'b>,
-        names: &Vector<Arc<Node<'b>>, ArcK>,
-        names_remainder: &Option<Arc<Node<'b>>>,
-        _procs: &Vector<Arc<Node<'b>>, ArcK>,
+        node: &Arc<Node>,
+        _base: &NodeBase,
+        names: &Vector<Arc<Node>, ArcK>,
+        names_remainder: &Option<Arc<Node>>,
+        _procs: &Vector<Arc<Node>, ArcK>,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'b>> {
+    ) -> Arc<Node> {
         for name in names {
             if let Node::Var { name: var_name, .. } = &**name {
-                let static_name: Arc<Node<'static>> = unsafe { std::mem::transmute(name.clone()) };
-                let range = self.node_range(&static_name);
+                let range = self.node_range(&name);
                 let symbol = DocumentSymbol {
                     name: var_name.clone(),
                     detail: None,
@@ -295,8 +281,7 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
         }
         if let Some(rem) = names_remainder {
             if let Node::Var { name: var_name, .. } = &**rem {
-                let static_rem: Arc<Node<'static>> = unsafe { std::mem::transmute(rem.clone()) };
-                let range = self.node_range(&static_rem);
+                let range = self.node_range(&rem);
                 let symbol = DocumentSymbol {
                     name: var_name.clone(),
                     detail: Some("(remainder)".to_string()),
@@ -308,7 +293,7 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
                     #[allow(deprecated)]
                     deprecated: None,
                 };
-                debug!("Added remainder variable symbol '{}' from Decl at {:?}", var_name, range.start);
+                debug!("Collected remainder variable symbol '{}' from Decl at {:?}", var_name, range.start);
                 self.symbols.borrow_mut().push(symbol);
             }
         }
@@ -317,20 +302,22 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
     fn visit_input<'b>(
         &self,
-        node: &Arc<Node<'b>>,
-        _base: &NodeBase<'b>,
-        _receipts: &Vector<Vector<Arc<Node<'b>>, ArcK>, ArcK>,
-        proc: &Arc<Node<'b>>,
+        node: &Arc<Node>,
+        _base: &NodeBase,
+        _receipts: &Vector<Vector<Arc<Node>, ArcK>, ArcK>,
+        proc: &Arc<Node>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'b>> {
-        let static_node: Arc<Node<'static>> = unsafe { std::mem::transmute(node.clone()) };
-        let range = self.node_range(&static_node);
+    ) -> Arc<Node> {
+        let range = self.node_range(&node);
         let mut children = Vec::new();
 
-        // Add bound variables from the symbol table
+        // Add bound variables from the process's symbol table
         if let Some(metadata) = metadata {
-            if let Some(symbol_table) = metadata.data.get("symbol_table")
-                .and_then(|st| st.downcast_ref::<Arc<SymbolTable>>()) {
+            if let Some(symbol_table) = metadata
+                .data
+                .get("symbol_table")
+                .and_then(|st| st.downcast_ref::<Arc<SymbolTable>>())
+            {
                 children.extend(self.add_symbols_from_table(symbol_table));
             }
         }
@@ -357,14 +344,13 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
     fn visit_match<'b>(
         &self,
-        node: &Arc<Node<'b>>,
-        _base: &NodeBase<'b>,
-        expression: &Arc<Node<'b>>,
-        cases: &Vector<(Arc<Node<'b>>, Arc<Node<'b>>), ArcK>,
+        node: &Arc<Node>,
+        _base: &NodeBase,
+        expression: &Arc<Node>,
+        cases: &Vector<(Arc<Node>, Arc<Node>), ArcK>,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'b>> {
-        let static_node: Arc<Node<'static>> = unsafe { std::mem::transmute(node.clone()) };
-        let range = self.node_range(&static_node);
+    ) -> Arc<Node> {
+        let range = self.node_range(&node);
         let mut match_children = Vec::new();
 
         // Visit the expression
@@ -374,10 +360,8 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
         // Process each case
         for (i, (pattern, proc)) in cases.iter().enumerate() {
-            // let static_pattern: Arc<Node<'static>> = unsafe { std::mem::transmute(pattern.clone()) };
-            // let static_proc: Arc<Node<'static>> = unsafe { std::mem::transmute(proc.clone()) };
-            let case_start = self.positions.get(&pattern.base().ts_node().unwrap().id()).unwrap().0;
-            let case_end = self.positions.get(&proc.base().ts_node().unwrap().id()).unwrap().1;
+            let case_start = self.positions.get(&(&**pattern as *const Node as usize)).unwrap().0;
+            let case_end = self.positions.get(&(&**proc as *const Node as usize)).unwrap().1;
             let case_range = Range {
                 start: tower_lsp::lsp_types::Position {
                     line: case_start.row as u32,
@@ -434,21 +418,18 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
     fn visit_choice<'b>(
         &self,
-        node: &Arc<Node<'b>>,
-        _base: &NodeBase<'b>,
-        branches: &Vector<(Vector<Arc<Node<'b>>, ArcK>, Arc<Node<'b>>), ArcK>,
+        node: &Arc<Node>,
+        _base: &NodeBase,
+        branches: &Vector<(Vector<Arc<Node>, ArcK>, Arc<Node>), ArcK>,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'b>> {
-        let static_node: Arc<Node<'static>> = unsafe { std::mem::transmute(node.clone()) };
-        let range = self.node_range(&static_node);
+    ) -> Arc<Node> {
+        let range = self.node_range(&node);
         let mut select_children = Vec::new();
 
         // Process each branch
         for (i, (inputs, proc)) in branches.iter().enumerate() {
-            // let static_input: Arc<Node<'static>> = unsafe { std::mem::transmute(inputs[0].clone()) };
-            // let static_proc: Arc<Node<'static>> = unsafe { std::mem::transmute(proc.clone()) };
-            let branch_start = self.positions.get(&inputs[0].base().ts_node().unwrap().id()).unwrap().0;
-            let branch_end = self.positions.get(&proc.base().ts_node().unwrap().id()).unwrap().1;
+            let branch_start = self.positions.get(&(&*inputs[0] as *const Node as usize)).unwrap().0;
+            let branch_end = self.positions.get(&(&**proc as *const Node as usize)).unwrap().1;
             let branch_range = Range {
                 start: tower_lsp::lsp_types::Position {
                     line: branch_start.row as u32,
@@ -505,11 +486,11 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
     fn visit_block<'b>(
         &self,
-        node: &Arc<Node<'b>>,
-        _base: &NodeBase<'b>,
-        proc: &Arc<Node<'b>>,
+        node: &Arc<Node>,
+        _base: &NodeBase,
+        proc: &Arc<Node>,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'b>> {
+    ) -> Arc<Node> {
         let visitor = DocumentSymbolVisitor::new(self.positions);
         visitor.visit_node(proc);
         self.symbols.borrow_mut().extend(visitor.into_symbols());
@@ -518,12 +499,12 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
     fn visit_par<'b>(
         &self,
-        node: &Arc<Node<'b>>,
-        _base: &NodeBase<'b>,
-        left: &Arc<Node<'b>>,
-        right: &Arc<Node<'b>>,
+        node: &Arc<Node>,
+        _base: &NodeBase,
+        left: &Arc<Node>,
+        right: &Arc<Node>,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'b>> {
+    ) -> Arc<Node> {
         let visitor = DocumentSymbolVisitor::new(self.positions);
         visitor.visit_node(left);
         visitor.visit_node(right);
@@ -535,13 +516,10 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 /// Collects document symbols using the visitor pattern.
 /// Assumes `node` and `positions` have `'static` lifetimes from the backend processing.
 pub fn collect_document_symbols(
-    node: &Arc<Node<'static>>,
+    node: &Arc<Node>,
     positions: &HashMap<usize, (IrPosition, IrPosition)>,
 ) -> Vec<DocumentSymbol> {
-    // Extend positions lifetime to 'static safely, as it's derived from a 'static tree
-    let positions_static: &'static HashMap<usize, (IrPosition, IrPosition)> =
-        unsafe { std::mem::transmute(positions) };
-    let visitor = DocumentSymbolVisitor::new(positions_static);
+    let visitor = DocumentSymbolVisitor::new(positions);
     visitor.visit_node(node);
     visitor.into_symbols()
 }

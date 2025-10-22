@@ -99,7 +99,7 @@ fn run_diagnostic_test(client: &LspClient) {
     assert_eq!(diagnostic_params.diagnostics.len(), 1);
     let diagnostic = &diagnostic_params.diagnostics[0];
     assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
-    assert!(diagnostic.message.contains("Invalid Rholang code"));
+    assert!(diagnostic.message.contains("Missing token: }"), "Expected message to contain 'Missing token: }}', but got: {}", diagnostic.message);
     assert_eq!(diagnostic.range.start.line, 0);
     assert_eq!(diagnostic.range.start.character, 22);  // Position of missing brace
 }

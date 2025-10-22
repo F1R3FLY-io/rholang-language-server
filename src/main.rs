@@ -1,3 +1,4 @@
+#![recursion_limit = "1024"]
 use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -21,7 +22,7 @@ use tokio_tungstenite::{accept_async, WebSocketStream};
 
 use tower_lsp::{LspService, Server};
 
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use clap::Parser;
 
@@ -47,6 +48,7 @@ struct ServerConfig {
     rnode_address: String,
     rnode_port: u16,
     client_process_id: Option<u32>,
+    no_rnode: bool,
 }
 
 impl ServerConfig {
@@ -113,6 +115,8 @@ impl ServerConfig {
                 conflicts_with_all = ["stdio", "socket", "websocket"]
             )]
             pipe: Option<String>,
+            #[arg(long, help = "Disable RNode integration for semantic analysis (rely on parser only)")]
+            no_rnode: bool,
         }
 
         let args = Args::parse();
@@ -172,6 +176,7 @@ impl ServerConfig {
             rnode_address,
             rnode_port,
             client_process_id: args.client_process_id,
+            no_rnode: args.no_rnode,
         })
     }
 }
@@ -392,7 +397,7 @@ async fn serve_connection<R, W>(
     read: R,
     write: W,
     addr: impl std::fmt::Display + Send + 'static,
-    rnode_client: LspClient<tonic::transport::Channel>,
+    rnode_client: Option<LspClient<tonic::transport::Channel>>,
     conn_manager: &ConnectionManager,
     client_process_id: Option<u32>,
 ) where
@@ -470,13 +475,13 @@ async fn monitor_client_process(client_pid: u32, conn_manager: ConnectionManager
 }
 
 async fn run_stdio_server(
-    rnode_client: LspClient<tonic::transport::Channel>,
+    rnode_client: Option<LspClient<tonic::transport::Channel>>,
     config: ServerConfig,
     conn_manager: ConnectionManager
 ) -> io::Result<()> {
     info!("Starting server with stdin/stdout communication.");
     let (service, socket) = LspService::build(|client| {
-        RholangBackend::new(client, rnode_client, config.client_process_id)
+        RholangBackend::new(client, rnode_client.clone(), config.client_process_id)
     }).finish();
     let stdin = BufReader::new(tokio::io::stdin()); // Wrap stdin in BufReader
     let stdout = tokio::io::stdout();
@@ -503,7 +508,7 @@ async fn run_stdio_server(
 }
 
 async fn run_socket_server(
-    rnode_client: LspClient<tonic::transport::Channel>,
+    rnode_client: Option<LspClient<tonic::transport::Channel>>,
     config: ServerConfig,
     conn_manager: ConnectionManager,
     port: u16
@@ -538,7 +543,7 @@ async fn run_socket_server(
 }
 
 async fn run_websocket_server(
-    rnode_client: LspClient<tonic::transport::Channel>,
+    rnode_client: Option<LspClient<tonic::transport::Channel>>,
     config: ServerConfig,
     conn_manager: ConnectionManager,
     port: u16
@@ -581,7 +586,7 @@ async fn run_websocket_server(
 }
 
 async fn run_named_pipe_server(
-    rnode_client: LspClient<tonic::transport::Channel>,
+    rnode_client: Option<LspClient<tonic::transport::Channel>>,
     config: &ServerConfig,
     conn_manager: ConnectionManager,
     pipe_path: &String
@@ -661,24 +666,30 @@ async fn run_server(config: ServerConfig, conn_manager: ConnectionManager) -> io
     init_logger(config.no_color, Some(&config.log_level))?;
     info!("Initializing rholang-language-server with log level {} ...", config.log_level);
 
-    let rnode_endpoint = format!("http://{}:{}", config.rnode_address, config.rnode_port);
-    let rnode_uri = tonic::transport::Uri::try_from(&rnode_endpoint).map_err(|e| {
-        error!("Invalid RNode endpoint {}: {}", rnode_endpoint, e);
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("Invalid RNode endpoint: {}", rnode_endpoint),
-        )
-    })?;
-    let rnode_client = LspClient::connect(tonic::transport::Endpoint::from(rnode_uri))
-        .await
-        .map_err(|e| {
-            error!("Failed to connect to rnode at {}: {}", rnode_endpoint, e);
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("Failed to connect to rnode at {}", rnode_endpoint),
-            )
-        })?;
-    info!("RNode client initialized at {}.", rnode_endpoint);
+    let rnode_client_opt: Option<LspClient<tonic::transport::Channel>> = if !config.no_rnode {
+        let rnode_endpoint = format!("http://{}:{}", config.rnode_address, config.rnode_port);
+        match tonic::transport::Uri::try_from(&rnode_endpoint) {
+            Ok(rnode_uri) => {
+                match LspClient::connect(tonic::transport::Endpoint::from(rnode_uri)).await {
+                    Ok(client) => {
+                        info!("Successfully connected to RNode at {}", rnode_endpoint);
+                        Some(client)
+                    }
+                    Err(e) => {
+                        warn!("Failed to connect to RNode at {}: {}. Continuing with parser-only validation.", rnode_endpoint, e);
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Invalid RNode endpoint {}: {}. Continuing with parser-only validation.", rnode_endpoint, e);
+                None
+            }
+        }
+    } else {
+        info!("RNode integration disabled via --no-rnode flag; relying on parser for analysis.");
+        None
+    };
 
     if let Some(client_pid) = config.client_process_id {
         let conn_manager_clone = conn_manager.clone();
@@ -689,10 +700,10 @@ async fn run_server(config: ServerConfig, conn_manager: ConnectionManager) -> io
     }
 
     match config.comm_mode {
-        CommMode::Stdio => run_stdio_server(rnode_client, config, conn_manager).await?,
-        CommMode::Socket(port) => run_socket_server(rnode_client, config, conn_manager, port).await?,
-        CommMode::WebSocket(port) => run_websocket_server(rnode_client, config, conn_manager, port).await?,
-        CommMode::Pipe(ref pipe_path) => run_named_pipe_server(rnode_client, &config, conn_manager, pipe_path).await?,
+        CommMode::Stdio => run_stdio_server(rnode_client_opt, config, conn_manager).await?,
+        CommMode::Socket(port) => run_socket_server(rnode_client_opt, config, conn_manager, port).await?,
+        CommMode::WebSocket(port) => run_websocket_server(rnode_client_opt, config, conn_manager, port).await?,
+        CommMode::Pipe(ref pipe_path) => run_named_pipe_server(rnode_client_opt, &config, conn_manager, pipe_path).await?,
     }
 
     info!("Server terminated.");

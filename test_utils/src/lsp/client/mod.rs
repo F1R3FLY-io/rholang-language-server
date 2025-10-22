@@ -139,6 +139,7 @@ impl LspClient {
                         "--log-level", &log_level,
                         "--rnode-address", &rnode_address,
                         "--rnode-port", &rnode_port.to_string(),
+                        "--no-rnode",  // Tests use parser-only validation (no RNode dependency)
                     ];
                     let mut server = Command::new(&server_path)
                         .args(server_args)
@@ -161,6 +162,7 @@ impl LspClient {
                         "--log-level", &log_level,
                         "--rnode-address", &rnode_address,
                         "--rnode-port", &rnode_port.to_string(),
+                        "--no-rnode",  // Tests use parser-only validation (no RNode dependency)
                     ];
                     let mut server = Command::new(&server_path)
                         .args(server_args)
@@ -213,6 +215,7 @@ impl LspClient {
                         "--log-level", &log_level,
                         "--rnode-address", &rnode_address,
                         "--rnode-port", &rnode_port.to_string(),
+                        "--no-rnode",  // Tests use parser-only validation (no RNode dependency)
                     ];
                     let mut server = Command::new(&server_path)
                         .args(server_args)
@@ -260,6 +263,7 @@ impl LspClient {
                         "--log-level", &log_level,
                         "--rnode-address", &rnode_address,
                         "--rnode-port", &rnode_port.to_string(),
+                        "--no-rnode",  // Tests use parser-only validation (no RNode dependency)
                     ];
                     debug!("Server command: {} {:?}", server_path, server_args);
                     let mut server = Command::new(&server_path)

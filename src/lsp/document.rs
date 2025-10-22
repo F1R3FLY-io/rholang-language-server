@@ -1,5 +1,9 @@
+use std::cmp::Ordering;
+
 use ropey::Rope;
+
 use tower_lsp::lsp_types::{Position, TextDocumentContentChangeEvent, Url};
+
 use tree_sitter::Tree;
 
 use crate::tree_sitter::{parse_code, update_tree};
@@ -11,6 +15,26 @@ fn position_to_byte_offset(position: &Position, text: &Rope) -> usize {
     let line = position.line as usize;
     let char = position.character as usize;
     text.line_to_char(line) + char
+}
+
+impl PartialEq for VersionedChanges {
+    fn eq(&self, other: &Self) -> bool {
+        self.version == other.version
+    }
+}
+
+impl Eq for VersionedChanges {}
+
+impl PartialOrd for VersionedChanges {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(other.version.cmp(&self.version))
+    }
+}
+
+impl Ord for VersionedChanges {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.version.cmp(&self.version)
+    }
 }
 
 impl LspDocumentState {

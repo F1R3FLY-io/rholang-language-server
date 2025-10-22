@@ -12,8 +12,10 @@ lsp-types = "0.97"
 notify = "5.0"
 petgraph = "0.8.2"
 prost = "0.13"
-rholang-parser = { git = "https://github.com/dylon/rholang-rs.git", branch = "dylon/comments" }
-rholang-tree-sitter = { git = "https://github.com/dylon/rholang-rs.git", branch = "dylon/comments" }
+# rholang-parser = { git = "https://github.com/dylon/rholang-rs.git", branch = "dylon/comments" }
+# rholang-tree-sitter = { git = "https://github.com/dylon/rholang-rs.git", branch = "dylon/comments" }
+rholang-parser = { path = "/home/dylon/Workspace/f1r3fly.io/rholang-rs/rholang-parser/" }
+rholang-tree-sitter = { path = "/home/dylon/Workspace/f1r3fly.io/rholang-rs/rholang-tree-sitter/" }
 ropey = "1.6"
 rpds = "1.1"
 scopeguard = "1.2"
@@ -31,12 +33,14 @@ tree-sitter = "0.25"
 url = "2.5"
 uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
+validated = "1.0.0"
 
 # Platform-specific dependencies
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.27", features = ["signal"] }
 
 [dev-dependencies]
+cargo-nextest = "0.9.101"
 indoc = "2"
 quickcheck = "1.0"
 test_utils = { path = "test_utils" }

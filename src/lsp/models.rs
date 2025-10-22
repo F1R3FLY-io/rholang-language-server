@@ -1,10 +1,12 @@
-use std::cmp;
 use std::collections::HashMap;
 use std::sync::Arc;
+
 use ropey::Rope;
+
 use tower_lsp::lsp_types::{TextDocumentContentChangeEvent, Url};
 use tree_sitter::Tree;
-use crate::ir::node::{Node, Position};
+
+use crate::ir::node::{Node, Position as IrPosition};
 use crate::ir::symbol_table::SymbolTable;
 use crate::ir::transforms::symbol_table_builder::InvertedIndex;
 
@@ -15,34 +17,20 @@ pub struct VersionedChanges {
     pub changes: Vec<TextDocumentContentChangeEvent>,
 }
 
-impl PartialEq for VersionedChanges {
-    fn eq(&self, other: &Self) -> bool {
-        self.version == other.version
-    }
-}
-
-impl Eq for VersionedChanges {}
-
-impl PartialOrd for VersionedChanges {
-    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-        Some(other.version.cmp(&self.version))
-    }
-}
-
-impl Ord for VersionedChanges {
-    fn cmp(&self, other: &Self) -> cmp::Ordering {
-        other.version.cmp(&self.version)
-    }
-}
-
-/// History of changes to a document, including initial text and versioned changes.
+/// Represents a cached document with IR, symbol table, and metadata for LSP queries.
 #[derive(Debug)]
-pub struct LspDocumentHistory {
-    pub text: String,
-    pub changes: Vec<VersionedChanges>,
+pub struct CachedDocument {
+    pub ir: Arc<Node>,
+    pub tree: Arc<Tree>,
+    pub symbol_table: Arc<SymbolTable>,
+    pub inverted_index: InvertedIndex,
+    pub version: i32,
+    pub text: Rope,
+    pub positions: Arc<std::collections::HashMap<usize, (IrPosition, IrPosition)>>,
+    pub potential_global_refs: Vec<(String, IrPosition)>,
 }
 
-/// Mutable state of an LSP document, including text rope and version.
+/// State for an open text document managed by the LSP server.
 #[derive(Debug)]
 pub struct LspDocumentState {
     pub uri: Url,
@@ -51,33 +39,27 @@ pub struct LspDocumentState {
     pub history: LspDocumentHistory,
 }
 
-/// Represents an open LSP document with a unique ID and shared state.
+/// History of changes for incremental parsing and validation.
+#[derive(Debug)]
+pub struct LspDocumentHistory {
+    pub text: String,
+    pub changes: Vec<VersionedChanges>,
+}
+
+/// LSP document with state for open files.
 #[derive(Debug)]
 pub struct LspDocument {
     pub id: u32,
     pub state: tokio::sync::RwLock<LspDocumentState>,
 }
 
-/// Cached processed data for a document, including IR, symbols, and positions.
-#[derive(Debug, Clone)]
-pub struct CachedDocument {
-    pub ir: Arc<Node<'static>>,
-    pub tree: Arc<Tree>,
-    pub symbol_table: Arc<SymbolTable>,
-    pub inverted_index: InvertedIndex,
-    pub version: i32,
-    pub text: Rope,
-    pub positions: Arc<HashMap<usize, (Position, Position)>>,
-    pub potential_global_refs: Vec<(String, Position)>,
-}
-
-/// State of the entire workspace, including all documents and global symbols.
+/// Workspace state for cached documents and global symbols.
 #[derive(Debug)]
 pub struct WorkspaceState {
     pub documents: HashMap<Url, Arc<CachedDocument>>,
-    pub global_symbols: HashMap<String, (Url, Position)>,
+    pub global_symbols: HashMap<String, (Url, IrPosition)>,
     pub global_table: Arc<SymbolTable>,
-    pub global_inverted_index: HashMap<(Url, Position), Vec<(Url, Position)>>,
-    pub global_contracts: Vec<(Url, Arc<Node<'static>>)>,
-    pub global_calls: Vec<(Url, Arc<Node<'static>>)>,
+    pub global_inverted_index: HashMap<(Url, IrPosition), Vec<(Url, IrPosition)>>,
+    pub global_contracts: Vec<(Url, Arc<Node>)>,
+    pub global_calls: Vec<(Url, Arc<Node>)>,
 }

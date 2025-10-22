@@ -223,7 +223,7 @@ with_lsp_client!(test_goto_definition_loop_param, CommType::Stdio, |client: &Lsp
 
     assert_eq!(location.uri.to_string(), loop_doc.uri());
     assert_eq!(location.range.start.line, 1);
-    assert_eq!(location.range.start.character, 10);
+    assert_eq!(location.range.start.character, 9);  // Points to @ in @message (the bind pattern)
 });
 
 with_lsp_client!(test_references_local, CommType::Stdio, |client: &LspClient| {

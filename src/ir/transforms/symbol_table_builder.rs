@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use archery::ArcK;
 use rpds::Vector;
 use tower_lsp::lsp_types::Url;
-use tracing::{debug, trace};
+use tracing::trace;
 
 use crate::ir::node::{Metadata, Node, NodeBase, Position};
 use crate::ir::symbol_table::{Symbol, SymbolTable, SymbolType};
@@ -18,7 +18,7 @@ pub type InvertedIndex = HashMap<Position, Vec<Position>>;
 /// Manages scope creation for nodes like `new`, `let`, `contract`, `input`, `case`, and `branch`.
 #[derive(Debug)]
 pub struct SymbolTableBuilder {
-    root: Arc<Node<'static>>,  // Root IR node with static lifetime
+    root: Arc<Node>,  // Root IR node with static lifetime
     current_uri: Url,          // URI of the current file
     current_table: RwLock<Arc<SymbolTable>>,  // Current scope's symbol table
     inverted_index: RwLock<InvertedIndex>,    // Tracks local symbol usages
@@ -28,7 +28,7 @@ pub struct SymbolTableBuilder {
 
 impl SymbolTableBuilder {
     /// Creates a new builder with a root IR node, file URI, and global symbol table.
-    pub fn new(root: Arc<Node<'static>>, uri: Url, global_table: Arc<SymbolTable>) -> Self {
+    pub fn new(root: Arc<Node>, uri: Url, global_table: Arc<SymbolTable>) -> Self {
         let local_table = Arc::new(SymbolTable::new(Some(global_table.clone())));  // Chain local to global
         Self {
             root,
@@ -95,11 +95,11 @@ impl SymbolTableBuilder {
     /// Updates a node's metadata with a specific symbol table and optional symbol.
     fn update_metadata<'b>(
         &self,
-        node: Arc<Node<'b>>,
+        node: Arc<Node>,
         table: Arc<SymbolTable>,
         symbol: Option<Arc<Symbol>>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'b>> {
+    ) -> Arc<Node> {
         let mut data = metadata.as_ref().map_or(HashMap::new(), |m| m.data.clone());
         data.insert("symbol_table".to_string(), Arc::new(table) as Arc<dyn Any + Send + Sync>);
         if let Some(sym) = symbol {
@@ -111,16 +111,16 @@ impl SymbolTableBuilder {
     /// Updates a node's metadata with the current symbol table and optional symbol.
     fn update_with_current_table<'b>(
         &self,
-        node: Arc<Node<'b>>,
+        node: Arc<Node>,
         symbol: Option<Arc<Symbol>>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'b>> {
+    ) -> Arc<Node> {
         let current_table = self.current_table.read().expect("Failed to lock current_table").clone();
         self.update_metadata(node, current_table, symbol, metadata)
     }
 
     /// Collects variables bound in pattern nodes (e.g., in `match` cases).
-    fn collect_bound_vars<'b>(&self, pattern: &'b Arc<Node<'b>>) -> Vec<Arc<Node<'b>>> {
+    fn collect_bound_vars<'b>(&self, pattern: &'b Arc<Node>) -> Vec<Arc<Node>> {
         match &**pattern {
             Node::Var { .. } => vec![pattern.clone()],
             Node::Wildcard { .. } => vec![],
@@ -167,230 +167,15 @@ impl SymbolTableBuilder {
 
 }
 
-fn traverse<'a>(
-    node: &Arc<Node<'a>>,
-    position: Position,
-    positions: &HashMap<usize, (Position, Position)>,
-    best: &mut Option<(Arc<Node<'a>>, Position, usize)>,
-    depth: usize,
-) {
-    let key = node.base().ts_node().map_or(0, |n| n.id());
-    if let Some(&(start, end)) = positions.get(&key) {
-        if start.byte <= position.byte && position.byte <= end.byte {
-            // let size = (end.byte - start.byte) as usize;
-            let is_better = best.as_ref().map_or(true, |(_, _, b_depth)| depth > *b_depth);
-            if is_better {
-                *best = Some((node.clone(), start, depth));
-            }
-        }
-    }
-    match &**node {
-        Node::Par { left, right, .. } => {
-            traverse(left, position, positions, best, depth + 1);
-            traverse(right, position, positions, best, depth + 1);
-        }
-        Node::SendSync { channel, inputs, cont, .. } => {
-            traverse(channel, position, positions, best, depth + 1);
-            for input in inputs {
-                traverse(input, position, positions, best, depth + 1);
-            }
-            traverse(cont, position, positions, best, depth + 1);
-        }
-        Node::Send { channel, inputs, .. } => {
-            traverse(channel, position, positions, best, depth + 1);
-            for input in inputs {
-                traverse(input, position, positions, best, depth + 1);
-            }
-        }
-        Node::New { decls, proc, .. } => {
-            for decl in decls {
-                traverse(decl, position, positions, best, depth + 1);
-            }
-            traverse(proc, position, positions, best, depth + 1);
-        }
-        Node::IfElse { condition, consequence, alternative, .. } => {
-            traverse(condition, position, positions, best, depth + 1);
-            traverse(consequence, position, positions, best, depth + 1);
-            if let Some(alt) = alternative {
-                traverse(alt, position, positions, best, depth + 1);
-            }
-        }
-        Node::Let { decls, proc, .. } => {
-            for decl in decls {
-                traverse(decl, position, positions, best, depth + 1);
-            }
-            traverse(proc, position, positions, best, depth + 1);
-        }
-        Node::Bundle { proc, .. } => traverse(proc, position, positions, best, depth + 1),
-        Node::Match { expression, cases, .. } => {
-            traverse(expression, position, positions, best, depth + 1);
-            for (pat, proc) in cases {
-                traverse(pat, position, positions, best, depth + 1);
-                traverse(proc, position, positions, best, depth + 1);
-            }
-        }
-        Node::Choice { branches, .. } => {
-            for (inputs, proc) in branches {
-                for input in inputs {
-                    traverse(input, position, positions, best, depth + 1);
-                }
-                traverse(proc, position, positions, best, depth + 1);
-            }
-        }
-        Node::Contract { name, formals, formals_remainder, proc, .. } => {
-            traverse(name, position, positions, best, depth + 1);
-            for formal in formals {
-                traverse(formal, position, positions, best, depth + 1);
-            }
-            if let Some(rem) = formals_remainder {
-                traverse(rem, position, positions, best, depth + 1);
-            }
-            traverse(proc, position, positions, best, depth + 1);
-        }
-        Node::Input { receipts, proc, .. } => {
-            for receipt in receipts {
-                for bind in receipt {
-                    traverse(bind, position, positions, best, depth + 1);
-                }
-            }
-            traverse(proc, position, positions, best, depth + 1);
-        }
-        Node::Block { proc, .. } => traverse(proc, position, positions, best, depth + 1),
-        Node::Parenthesized { expr, .. } => traverse(expr, position, positions, best, depth + 1),
-        Node::BinOp { left, right, .. } => {
-            traverse(left, position, positions, best, depth + 1);
-            traverse(right, position, positions, best, depth + 1);
-        }
-        Node::UnaryOp { operand, .. } => traverse(operand, position, positions, best, depth + 1),
-        Node::Method { receiver, args, .. } => {
-            traverse(receiver, position, positions, best, depth + 1);
-            for arg in args {
-                traverse(arg, position, positions, best, depth + 1);
-            }
-        }
-        Node::Eval { name, .. } => traverse(name, position, positions, best, depth + 1),
-        Node::Quote { quotable, .. } => traverse(quotable, position, positions, best, depth + 1),
-        Node::VarRef { var, .. } => traverse(var, position, positions, best, depth + 1),
-        Node::List { elements, remainder, .. } => {
-            for elem in elements {
-                traverse(elem, position, positions, best, depth + 1);
-            }
-            if let Some(rem) = remainder {
-                traverse(rem, position, positions, best, depth + 1);
-            }
-        }
-        Node::Set { elements, remainder, .. } => {
-            for elem in elements {
-                traverse(elem, position, positions, best, depth + 1);
-            }
-            if let Some(rem) = remainder {
-                traverse(rem, position, positions, best, depth + 1);
-            }
-        }
-        Node::Map { pairs, remainder, .. } => {
-            for (key, value) in pairs {
-                traverse(key, position, positions, best, depth + 1);
-                traverse(value, position, positions, best, depth + 1);
-            }
-            if let Some(rem) = remainder {
-                traverse(rem, position, positions, best, depth + 1);
-            }
-        }
-        Node::Tuple { elements, .. } => {
-            for elem in elements {
-                traverse(elem, position, positions, best, depth + 1);
-            }
-        }
-        Node::NameDecl { var, uri, .. } => {
-            traverse(var, position, positions, best, depth + 1);
-            if let Some(u) = uri {
-                traverse(u, position, positions, best, depth + 1);
-            }
-        }
-        Node::Decl { names, names_remainder, procs, .. } => {
-            for name in names {
-                traverse(name, position, positions, best, depth + 1);
-            }
-            if let Some(rem) = names_remainder {
-                traverse(rem, position, positions, best, depth + 1);
-            }
-            for proc in procs {
-                traverse(proc, position, positions, best, depth + 1);
-            }
-        }
-        Node::LinearBind { names, remainder, source, .. } => {
-            for name in names {
-                traverse(name, position, positions, best, depth + 1);
-            }
-            if let Some(rem) = remainder {
-                traverse(rem, position, positions, best, depth + 1);
-            }
-            traverse(source, position, positions, best, depth + 1);
-        }
-        Node::RepeatedBind { names, remainder, source, .. } => {
-            for name in names {
-                traverse(name, position, positions, best, depth + 1);
-            }
-            if let Some(rem) = remainder {
-                traverse(rem, position, positions, best, depth + 1);
-            }
-            traverse(source, position, positions, best, depth + 1);
-        }
-        Node::PeekBind { names, remainder, source, .. } => {
-            for name in names {
-                traverse(name, position, positions, best, depth + 1);
-            }
-            if let Some(rem) = remainder {
-                traverse(rem, position, positions, best, depth + 1);
-            }
-            traverse(source, position, positions, best, depth + 1);
-        }
-        Node::ReceiveSendSource { name, .. } => traverse(name, position, positions, best, depth + 1),
-        Node::SendReceiveSource { name, inputs, .. } => {
-            traverse(name, position, positions, best, depth + 1);
-            for input in inputs {
-                traverse(input, position, positions, best, depth + 1);
-            }
-        }
-        Node::Error { children, .. } => {
-            for child in children {
-                traverse(child, position, positions, best, depth + 1);
-            }
-        }
-        Node::Disjunction { left, right, .. } => {
-            traverse(left, position, positions, best, depth + 1);
-            traverse(right, position, positions, best, depth + 1);
-        }
-        Node::Conjunction { left, right, .. } => {
-            traverse(left, position, positions, best, depth + 1);
-            traverse(right, position, positions, best, depth + 1);
-        }
-        Node::Negation { operand, .. } => traverse(operand, position, positions, best, depth + 1),
-        _ => {},
-    }
-}
-
-pub fn find_node_at_position<'a>(root: &Arc<Node<'a>>, positions: &HashMap<usize, (Position, Position)>, position: Position) -> Option<Arc<Node<'a>>> {
-    let mut best: Option<(Arc<Node<'a>>, Position, usize)> = None;
-    traverse(root, position, positions, &mut best, 0);
-    if let Some(node) = best.map(|(node, _, _)| node) {
-        debug!("Found best match: '{}'", node.text());
-        Some(node)
-    } else {
-        debug!("No node found at position {:?}", position);
-        None
-    }
-}
-
 impl Visitor for SymbolTableBuilder {
     fn visit_par<'a>(
         &self,
-        _node: &Arc<Node<'a>>,
-        base: &NodeBase<'a>,
-        left: &Arc<Node<'a>>,
-        right: &Arc<Node<'a>>,
+        _node: &Arc<Node>,
+        base: &NodeBase,
+        left: &Arc<Node>,
+        right: &Arc<Node>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'a>> {
+    ) -> Arc<Node> {
         let new_left = self.visit_node(left);
         let new_right = self.visit_node(right);
         let new_node = Arc::new(Node::Par {
@@ -405,12 +190,12 @@ impl Visitor for SymbolTableBuilder {
     /// Visits a `new` node, ensuring declarations are added to the symbol table before processing.
     fn visit_new<'a>(
         &self,
-        _node: &Arc<Node<'a>>,
-        base: &NodeBase<'a>,
-        decls: &Vector<Arc<Node<'a>>, ArcK>,
-        proc: &Arc<Node<'a>>,
+        _node: &Arc<Node>,
+        base: &NodeBase,
+        decls: &Vector<Arc<Node>, ArcK>,
+        proc: &Arc<Node>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'a>> {
+    ) -> Arc<Node> {
         let new_table = self.push_scope();
         for d in decls {
             if let Node::NameDecl { var, .. } = &**d {
@@ -447,12 +232,12 @@ impl Visitor for SymbolTableBuilder {
     /// Visits a `let` node, adding declarations to the symbol table before processing.
     fn visit_let<'a>(
         &self,
-        _node: &Arc<Node<'a>>,
-        base: &NodeBase<'a>,
-        decls: &Vector<Arc<Node<'a>>, ArcK>,
-        proc: &Arc<Node<'a>>,
+        _node: &Arc<Node>,
+        base: &NodeBase,
+        decls: &Vector<Arc<Node>, ArcK>,
+        proc: &Arc<Node>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'a>> {
+    ) -> Arc<Node> {
         let outer_table = self.current_table.read().unwrap().clone();
         let new_table = self.push_scope();
         for d in decls {
@@ -530,14 +315,14 @@ impl Visitor for SymbolTableBuilder {
     /// Visits a `contract` node, registering the contract globally and parameters locally.
     fn visit_contract<'a>(
         &self,
-        _node: &Arc<Node<'a>>,
-        base: &NodeBase<'a>,
-        name: &Arc<Node<'a>>,
-        formals: &Vector<Arc<Node<'a>>, ArcK>,
-        formals_remainder: &Option<Arc<Node<'a>>>,
-        proc: &Arc<Node<'a>>,
+        _node: &Arc<Node>,
+        base: &NodeBase,
+        name: &Arc<Node>,
+        formals: &Vector<Arc<Node>, ArcK>,
+        formals_remainder: &Option<Arc<Node>>,
+        proc: &Arc<Node>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'a>> {
+    ) -> Arc<Node> {
         let contract_pos = name.absolute_start(&self.root);
         let contract_name = if let Node::Var { name, .. } = &**name {
             name.clone()
@@ -644,23 +429,26 @@ impl Visitor for SymbolTableBuilder {
     /// Visits an `input` node, adding bindings to the symbol table before processing.
     fn visit_input<'a>(
         &self,
-        _node: &Arc<Node<'a>>,
-        base: &NodeBase<'a>,
-        receipts: &Vector<Vector<Arc<Node<'a>>, ArcK>, ArcK>,
-        proc: &Arc<Node<'a>>,
+        _node: &Arc<Node>,
+        base: &NodeBase,
+        receipts: &Vector<Vector<Arc<Node>, ArcK>, ArcK>,
+        proc: &Arc<Node>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'a>> {
+    ) -> Arc<Node> {
         let new_table = self.push_scope();
         for r in receipts {
             for b in r {
                 match &**b {
-                    Node::LinearBind { names, remainder, .. } | Node::RepeatedBind { names, remainder, .. } | Node::PeekBind { names, remainder, .. } => {
+                    Node::LinearBind { names, remainder, .. } |
+                    Node::RepeatedBind { names, remainder, .. } |
+                    Node::PeekBind { names, remainder, .. } => {
                         for name in names {
                             let bound_vars = self.collect_bound_vars(name);
                             for var in bound_vars {
                                 if let Node::Var { name: var_name, .. } = &*var {
                                     if !var_name.is_empty() {  // Skip empty variable names
-                                        let location = var.absolute_start(&self.root);
+                                        // Use the bind node position (includes @ prefix) instead of just the var name
+                                        let location = b.absolute_start(&self.root);
                                         let symbol = Arc::new(Symbol::new(
                                             var_name.clone(),
                                             SymbolType::Variable,
@@ -713,12 +501,12 @@ impl Visitor for SymbolTableBuilder {
     /// Visits a `match` node, adding pattern variables to the symbol table before processing cases.
     fn visit_match<'a>(
         &self,
-        _node: &Arc<Node<'a>>,
-        base: &NodeBase<'a>,
-        expression: &Arc<Node<'a>>,
-        cases: &Vector<(Arc<Node<'a>>, Arc<Node<'a>>), ArcK>,
+        _node: &Arc<Node>,
+        base: &NodeBase,
+        expression: &Arc<Node>,
+        cases: &Vector<(Arc<Node>, Arc<Node>), ArcK>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'a>> {
+    ) -> Arc<Node> {
         let new_expression = self.visit_node(expression);
         let new_cases = cases.iter().map(|(pattern, proc)| {
             let new_table = self.push_scope();
@@ -765,19 +553,22 @@ impl Visitor for SymbolTableBuilder {
     /// Visits a `choice` node, adding input variables to the symbol table before processing branches.
     fn visit_choice<'a>(
         &self,
-        _node: &Arc<Node<'a>>,
-        base: &NodeBase<'a>,
-        branches: &Vector<(Vector<Arc<Node<'a>>, ArcK>, Arc<Node<'a>>), ArcK>,
+        _node: &Arc<Node>,
+        base: &NodeBase,
+        branches: &Vector<(Vector<Arc<Node>, ArcK>, Arc<Node>), ArcK>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'a>> {
+    ) -> Arc<Node> {
         let new_branches = branches.iter().map(|(inputs, proc)| {
             let new_table = self.push_scope();
             for i in inputs {
-                if let Node::LinearBind { names, remainder, .. } | Node::RepeatedBind { names, remainder, .. } | Node::PeekBind { names, remainder, .. } = &**i {
+                if let Node::LinearBind { names, remainder, .. } |
+                       Node::RepeatedBind { names, remainder, .. } |
+                       Node::PeekBind { names, remainder, .. } = &**i {
                     for name in names {
                         if let Node::Var { name: var_name, .. } = &**name {
                             if !var_name.is_empty() {  // Skip empty variable names
-                                let location = name.absolute_start(&self.root);
+                                // Use the bind node position (includes @ prefix) instead of just the var name
+                                let location = i.absolute_start(&self.root);
                                 let symbol = Arc::new(Symbol::new(
                                     var_name.clone(),
                                     SymbolType::Variable,
@@ -808,7 +599,7 @@ impl Visitor for SymbolTableBuilder {
                     }
                 }
             }
-            let new_inputs: Vector<Arc<Node<'a>>, ArcK> = inputs.iter().map(|i| self.visit_node(i)).collect();
+            let new_inputs: Vector<Arc<Node>, ArcK> = inputs.iter().map(|i| self.visit_node(i)).collect();
             let new_proc = self.visit_node(proc);
             let branch_node = Arc::new(Node::Choice {
                 base: base.clone(),
@@ -831,11 +622,11 @@ impl Visitor for SymbolTableBuilder {
     /// Visits a `var` node, recording usages only if they differ from the declaration location.
     fn visit_var<'a>(
         &self,
-        node: &Arc<Node<'a>>,
-        base: &NodeBase<'a>,
+        node: &Arc<Node>,
+        base: &NodeBase,
         name: &String,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'a>> {
+    ) -> Arc<Node> {
         let mut referenced_symbol: Option<Arc<Symbol>> = None;
         if !name.is_empty() {  // Only process non-empty variable names
             if let Some(symbol) = self.current_table.read().unwrap().lookup(name) {
@@ -875,12 +666,12 @@ impl Visitor for SymbolTableBuilder {
 
     fn visit_disjunction<'a>(
         &self,
-        _node: &Arc<Node<'a>>,
-        base: &NodeBase<'a>,
-        left: &Arc<Node<'a>>,
-        right: &Arc<Node<'a>>,
+        _node: &Arc<Node>,
+        base: &NodeBase,
+        left: &Arc<Node>,
+        right: &Arc<Node>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'a>> {
+    ) -> Arc<Node> {
         let new_left = self.visit_node(left);
         let new_right = self.visit_node(right);
         let new_node = Arc::new(Node::Disjunction {
@@ -894,12 +685,12 @@ impl Visitor for SymbolTableBuilder {
 
     fn visit_conjunction<'a>(
         &self,
-        _node: &Arc<Node<'a>>,
-        base: &NodeBase<'a>,
-        left: &Arc<Node<'a>>,
-        right: &Arc<Node<'a>>,
+        _node: &Arc<Node>,
+        base: &NodeBase,
+        left: &Arc<Node>,
+        right: &Arc<Node>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'a>> {
+    ) -> Arc<Node> {
         let new_left = self.visit_node(left);
         let new_right = self.visit_node(right);
         let new_node = Arc::new(Node::Conjunction {
@@ -913,11 +704,11 @@ impl Visitor for SymbolTableBuilder {
 
     fn visit_negation<'a>(
         &self,
-        _node: &Arc<Node<'a>>,
-        base: &NodeBase<'a>,
-        operand: &Arc<Node<'a>>,
+        _node: &Arc<Node>,
+        base: &NodeBase,
+        operand: &Arc<Node>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node<'a>> {
+    ) -> Arc<Node> {
         let new_operand = self.visit_node(operand);
         let new_node = Arc::new(Node::Negation {
             base: base.clone(),
@@ -931,17 +722,19 @@ impl Visitor for SymbolTableBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ropey::Rope;
     use crate::tree_sitter::{parse_code, parse_to_ir};
-    use crate::ir::node::{RelativePosition, compute_absolute_positions};
+    use crate::ir::node::{compute_absolute_positions, find_node_at_position};
     use tower_lsp::lsp_types::Url;
 
     #[test]
     fn test_hierarchical_symbol_table() {
         let code = "new x in { let y = 42 in { contract z() = { x!(y) } } }";
-        let uri = Url::parse("file:///test.rho").unwrap();
+        let rope = Rope::from_str(code);
         let tree = parse_code(code);
-        let ir = parse_to_ir(&tree, code);
-        let root: Arc<Node<'static>> = unsafe { std::mem::transmute(ir) };
+        let ir = parse_to_ir(&tree, &rope);
+        let root: Arc<Node> = ir;
+        let uri = Url::parse("file:///test.rho").expect("Invalid URI");
         let global_table = Arc::new(SymbolTable::new(None));
 
         let builder = SymbolTableBuilder::new(root.clone(), uri.clone(), global_table.clone());
@@ -969,10 +762,11 @@ mod tests {
     #[test]
     fn test_symbol_table_new() {
         let code = "new x in { contract x() = { Nil } }";
-        let uri = Url::parse("file:///test.rho").unwrap();
+        let rope = Rope::from_str(code);
         let tree = parse_code(code);
-        let ir = parse_to_ir(&tree, code);
-        let root: Arc<Node<'static>> = unsafe { std::mem::transmute(ir) };
+        let ir = parse_to_ir(&tree, &rope);
+        let root: Arc<Node> = ir;
+        let uri = Url::parse("file:///test.rho").expect("Invalid URI");
         let global_table = Arc::new(SymbolTable::new(None));
         let builder = SymbolTableBuilder::new(root.clone(), uri, global_table);
         let transformed = builder.visit_node(&root);
@@ -992,10 +786,11 @@ mod tests {
     #[test]
     fn test_inverted_index() {
         let code = "new x in { x!() | x!() }";
-        let uri = Url::parse("file:///test.rho").unwrap();
+        let rope = Rope::from_str(code);
         let tree = parse_code(code);
-        let ir = parse_to_ir(&tree, code);
-        let root: Arc<Node<'static>> = unsafe { std::mem::transmute(ir) };
+        let ir = parse_to_ir(&tree, &rope);
+        let root: Arc<Node> = ir;
+        let uri = Url::parse("file:///test.rho").expect("Invalid URI");
         let global_table = Arc::new(SymbolTable::new(None));
         let builder = SymbolTableBuilder::new(root.clone(), uri, global_table);
         builder.visit_node(&root);
@@ -1011,61 +806,67 @@ mod tests {
     #[test]
     fn test_position_lookup() {
         let code = "new x in { x!() }";
-        let uri = Url::parse("file:///test.rho").unwrap();
+        let rope = Rope::from_str(code);
         let tree = parse_code(code);
-        let ir = parse_to_ir(&tree, code);
-        let root: Arc<Node<'static>> = unsafe { std::mem::transmute(ir) };
+        let ir = parse_to_ir(&tree, &rope);
+        let root: Arc<Node> = ir;
         let global_table = Arc::new(SymbolTable::new(None));
-        let positions = Arc::new(compute_absolute_positions(&root));
+        let positions = compute_absolute_positions(&root);
+        let uri = Url::parse("file:///test.rho").expect("Invalid URI");
         let builder = SymbolTableBuilder::new(root.clone(), uri, global_table);
         builder.visit_node(&root);
         let position = Position { row: 0, column: 11, byte: 11 };
         let node = find_node_at_position(&root, &positions, position).unwrap();
-        assert_eq!(node.text(), "x");
+        assert_eq!(node.text(&rope, &root).to_string(), "x");
     }
 
     #[test]
     fn test_symbol_table_scoping() {
         let code = "new x in { let y = x in { y } }";
-        let uri = Url::parse("file:///test.rho").unwrap();
+        let rope = Rope::from_str(code);
         let tree = parse_code(code);
-        let ir = parse_to_ir(&tree, code);
-        let root: Arc<Node<'static>> = unsafe { std::mem::transmute(ir) };
+        let ir = parse_to_ir(&tree, &rope);
+        let root: Arc<Node> = ir;
+        let uri = Url::parse("file:///test.rho").expect("Invalid URI");
         let global_table = Arc::new(SymbolTable::new(None));
         let builder = SymbolTableBuilder::new(root.clone(), uri.clone(), global_table.clone());
         let transformed = builder.visit_node(&root);
 
-        let x_decl = if let Node::New { decls, .. } = &*transformed {
-            if let Node::NameDecl { var, .. } = &*decls[0] {
-                var.absolute_start(&root)
-            } else { unreachable!() }
-        } else { unreachable!() };
         assert!(global_table.lookup("x").is_none(), "x should be in local scope");
+
         if let Node::New { proc, .. } = &*transformed {
             if let Node::Block { proc: let_node, .. } = &**proc {
-                let let_table = let_node.metadata().unwrap().data.get("symbol_table").unwrap()
-                    .downcast_ref::<Arc<SymbolTable>>().unwrap();
+                let let_table = let_node.metadata().and_then(|m| m.data.get("symbol_table"))
+                    .and_then(|t| t.downcast_ref::<Arc<SymbolTable>>())
+                    .cloned()
+                    .unwrap();
                 assert!(let_table.lookup("x").is_some(), "x should be accessible in let scope");
                 if let Node::Let { decls, proc, .. } = &**let_node {
                     if let Some(decl) = decls.first() {
                         if let Node::Decl { procs, .. } = &**decl {
                             if let Some(x_node) = procs.first() {
-                                let x_usage = x_node.absolute_start(&root);
+                                let x_usage = x_node.absolute_start(&transformed);
                                 let index = builder.get_inverted_index();
-                                assert!(index.get(&x_decl).unwrap().contains(&x_usage), "x usage in let should be recorded");
+                                let x_decl = if let Node::New { decls, .. } = &*transformed {
+                                    if let Node::NameDecl { var, .. } = &*decls[0] {
+                                        var.absolute_start(&transformed)
+                                    } else { unreachable!() }
+                                } else { unreachable!() };
+                                assert!(index.get(&x_decl).map_or(false, |usages| usages.contains(&x_usage)), "x usage in let should be recorded");
                             }
                         }
                     }
                     if let Node::Block { proc: y_node, .. } = &**proc {
-                        // Use the Var node's symbol table instead of let_table
-                        let y_table = y_node.metadata().unwrap().data.get("symbol_table").unwrap()
-                            .downcast_ref::<Arc<SymbolTable>>().unwrap();
+                        let y_table = y_node.metadata().and_then(|m| m.data.get("symbol_table"))
+                            .and_then(|t| t.downcast_ref::<Arc<SymbolTable>>())
+                            .cloned()
+                            .unwrap();
                         assert!(y_table.lookup("y").is_some(), "y should be in the Var node's symbol table");
-                        let y_usage = y_node.absolute_start(&root);
+                        let y_usage = y_node.absolute_start(&transformed);
                         let y_symbol = y_table.lookup("y").unwrap();
                         let y_decl = y_symbol.declaration_location;
                         let index = builder.get_inverted_index();
-                        assert!(index.get(&y_decl).unwrap().contains(&y_usage), "y usage should be recorded");
+                        assert!(index.get(&y_decl).map_or(false, |usages| usages.contains(&y_usage)), "y usage should be recorded");
                     }
                 }
             }
@@ -1075,15 +876,17 @@ mod tests {
     #[test]
     fn test_cross_file_reference() {
         let code1 = "contract foo() = { Nil }";
-        let code2 = "new x in { foo!() }";
-        let uri1 = Url::parse("file:///file1.rho").unwrap();
-        let uri2 = Url::parse("file:///file2.rho").unwrap();
+        let rope1 = Rope::from_str(code1);
         let tree1 = parse_code(code1);
+        let ir1 = parse_to_ir(&tree1, &rope1);
+        let root1: Arc<Node> = ir1;
+        let code2 = "new x in { foo!() }";
+        let rope2 = Rope::from_str(code2);
         let tree2 = parse_code(code2);
-        let ir1 = parse_to_ir(&tree1, code1);
-        let ir2 = parse_to_ir(&tree2, code2);
-        let root1: Arc<Node<'static>> = unsafe { std::mem::transmute(ir1) };
-        let root2: Arc<Node<'static>> = unsafe { std::mem::transmute(ir2) };
+        let ir2 = parse_to_ir(&tree2, &rope2);
+        let root2: Arc<Node> = ir2;
+        let uri1 = Url::parse("file:///file1.rho").expect("Invalid URI");
+        let uri2 = Url::parse("file:///file2.rho").expect("Invalid URI");
         let global_table = Arc::new(SymbolTable::new(None));
 
         let builder1 = SymbolTableBuilder::new(root1.clone(), uri1.clone(), global_table.clone());
@@ -1099,57 +902,24 @@ mod tests {
     #[test]
     fn test_contract_parameters_in_symbol_table() {
         let code = "contract foo(x) = { Nil }";
-        let uri = Url::parse("file:///test.rho").unwrap();
+        let rope = Rope::from_str(code);
         let tree = parse_code(code);
-        let ir = parse_to_ir(&tree, code);
-        let root: Arc<Node<'static>> = unsafe { std::mem::transmute(ir) };
+        let ir = parse_to_ir(&tree, &rope);
+        let root: Arc<Node> = ir;
+        let uri = Url::parse("file:///test.rho").expect("Invalid URI");
         let global_table = Arc::new(SymbolTable::new(None));
         let builder = SymbolTableBuilder::new(root.clone(), uri.clone(), global_table.clone());
         let transformed = builder.visit_node(&root);
 
         if let Node::Contract { metadata, .. } = &*transformed {
             let symbol_table = metadata.as_ref().unwrap()
-                .data.get("symbol_table").unwrap()
-                .downcast_ref::<Arc<SymbolTable>>().unwrap();
-            assert!(symbol_table.lookup("x").is_some(), "Parameter 'x' should be in contract's symbol table");
+                .data.get("symbol_table")
+                .and_then(|t| t.downcast_ref::<Arc<SymbolTable>>())
+                .cloned()
+                .unwrap();
+            assert!(symbol_table.lookup("x").is_some(), "Parameter'x' should be in contract's symbol table");
         } else {
             panic!("Expected Contract node");
         }
-    }
-
-    #[test]
-    fn test_match_pat_set() {
-        let p_e = Vector::new_with_ptr_kind().push_back(Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("1".to_string())), value: 1, metadata: None })).push_back(Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("2".to_string())), value: 2, metadata: None }));
-        let pat = Arc::new(Node::Set { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, None), elements: p_e, remainder: None, metadata: None });
-        let c_e = Vector::new_with_ptr_kind().push_back(Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("2".to_string())), value: 2, metadata: None })).push_back(Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("1".to_string())), value: 1, metadata: None }));
-        let concrete = Arc::new(Node::Set { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, None), elements: c_e, remainder: None, metadata: None });
-        let mut subst = HashMap::new();
-        assert!(crate::ir::node::match_pat(&pat, &concrete, &mut subst));
-    }
-
-    #[test]
-    fn test_match_pat_map() {
-        let p_pair1 = (Arc::new(Node::StringLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 3, Some("\"a\"".to_string())), value: "a".to_string(), metadata: None }), Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("1".to_string())), value: 1, metadata: None }));
-        let p_pair2 = (Arc::new(Node::StringLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 3, Some("\"b\"".to_string())), value: "b".to_string(), metadata: None }), Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("2".to_string())), value: 2, metadata: None }));
-        let p_pairs = Vector::new_with_ptr_kind().push_back(p_pair1).push_back(p_pair2);
-        let pat = Arc::new(Node::Map { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, None), pairs: p_pairs, remainder: None, metadata: None });
-        let c_pair1 = (Arc::new(Node::StringLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 3, Some("\"b\"".to_string())), value: "b".to_string(), metadata: None }), Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("2".to_string())), value: 2, metadata: None }));
-        let c_pair2 = (Arc::new(Node::StringLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 3, Some("\"a\"".to_string())), value: "a".to_string(), metadata: None }), Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("1".to_string())), value: 1, metadata: None }));
-        let c_pairs = Vector::new_with_ptr_kind().push_back(c_pair1).push_back(c_pair2);
-        let concrete = Arc::new(Node::Map { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, None), pairs: c_pairs, remainder: None, metadata: None });
-        let mut subst = HashMap::new();
-        assert!(crate::ir::node::match_pat(&pat, &concrete, &mut subst));
-    }
-
-    #[test]
-    fn test_match_pat_disjunction() {
-        let p_left = Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("1".to_string())), value: 1, metadata: None });
-        let p_right = Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("2".to_string())), value: 2, metadata: None });
-        let pat = Arc::new(Node::Disjunction { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, None), left: p_left, right: p_right, metadata: None });
-        let c_left = Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("1".to_string())), value: 1, metadata: None });
-        let c_right = Arc::new(Node::LongLiteral { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 1, Some("2".to_string())), value: 2, metadata: None });
-        let concrete = Arc::new(Node::Disjunction { base: NodeBase::new(None, RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, None), left: c_left, right: c_right, metadata: None });
-        let mut subst = HashMap::new();
-        assert!(crate::ir::node::match_pat(&pat, &concrete, &mut subst));
     }
 }

@@ -76,7 +76,7 @@ impl Pipeline {
     ///
     /// # Returns
     /// The transformed IR tree after all transformations.
-    pub fn apply<'a>(&self, tree: &Arc<Node<'a>>) -> Arc<Node<'a>> {
+    pub fn apply(&self, tree: &Arc<Node>) -> Arc<Node> {
         let order = toposort(&self.graph, None).unwrap_or_default();
         let mut current = Arc::clone(tree);
         for node_idx in order {
@@ -112,12 +112,7 @@ mod tests {
             visitor: Arc::new(IdentityVisitor),
         };
         pipeline.add_transform(transform);
-        let base = NodeBase::new(
-            None,
-            RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
-            0,
-            None,
-        );
+        let base = NodeBase::new(RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, 0, 0);
         let mut data = HashMap::new();
         data.insert("version".to_string(), Arc::new(0_usize) as Arc<dyn Any + Send + Sync>);
         let metadata = Some(Arc::new(Metadata { data }));

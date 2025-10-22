@@ -34,15 +34,18 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use walkdir::WalkDir;
 
 use crate::ir::pipeline::Pipeline;
-use crate::ir::node::{Node, Position as IrPosition, compute_absolute_positions, collect_contracts, collect_calls, match_contract, find_node_at_position_with_path};
+use crate::ir::node::{Node, Position as IrPosition, compute_absolute_positions, collect_contracts, collect_calls, match_contract, find_node_at_position_with_path, find_node_at_position};
 use crate::ir::symbol_table::{Symbol, SymbolTable, SymbolType};
-use crate::ir::transforms::symbol_table_builder::{SymbolTableBuilder, InvertedIndex, find_node_at_position};
+use crate::ir::transforms::symbol_table_builder::{SymbolTableBuilder, InvertedIndex};
 use crate::ir::transforms::document_symbol_visitor::{collect_document_symbols, collect_workspace_symbols};
 use crate::lsp::models::{CachedDocument, LspDocument, LspDocumentHistory, LspDocumentState, WorkspaceState};
-use crate::parser::Parser;
 use crate::rnode_apis::lsp::{lsp_client::LspClient, DiagnosticSeverity as LspDiagnosticSeverity, ValidateRequest};
 use crate::rnode_apis::lsp::validate_response;
 use crate::tree_sitter::{parse_code, parse_to_ir};
+
+use rholang_parser::RholangParser;
+use rholang_parser::parser::errors::ParsingError;
+use validated::Validated;
 
 /// The Rholang language server backend, managing state and handling LSP requests.
 #[derive(Debug, Clone)]
@@ -51,9 +54,8 @@ pub struct RholangBackend {
     documents_by_uri: Arc<RwLock<HashMap<Url, Arc<LspDocument>>>>,
     documents_by_id: Arc<RwLock<HashMap<u32, Arc<LspDocument>>>>,
     serial_document_id: Arc<AtomicU32>,
-    rnode_client: Arc<AsyncMutex<LspClient<Channel>>>,
+    rnode_client: Option<Arc<AsyncMutex<LspClient<Channel>>>>,
     client_process_id: Arc<Mutex<Option<u32>>>,
-    parser: Arc<AsyncMutex<Parser>>,
     workspace: Arc<RwLock<WorkspaceState>>,
     file_watcher: Arc<Mutex<Option<RecommendedWatcher>>>,
     file_events: Arc<Mutex<Receiver<notify::Result<notify::Event>>>>,
@@ -64,16 +66,16 @@ pub struct RholangBackend {
 
 impl RholangBackend {
     /// Creates a new instance of the Rholang backend with the given client and connections.
-    pub fn new(client: Client, rnode_client: LspClient<Channel>, client_process_id: Option<u32>) -> Self {
+    pub fn new(client: Client, rnode_client: Option<LspClient<Channel>>, client_process_id: Option<u32>) -> Self {
+        let rnode_client = rnode_client.map(|c| Arc::new(AsyncMutex::new(c)));
         let (tx, rx) = std::sync::mpsc::channel();
         Self {
             client,
             documents_by_uri: Arc::new(RwLock::new(HashMap::new())),
             documents_by_id: Arc::new(RwLock::new(HashMap::new())),
             serial_document_id: Arc::new(AtomicU32::new(0)),
-            rnode_client: Arc::new(AsyncMutex::new(rnode_client)),
+            rnode_client,
             client_process_id: Arc::new(Mutex::new(client_process_id)),
-            parser: Arc::new(AsyncMutex::new(Parser::new().expect("Failed to create parser"))),
             workspace: Arc::new(RwLock::new(WorkspaceState {
                 documents: HashMap::new(),
                 global_symbols: HashMap::new(),
@@ -91,11 +93,10 @@ impl RholangBackend {
     }
 
     /// Processes a parsed IR node through the transformation pipeline to build symbols and metadata.
-    async fn process_document(&self, ir: Arc<Node<'_>>, uri: &Url) -> Result<CachedDocument, String> {
+    async fn process_document(&self, ir: Arc<Node>, uri: &Url, text: &Rope) -> Result<CachedDocument, String> {
         let mut pipeline = Pipeline::new();
-        let static_ir: Arc<Node<'static>> = unsafe { std::mem::transmute(ir.clone()) };
         let global_table = self.workspace.read().await.global_table.clone();
-        let builder = Arc::new(SymbolTableBuilder::new(static_ir.clone(), uri.clone(), global_table));
+        let builder = Arc::new(SymbolTableBuilder::new(ir.clone(), uri.clone(), global_table.clone()));
         pipeline.add_transform(crate::ir::pipeline::Transform {
             id: "symbol_table_builder".to_string(),
             dependencies: vec![],
@@ -109,7 +110,10 @@ impl RholangBackend {
         let symbol_table = transformed_ir.metadata()
             .and_then(|m| m.data.get("symbol_table"))
             .map(|st| Arc::clone(st.downcast_ref::<Arc<SymbolTable>>().unwrap()))
-            .ok_or("Failed to extract symbol table")?;
+            .unwrap_or_else(|| {
+                debug!("No symbol table found on root for {}, using default empty table", uri);
+                Arc::new(SymbolTable::new(Some(global_table.clone())))
+            });
         builder.resolve_local_potentials(&symbol_table);
         let version = self.version_counter.fetch_add(1, Ordering::SeqCst);
 
@@ -123,12 +127,12 @@ impl RholangBackend {
         debug!("Collected {} contracts and {} calls in {}", contracts.len(), calls.len(), uri);
 
         Ok(CachedDocument {
-            ir: unsafe { std::mem::transmute(transformed_ir) },
-            tree: Arc::new(parse_code(&ir.text())),
+            ir: transformed_ir,
+            tree: Arc::new(parse_code("")), // Tree is not used for text, but keep for other
             symbol_table,
             inverted_index,
             version,
-            text: Rope::from_str(&ir.text()),
+            text: text.clone(),
             positions,
             potential_global_refs,
         })
@@ -161,8 +165,9 @@ impl RholangBackend {
         drop(workspace);
 
         let tree = Arc::new(tree.unwrap_or_else(|| parse_code(text)));
-        let ir = parse_to_ir(&tree, text);
-        let cached = self.process_document(ir, uri).await?;
+        let rope = Rope::from_str(text);
+        let ir = parse_to_ir(&tree, &rope);
+        let cached = self.process_document(ir, uri, &rope).await?;
         let mut workspace = self.workspace.write().await;
         let mut contracts = Vec::new();
         collect_contracts(&cached.ir, &mut contracts);
@@ -281,112 +286,139 @@ impl RholangBackend {
             return Ok(Vec::new());
         }
 
-        // Local validation using the parser
-        let mut parser = self.parser.lock().await;
-        let diagnostics = match parser.validate(text) {
-            Ok(()) => Vec::new(),
-            Err(parse_error) => {
-                let position = parse_error.position;
-                let (line, character) = if let Some(pos) = position {
-                    if pos.line > 0 && pos.column > 0 {
-                        (pos.line as u32 - 1, pos.column as u32 - 1)
-                    } else {
-                        debug!("Invalid error position from parser: {:?}", pos);
-                        let (line, character) = document.last_linecol().await;
-                        (line as u32, character as u32)
-                    }
-                } else {
-                    debug!("No error position provided by parser, using end of document");
-                    let (line, character) = document.last_linecol().await;
-                    (line as u32, character as u32)
-                };
-                vec![Diagnostic {
-                    range: Range {
-                        start: LspPosition { line, character },
-                        end: LspPosition { line, character },
-                    },
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    source: Some("rholang-parser".to_string()),
-                    message: parse_error.message,
-                    ..Default::default()
-                }]
+        // Local validation
+        let local_diagnostics = {
+            let parser = RholangParser::new();
+            match parser.parse(&text) {
+                Validated::Good(_) => {
+                    debug!("Syntax validation successful for code snippet");
+                    Vec::new()
+                }
+                Validated::Fail(failures) => {
+                    let total_errors: usize = failures.iter().map(|f| f.errors.len().get()).sum();
+                    error!("Syntax validation failed with {} errors", total_errors);
+                    failures.into_iter().flat_map(|failure| {
+                        failure.errors.into_iter().map(|err| {
+                            let range = Range {
+                                start: LspPosition {
+                                    line: (err.span.start.line - 1) as u32,
+                                    character: (err.span.start.col - 1) as u32,
+                                },
+                                end: LspPosition {
+                                    line: (err.span.end.line - 1) as u32,
+                                    character: (err.span.end.col - 1) as u32,
+                                },
+                            };
+                            let message = match err.error {
+                                ParsingError::SyntaxError { sexp } => format!("Syntax error: {}", sexp),
+                                ParsingError::MissingToken(token) => format!("Missing token: {}", token),
+                                ParsingError::Unexpected(c) => format!("Unexpected character: {}", c),
+                                ParsingError::UnexpectedVar => "Unexpected variable".to_string(),
+                                ParsingError::UnexpectedMatchAfter { rule, offender } => format!("Unexpected {} after {}", offender, rule),
+                                ParsingError::NumberOutOfRange => "Number out of range".to_string(),
+                                ParsingError::DuplicateNameDecl { first, second } => format!("Duplicate name declaration at {} and {}", first, second),
+                                ParsingError::MalformedLetDecl { lhs_arity, rhs_arity } => format!("Malformed let declaration: LHS arity {} != RHS arity {}", lhs_arity, rhs_arity),
+                                ParsingError::UnexpectedQuote => "Unexpected quote character".to_string(),
+                            };
+                            Diagnostic {
+                                range,
+                                severity: Some(DiagnosticSeverity::ERROR),
+                                source: Some("rholang-parser".to_string()),
+                                message,
+                                ..Default::default()
+                            }
+                        }).collect::<Vec<_>>()
+                    }).collect::<Vec<_>>()
+                }
             }
         };
 
-        if !diagnostics.is_empty() {
-            info!("Local syntax errors found for URI={} (version={}): {:?}",
-                  state.uri, version, diagnostics);
-            return Ok(diagnostics);
-        }
+        if let Some(rnode_client) = &self.rnode_client {
+            if !local_diagnostics.is_empty() {
+                info!("Local syntax errors found for URI={} (version={}): {:?}",
+                      state.uri, version, local_diagnostics);
+                return Ok(local_diagnostics);
+            }
 
-        // Remote validation using RNode if local validation passes
-        let mut client = self.rnode_client.lock().await.clone();
-        let request = Request::new(ValidateRequest {
-            text: text.to_string(),
-        });
-        match client.validate(request).await {
-            Ok(response) => match response.into_inner().result {
-                Some(result) => match result {
-                    validate_response::Result::Success(diagnostic_list) => {
-                        let diagnostics = diagnostic_list
-                            .diagnostics
-                            .into_iter()
-                            .map(|diagnostic| {
-                                let range = diagnostic.range.expect("Missing range in diagnostic");
-                                let start = range.start.expect("Missing start position");
-                                let end = range.end.expect("Missing end position");
-                                let severity = match LspDiagnosticSeverity::try_from(diagnostic.severity) {
-                                    Ok(severity) => match severity {
-                                        LspDiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
-                                        LspDiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
-                                        LspDiagnosticSeverity::Information => DiagnosticSeverity::INFORMATION,
-                                        LspDiagnosticSeverity::Hint => DiagnosticSeverity::HINT,
-                                    },
-                                    Err(e) => {
-                                        error!("Invalid DiagnosticSeverity: {}", e);
-                                        DiagnosticSeverity::ERROR
+            // Remote validation using RNode if local validation passes
+            let mut client = rnode_client.lock().await.clone();
+            let request = Request::new(ValidateRequest {
+                text: text.to_string(),
+            });
+            match client.validate(request).await {
+                Ok(response) => match response.into_inner().result{
+                    Some(result) => match result {
+                        validate_response::Result::Success(diagnostic_list) => {
+                            let diagnostics = diagnostic_list
+                                .diagnostics
+                                .into_iter()
+                                .map(|diagnostic| {
+                                    let range = diagnostic.range.expect("Missing range in diagnostic");
+                                    let start = range.start.expect("Missing start position");
+                                    let end = range.end.expect("Missing end position");
+                                    let severity = match LspDiagnosticSeverity::try_from(diagnostic.severity) {
+                                        Ok(severity) => match severity {
+                                            LspDiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
+                                            LspDiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
+                                            LspDiagnosticSeverity::Information => DiagnosticSeverity::INFORMATION,
+                                            LspDiagnosticSeverity::Hint => DiagnosticSeverity::HINT,
+                                        },
+                                        Err(e) => {
+                                            error!("Invalid DiagnosticSeverity: {}", e);
+                                            DiagnosticSeverity::ERROR
+                                        }
+                                    };
+                                    Diagnostic {
+                                        range: Range {
+                                            start: LspPosition {
+                                                line: start.line as u32,
+                                                character: start.column as u32,
+                                            },
+                                            end: LspPosition {
+                                                line: end.line as u32,
+                                                character: end.column as u32,
+                                            },
+                                        },
+                                        severity: Some(severity),
+                                        source: Some(diagnostic.source),
+                                        message: diagnostic.message,
+                                        ..Default::default()
                                     }
-                                };
-                                Diagnostic {
-                                    range: Range {
-                                        start: LspPosition {
-                                            line: start.line as u32,
-                                            character: start.column as u32,
-                                        },
-                                        end: LspPosition {
-                                            line: end.line as u32,
-                                            character: end.column as u32,
-                                        },
-                                    },
-                                    severity: Some(severity),
-                                    source: Some(diagnostic.source),
-                                    message: diagnostic.message,
-                                    ..Default::default()
-                                }
-                            })
-                            .collect();
-                        info!("RNode validation diagnostics for URI={} (version={}): {:?}", state.uri, version, diagnostics);
-                        Ok(diagnostics)
-                    }
-                    validate_response::Result::Error(message) => Err(format!(
-                        "RNode validation failed for URI={}: {}",
-                        state.uri, message
-                    )),
+                                })
+                                .collect();
+                            info!("RNode validation diagnostics for URI={} (version={}): {:?}", state.uri, version, diagnostics);
+                            Ok(diagnostics)
+                        }
+                        validate_response::Result::Error(message) => Err(format!(
+                            "RNode validation failed for URI={}: {}",
+                            state.uri, message
+                        )),
+                    },
+                    None => Err("RNode returned no response".to_string()),
                 },
-                None => Err("RNode returned no response".to_string()),
-            },
-            Err(e) => Err(format!(
-                "Failed to communicate with RNode for URI={}: {}",
-                state.uri, e
-            )),
+                Err(e) => Err(format!(
+                    "Failed to communicate with RNode for URI={}: {}",
+                    state.uri, e
+                )),
+            }
+        } else {
+            if local_diagnostics.is_empty() {
+                debug!("RNode disabled; skipping semantic validation for URI={}", state.uri);
+            }
+            Ok(local_diagnostics)
         }
     }
 
     /// Looks up the IR node, its symbol table, and inverted index at a given position in the document.
-    pub async fn lookup_node_at_position(&self, uri: &Url, position: IrPosition) -> Option<(Arc<Node<'static>>, Arc<SymbolTable>, InvertedIndex)> {
-        let workspace = self.workspace.read().await;
-        if let Some(doc) = workspace.documents.get(uri) {
-            if let Some(node) = find_node_at_position(&doc.ir, &doc.positions, position) {
+    pub async fn lookup_node_at_position(&self, uri: &Url, position: IrPosition) -> Option<(Arc<Node>, Arc<SymbolTable>, InvertedIndex)> {
+        let opt_doc = {
+            debug!("Acquiring workspace read lock for symbol at {}:{:?}", uri, position);
+            let workspace = self.workspace.read().await;
+            debug!("Workspace read lock acquired for {}:{:?}", uri, position);
+            workspace.documents.get(uri).cloned()
+        };
+        if let Some(doc) = opt_doc {
+            if let Some(node) = find_node_at_position(&doc.ir, &*doc.positions, position) {
                 let symbol_table = node.metadata()
                     .and_then(|m| m.data.get("symbol_table"))
                     .and_then(|t| t.downcast_ref::<Arc<SymbolTable>>())
@@ -428,33 +460,275 @@ impl RholangBackend {
                     column: position.character as usize,
                     byte,
                 };
-                if let Some((node, symbol_table, _)) = self.lookup_node_at_position(uri, pos).await {
-                    if let Node::Var { name, .. } = &*node {
-                        if let Some(symbol) = symbol_table.lookup(name) {
-                            debug!("Found symbol '{}' at {}:{} in {}",
-                                name, position.line, position.character, uri);
-                            return Some(symbol);
-                        } else {
-                            // Search global symbols for unbound references
-                            let workspace = self.workspace.read().await;
-                            if let Some((def_uri, def_pos)) = workspace.global_symbols.get(name).cloned() {
-                                debug!("Found global symbol '{}' for unbound reference at {}:{} in {}",
+
+                // Get node with path for parent checking
+                let (node_path_opt, symbol_table_opt) = {
+                    let opt_doc = {
+                        let workspace = self.workspace.read().await;
+                        workspace.documents.get(&uri).cloned()
+                    };
+                    if let Some(doc) = opt_doc {
+                        let path_result = find_node_at_position_with_path(&doc.ir, &*doc.positions, pos);
+                        let symbol_table = path_result.as_ref().and_then(|(node, _)| {
+                            node.metadata()
+                                .and_then(|m| m.data.get("symbol_table"))
+                                .and_then(|t| t.downcast_ref::<Arc<SymbolTable>>())
+                                .cloned()
+                        }).unwrap_or_else(|| doc.symbol_table.clone());
+                        (path_result, Some(symbol_table))
+                    } else {
+                        (None, None)
+                    }
+                };
+
+                if let (Some((node, path)), Some(symbol_table)) = (node_path_opt, symbol_table_opt) {
+                    debug!("Node at position: {}", match &*node {
+                        Node::Var {..} => "Var",
+                        Node::Contract {..} => "Contract",
+                        Node::Send {..} => "Send",
+                        Node::SendSync {..} => "SendSync",
+                        Node::Par {..} => "Par",
+                        Node::New {..} => "New",
+                        Node::Bundle {..} => "Bundle",
+                        Node::Match {..} => "Match",
+                        _ => "Other"
+                    });
+                    match &*node {
+                        Node::Var { name, .. } => {
+                            // Check if this Var is the name of a Contract (path should be [..., Contract, Var])
+                            if path.len() >= 2 {
+                                if let Node::Contract { name: contract_name, .. } = &*path[path.len() - 2] {
+                                    if Arc::ptr_eq(contract_name, &node) {
+                                        // This Var is a contract name - handle as global symbol
+                                        debug!("Var '{}' is a contract name", name);
+                                        let workspace = self.workspace.read().await;
+                                        if let Some((def_uri, def_pos)) = workspace.global_symbols.get(name).cloned() {
+                                            debug!("Found global contract symbol '{}' at {}:{} in {}",
+                                                name, position.line, position.character, uri);
+                                            return Some(Arc::new(Symbol {
+                                                name: name.to_string(),
+                                                symbol_type: SymbolType::Contract,
+                                                declaration_uri: def_uri.clone(),
+                                                declaration_location: def_pos,
+                                                definition_location: Some(def_pos),
+                                            }));
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Handle regular variables
+                            if let Some(symbol) = symbol_table.lookup(name) {
+                                debug!("Found symbol '{}' at {}:{} in {}",
                                     name, position.line, position.character, uri);
-                                return Some(Arc::new(Symbol {
-                                    name: name.to_string(),
-                                    symbol_type: SymbolType::Contract,
-                                    declaration_uri: def_uri.clone(),
-                                    declaration_location: def_pos,
-                                    definition_location: Some(def_pos),
-                                }));
+                                return Some(symbol);
                             } else {
-                                debug!("Symbol '{}' at {}:{} in {} not found in symbol table or global",
-                                    name, position.line, position.character, uri);
+                                // Search global symbols for unbound references
+                                let workspace = self.workspace.read().await;
+                                if let Some((def_uri, def_pos)) = workspace.global_symbols.get(name).cloned() {
+                                    debug!("Found global symbol '{}' for unbound reference at {}:{} in {}",
+                                        name, position.line, position.character, uri);
+                                    return Some(Arc::new(Symbol {
+                                        name: name.to_string(),
+                                        symbol_type: SymbolType::Contract,
+                                        declaration_uri: def_uri.clone(),
+                                        declaration_location: def_pos,
+                                        definition_location: Some(def_pos),
+                                    }));
+                                } else {
+                                    debug!("Symbol '{}' at {}:{} in {} not found in symbol table or global",
+                                        name, position.line, position.character, uri);
+                                }
                             }
                         }
-                    } else {
-                        debug!("Node at {}:{} in {} is not a Var node",
-                            position.line, position.character, uri);
+                        Node::Contract { name, .. } => {
+                            // Handle contract declarations
+                            if let Node::Var { name: contract_name, .. } = &**name {
+                                let workspace = self.workspace.read().await;
+                                if let Some((def_uri, def_pos)) = workspace.global_symbols.get(contract_name).cloned() {
+                                    debug!("Found contract symbol '{}' at {}:{} in {}",
+                                        contract_name, position.line, position.character, uri);
+                                    return Some(Arc::new(Symbol {
+                                        name: contract_name.to_string(),
+                                        symbol_type: SymbolType::Contract,
+                                        declaration_uri: def_uri.clone(),
+                                        declaration_location: def_pos,
+                                        definition_location: Some(def_pos),
+                                    }));
+                                }
+                            }
+                        }
+                        Node::Send { channel, inputs, .. } | Node::SendSync { channel, inputs, .. } => {
+                            // Handle contract calls like foo!(42) and positions on send inputs
+                            let workspace = self.workspace.read().await;
+                            if let Some(doc) = workspace.documents.get(&uri) {
+                                // First check if position is within the channel node
+                                let channel_key = &**channel as *const Node as usize;
+                                if let Some(&(ch_start, ch_end)) = doc.positions.get(&channel_key) {
+                                    debug!("Send channel position: start={:?}, end={:?}, cursor={}",
+                                        ch_start, ch_end, byte);
+                                    if ch_start.byte <= byte && byte <= ch_end.byte {
+                                        // Position is within the channel, extract the name
+                                        if let Node::Var { name: channel_name, .. } = &**channel {
+                                            debug!("Send channel is Var '{}'", channel_name);
+                                            if let Some((def_uri, def_pos)) = workspace.global_symbols.get(channel_name).cloned() {
+                                                debug!("Found global contract symbol '{}' for Send at {}:{} in {}",
+                                                    channel_name, position.line, position.character, uri);
+                                                return Some(Arc::new(Symbol {
+                                                    name: channel_name.to_string(),
+                                                    symbol_type: SymbolType::Contract,
+                                                    declaration_uri: def_uri.clone(),
+                                                    declaration_location: def_pos,
+                                                    definition_location: Some(def_pos),
+                                                }));
+                                            } else {
+                                                // Check symbol table for local variables
+                                                if let Some(symbol) = symbol_table.lookup(channel_name) {
+                                                    debug!("Found local symbol '{}' for Send at {}:{} in {}",
+                                                        channel_name, position.line, position.character, uri);
+                                                    return Some(symbol);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Check if position is within any of the Send's inputs
+                                for input in inputs {
+                                    let input_key = &**input as *const Node as usize;
+                                    if let Some(&(input_start, input_end)) = doc.positions.get(&input_key) {
+                                        debug!("Send input position: start={:?}, end={:?}, cursor={}",
+                                            input_start, input_end, byte);
+                                        // Allow a small tolerance for position matching
+                                        let tolerance = 2; // bytes
+                                        if input_start.byte.saturating_sub(tolerance) <= byte && byte <= input_end.byte {
+                                            if let Node::Var { name: input_name, .. } = &**input {
+                                                debug!("Position within Send input Var '{}'", input_name);
+                                                // Use the input node's own symbol table if it has one, which should include all parent scopes
+                                                let input_symbol_table = input.metadata()
+                                                    .and_then(|m| m.data.get("symbol_table"))
+                                                    .and_then(|t| t.downcast_ref::<Arc<SymbolTable>>())
+                                                    .cloned()
+                                                    .unwrap_or_else(|| doc.symbol_table.clone());
+
+                                                if let Some(symbol) = input_symbol_table.lookup(input_name) {
+                                                    debug!("Found local symbol '{}' for Send input at {}:{} in {}",
+                                                        input_name, position.line, position.character, uri);
+                                                    return Some(symbol);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Node::Par { .. } => {
+                            // When clicking on a contract name or call site in a Par, we might get a Par node.
+                            // The node returned by find_node_at_position might be a nested Par,
+                            // so we need to search from the document root to find all relevant nodes.
+                            let workspace = self.workspace.read().await;
+                            if let Some(doc) = workspace.documents.get(&uri) {
+                                // First, check if position is within any Send/SendSync channel or inputs
+                                let mut sends = Vec::new();
+                                collect_calls(&doc.ir, &mut sends);
+                                debug!("Found {} send nodes in document", sends.len());
+                                for send in sends {
+                                    let (channel, inputs) = match &*send {
+                                        Node::Send { channel, inputs, .. } => (channel, inputs),
+                                        Node::SendSync { channel, inputs, .. } => (channel, inputs),
+                                        _ => continue,
+                                    };
+
+                                    // Check channel first
+                                    let channel_key = &**channel as *const Node as usize;
+                                    if let Some(&(ch_start, ch_end)) = doc.positions.get(&channel_key) {
+                                        debug!("Send channel position: start={:?}, end={:?}, cursor={}",
+                                            ch_start, ch_end, byte);
+                                        // Check if position is within or just before the channel
+                                        // (allowing for whitespace/offset differences)
+                                        let tolerance = 5; // bytes
+                                        if ch_start.byte.saturating_sub(tolerance) <= byte && byte <= ch_end.byte {
+                                            if let Node::Var { name: channel_name, .. } = &**channel {
+                                                debug!("Position within Send channel Var '{}'", channel_name);
+                                                // First try symbol table for local variables
+                                                if let Some(symbol) = symbol_table.lookup(channel_name) {
+                                                    debug!("Found local symbol '{}' for Send at {}:{} in {}",
+                                                        channel_name, position.line, position.character, uri);
+                                                    return Some(symbol);
+                                                } else if let Some((def_uri, def_pos)) = workspace.global_symbols.get(channel_name).cloned() {
+                                                    debug!("Found global contract symbol '{}' for Send at {}:{} in {}",
+                                                        channel_name, position.line, position.character, uri);
+                                                    return Some(Arc::new(Symbol {
+                                                        name: channel_name.to_string(),
+                                                        symbol_type: SymbolType::Contract,
+                                                        declaration_uri: def_uri.clone(),
+                                                        declaration_location: def_pos,
+                                                        definition_location: Some(def_pos),
+                                                    }));
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Check if position is within any of the Send's inputs
+                                    for input in inputs {
+                                        let input_key = &**input as *const Node as usize;
+                                        if let Some(&(input_start, input_end)) = doc.positions.get(&input_key) {
+                                            debug!("Send input position: start={:?}, end={:?}, cursor={}",
+                                                input_start, input_end, byte);
+                                            // Allow a small tolerance for position matching
+                                            let tolerance = 2; // bytes
+                                            if input_start.byte.saturating_sub(tolerance) <= byte && byte <= input_end.byte {
+                                                if let Node::Var { name: input_name, .. } = &**input {
+                                                    debug!("Position within Send input Var '{}'", input_name);
+                                                    if let Some(symbol) = symbol_table.lookup(input_name) {
+                                                        debug!("Found local symbol '{}' for Send input at {}:{} in {}",
+                                                            input_name, position.line, position.character, uri);
+                                                        return Some(symbol);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Next, check if position is within any contract's name
+                                let mut contracts = Vec::new();
+                                collect_contracts(&doc.ir, &mut contracts);
+                                debug!("Found {} contracts in document", contracts.len());
+                                for contract in contracts {
+                                    if let Node::Contract { name, .. } = &*contract {
+                                        if let Node::Var { name: contract_name, .. } = &**name {
+                                            let key = &**name as *const Node as usize;
+                                            if let Some(&(start, end)) = doc.positions.get(&key) {
+                                                debug!("Contract '{}' name position: start={:?}, end={:?}, byte={}",
+                                                    contract_name, start, end, byte);
+                                                if start.byte <= byte && byte <= end.byte {
+                                                    debug!("Position is within contract name '{}' in document", contract_name);
+                                                    if let Some((def_uri, def_pos)) = workspace.global_symbols.get(contract_name).cloned() {
+                                                        debug!("Found global contract symbol '{}' at {}:{} in {}",
+                                                            contract_name, position.line, position.character, uri);
+                                                        return Some(Arc::new(Symbol {
+                                                            name: contract_name.to_string(),
+                                                            symbol_type: SymbolType::Contract,
+                                                            declaration_uri: def_uri.clone(),
+                                                            declaration_location: def_pos,
+                                                            definition_location: Some(def_pos),
+                                                        }));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            debug!("Node at {}:{} in {} is Par but position not in any contract names or send channels",
+                                position.line, position.character, uri);
+                        }
+                        _ => {
+                            debug!("Node at {}:{} in {} is not a supported node type",
+                                position.line, position.character, uri);
+                        }
                     }
                 } else {
                     debug!("Invalid position {}:{} in {}",
@@ -519,7 +793,21 @@ impl RholangBackend {
 
     /// Computes the byte offset from a line and character position in the source text.
     pub fn byte_offset_from_position(text: &Rope, line: usize, character: usize) -> Option<usize> {
-        text.try_line_to_byte(line).ok().map(|b| b + text.line(line).char_to_byte(character.min(text.line(line).len_chars())))
+        // Check if line is within bounds
+        if line >= text.len_lines() {
+            debug!("Line {} out of bounds (rope has {} lines)", line, text.len_lines());
+            return None;
+        }
+
+        text.try_line_to_byte(line).ok().map(|line_start_byte| {
+            let line_text = text.line(line);
+            let char_offset = character.min(line_text.len_chars());
+            let byte_in_line = line_text.char_to_byte(char_offset);
+            let total_byte = line_start_byte + byte_in_line;
+            debug!("byte_offset_from_position: line={}, character={}, line_start_byte={}, char_offset={}, byte_in_line={}, total_byte={}, line_text={:?}, total_text_len={}",
+                line, character, line_start_byte, char_offset, byte_in_line, total_byte, line_text.to_string(), text.len_bytes());
+            total_byte
+        })
     }
 }
 
@@ -666,7 +954,12 @@ impl LanguageServer for RholangBackend {
             id: document_id,
             state: RwLock::new(LspDocumentState {
                 uri: uri.clone(),
-                text: Rope::from_str(&text),
+                text: {
+                    let rope = Rope::from_str(&text);
+                    debug!("Created rope from text with {} lines for URI {}", rope.len_lines(), uri);
+                    debug!("Text: {:?}", &text);
+                    rope
+                },
                 version,
                 history: LspDocumentHistory {
                     text: text.clone(),
@@ -684,27 +977,21 @@ impl LanguageServer for RholangBackend {
             Err(e) => error!("Failed to index file: {}", e),
         }
 
-        // Spawn validation in blocking task with separate runtime to avoid runtime interference
+        // Spawn async validation task
         let backend = self.clone();
         let uri_clone = uri.clone();
         let document_clone = document.clone();
         let text_clone = text.clone();
-        tokio::spawn(tokio::task::spawn_blocking(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("Failed to create runtime for validation");
-            rt.block_on(async {
-                match backend.validate(document_clone.clone(), &text_clone, version).await {
-                    Ok(diagnostics) => {
-                        if document_clone.version().await == version {
-                            backend.client.publish_diagnostics(uri_clone, diagnostics, Some(version)).await;
-                        }
+        tokio::spawn(async move {
+            match backend.validate(document_clone.clone(), &text_clone, version).await {
+                Ok(diagnostics) => {
+                    if document_clone.version().await == version {
+                        backend.client.publish_diagnostics(uri_clone, diagnostics, Some(version)).await;
                     }
-                    Err(e) => error!("Validation failed for URI={}: {}", uri_clone, e),
                 }
-            });
-        }));
+                Err(e) => error!("Validation failed for URI={}: {}", uri_clone, e),
+            }
+        });
     }
 
     /// Handles changes to a text document, applying incremental updates and re-validating.
@@ -721,25 +1008,21 @@ impl LanguageServer for RholangBackend {
                     }
                     Err(e) => warn!("Failed to update {}: {}", uri, e),
                 }
-                // Spawn validation in blocking task with separate runtime to avoid runtime interference
+                // Spawn async validation task
                 let backend = self.clone();
                 let uri_clone = uri.clone();
                 let document_clone = document.clone();
                 let text_clone = text.clone();
-                tokio::spawn(tokio::task::spawn_blocking(move || {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .expect("Failed to create runtime for validation");
-                    rt.block_on(async {
-                        match backend.validate(document_clone.clone(), &text_clone, version).await {
-                            Ok(diagnostics) => {
+                tokio::spawn(async move {
+                    match backend.validate(document_clone.clone(), &text_clone, version).await {
+                        Ok(diagnostics) => {
+                            if document_clone.version().await == version {
                                 backend.client.publish_diagnostics(uri_clone, diagnostics, Some(version)).await;
                             }
-                            Err(e) => error!("Validation failed for URI={}: {}", uri_clone, e),
                         }
-                    });
-                }));
+                        Err(e) => error!("Validation failed for URI={}: {}", uri_clone, e),
+                    }
+                });
             } else {
                 warn!("Failed to apply changes to document with URI={}", uri);
             }
@@ -827,7 +1110,7 @@ impl LanguageServer for RholangBackend {
                 let text = &doc.text;
                 Self::byte_offset_from_position(text, lsp_pos.line as usize, lsp_pos.character as usize)
             } else {
-                debug!("Document {} not found in workspace", uri);
+                debug!("Document not found in workspace: {}", uri);
                 return Ok(None);
             }
         };
@@ -843,8 +1126,9 @@ impl LanguageServer for RholangBackend {
         let workspace = self.workspace.read().await;
         if let Some(doc) = workspace.documents.get(&uri) {
             debug!("Document found in workspace: {}", uri);
-            if let Some((node, path)) = find_node_at_position_with_path(&doc.ir, &doc.positions, ir_pos) {
-                debug!("Found node at position: '{}'", node.text());
+            let root = &doc.ir;
+            if let Some((node, path)) = find_node_at_position_with_path(root, &*doc.positions, ir_pos) {
+                debug!("Found node at position: '{}'", node.text(&doc.text, root).to_string());
                 if path.len() >= 2 {
                     let parent = path[path.len() - 2].clone();
                     let is_channel = match &*parent {
@@ -855,8 +1139,9 @@ impl LanguageServer for RholangBackend {
                     if is_channel {
                         if let Node::Send { channel, inputs, .. } | Node::SendSync { channel, inputs, .. } = &*parent {
                             let matching = workspace.global_contracts.iter().filter(|(_, contract)| match_contract(channel, inputs, contract)).map(|(u, c)| {
-                                let file_ir = workspace.documents.get(u).expect("Document not found").ir.clone();
-                                debug!("Matched contract in {}: '{}'", u, c.text());
+                                let cached_doc = workspace.documents.get(u).expect("Document not found");
+                                let positions = cached_doc.positions.clone();
+                                debug!("Matched contract in {}: '{}'", u, c.text(&cached_doc.text, &cached_doc.ir).to_string());
                                 let name = if let Node::Contract { name, .. } = &**c {
                                     debug!("Contact name: {:?}", name);
                                     name
@@ -865,9 +1150,11 @@ impl LanguageServer for RholangBackend {
                                     unreachable!()
                                 };
                                 debug!("Found contract name");
+                                let key = &**name as *const Node as usize;
+                                let (start, _) = (*positions).get(&key).unwrap();
                                 Location {
                                     uri: u.clone(),
-                                    range: Self::position_to_range(name.absolute_start(&file_ir), name.text().len()),
+                                    range: Self::position_to_range(*start, name.text(&cached_doc.text, &cached_doc.ir).len_chars()),
                                 }
                             }).collect::<Vec<_>>();
                             debug!("Found {} matching contracts", matching.len());
@@ -970,8 +1257,9 @@ impl LanguageServer for RholangBackend {
         let workspace = self.workspace.read().await;
         if let Some(doc) = workspace.documents.get(&uri) {
             debug!("Document found in workspace: {}", uri);
-            if let Some((node, path)) = find_node_at_position_with_path(&doc.ir, &doc.positions, ir_pos) {
-                debug!("Found node at position: '{}'", node.text());
+            let root = &doc.ir;
+            if let Some((node, path)) = find_node_at_position_with_path(root, &*doc.positions, ir_pos) {
+                debug!("Found node at position: '{}'", node.text(&doc.text, root).to_string());
                 if path.len() >= 2 {
                     let parent = path[path.len() - 2].clone();
                     let is_name = match &*parent {
@@ -991,21 +1279,25 @@ impl LanguageServer for RholangBackend {
                                 }
                             }).cloned().collect::<Vec<_>>();
                             debug!("Found {} matching calls for contract", matching_calls.len());
-                            let mut locations = matching_calls.iter().map(|(u, call)| {
-                                let file_ir = workspace.documents.get(u).expect("Document not found").ir.clone();
-                                debug!("Matched call in {}: '{}'", u, call.text());
-                                match &**call {
-                                    Node::Send { channel, .. } | Node::SendSync { channel, .. } => {
-                                        Location {
-                                            uri: u.clone(),
-                                            range: Self::position_to_range(channel.absolute_start(&file_ir), channel.text().len()),
-                                        }
-                                    }
+                            let mut locations = matching_calls.iter().map(|(call_uri, call)| {
+                                let call_doc = workspace.documents.get(call_uri).expect("Document not found");
+                                let call_positions = call_doc.positions.clone();
+                                debug!("Matched call in {}: '{}'", call_uri, call.text(&call_doc.text, &call_doc.ir).to_string());
+                                let channel = match &**call {
+                                    Node::Send { channel, .. } | Node::SendSync { channel, .. } => channel.clone(),
                                     _ => unreachable!()
+                                };
+                                let key = &*channel as *const Node as usize;
+                                let (start, _) = (*call_positions).get(&key).unwrap();
+                                Location {
+                                    uri: call_uri.clone(),
+                                    range: Self::position_to_range(*start, channel.text(&call_doc.text, &call_doc.ir).len_chars()),
                                 }
                             }).collect::<Vec<_>>();
                             if include_decl {
-                                let decl_range = Self::position_to_range(node.absolute_start(&doc.ir), node.text().len());
+                                let key = &*node as *const Node as usize;
+                                let (start, _) = (*doc.positions).get(&key).unwrap();
+                                let decl_range = Self::position_to_range(*start, node.text(&doc.text, root).len_chars());
                                 locations.push(Location { uri: uri.clone(), range: decl_range });
                             }
                             Ok(Some(locations))
@@ -1050,7 +1342,7 @@ impl LanguageServer for RholangBackend {
         debug!("Handling documentSymbol request for {}", uri);
         let workspace = self.workspace.read().await;
         if let Some(doc) = workspace.documents.get(&uri) {
-            let symbols = collect_document_symbols(&doc.ir, &doc.positions);
+            let symbols = collect_document_symbols(&doc.ir, &*doc.positions);
             debug!("Found {} symbols in document {}", symbols.len(), uri);
             Ok(Some(DocumentSymbolResponse::Nested(symbols)))
         } else {
