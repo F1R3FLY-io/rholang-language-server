@@ -49,6 +49,7 @@ struct ServerConfig {
     rnode_port: u16,
     client_process_id: Option<u32>,
     no_rnode: bool,
+    validator_backend: Option<String>,
 }
 
 impl ServerConfig {
@@ -117,6 +118,12 @@ impl ServerConfig {
             pipe: Option<String>,
             #[arg(long, help = "Disable RNode integration for semantic analysis (rely on parser only)")]
             no_rnode: bool,
+            #[arg(
+                long,
+                help = "Validator backend to use: 'rust' for embedded interpreter, or 'grpc:<address>:<port>' for RNode server. Can be set via RHOLANG_VALIDATOR_BACKEND env variable. Defaults to 'rust' if interpreter feature enabled, otherwise 'grpc:localhost:40402'.",
+                value_name = "BACKEND"
+            )]
+            validator_backend: Option<String>,
         }
 
         let args = Args::parse();
@@ -169,6 +176,11 @@ impl ServerConfig {
             }
         };
 
+        // Check for validator backend from env or CLI
+        let validator_backend = args.validator_backend.or_else(|| {
+            std::env::var("RHOLANG_VALIDATOR_BACKEND").ok()
+        });
+
         Ok(ServerConfig {
             log_level: args.log_level,
             no_color: args.no_color,
@@ -177,6 +189,7 @@ impl ServerConfig {
             rnode_port,
             client_process_id: args.client_process_id,
             no_rnode: args.no_rnode,
+            validator_backend,
         })
     }
 }
@@ -401,13 +414,28 @@ async fn serve_connection<R, W>(
     conn_manager: &ConnectionManager,
     client_process_id: Option<u32>,
     pid_channel: Option<tokio::sync::mpsc::Sender<u32>>,
+    validator_backend: Option<String>,
 ) where
     R: tokio::io::AsyncRead + Send + Unpin + 'static,
     W: tokio::io::AsyncWrite + Send + Unpin + 'static,
 {
     info!("Accepted connection from {}", addr);
+
+    // Determine gRPC address from CLI arg, or fall back to rnode_client if present
+    let grpc_address = validator_backend.or_else(|| {
+        rnode_client.as_ref().map(|_| "grpc:localhost:40402".to_string())
+    });
+
     let (service, socket) = LspService::new(|client| {
-        Arc::new(RholangBackend::new(client, rnode_client, client_process_id, pid_channel.clone()))
+        // Block on async backend creation (only happens once during initialization)
+        let backend = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                RholangBackend::new(client, grpc_address.clone(), client_process_id, pid_channel.clone())
+                    .await
+                    .expect("Failed to create Rholang backend")
+            })
+        });
+        Arc::new(backend)
     });
     let (conn_tx, conn_rx) = oneshot::channel::<()>();
     conn_manager.add_connection(conn_tx).await;
@@ -485,8 +513,20 @@ async fn run_stdio_server(
     // Create reactive channel for PID events
     let (pid_tx, mut pid_rx) = tokio::sync::mpsc::channel::<u32>(1);
 
+    // Determine gRPC address from CLI arg, or fall back to rnode_client if present
+    let grpc_address = config.validator_backend.clone().or_else(|| {
+        rnode_client.as_ref().map(|_| "grpc:localhost:40402".to_string())
+    });
+
     let (service, socket) = LspService::build(|client| {
-        RholangBackend::new(client, rnode_client.clone(), config.client_process_id, Some(pid_tx.clone()))
+        // Block on async backend creation (only happens once during initialization)
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                RholangBackend::new(client, grpc_address.clone(), config.client_process_id, Some(pid_tx.clone()))
+                    .await
+                    .expect("Failed to create Rholang backend")
+            })
+        })
     }).finish();
     let stdin = BufReader::new(tokio::io::stdin()); // Wrap stdin in BufReader
     let stdout = tokio::io::stdout();
@@ -541,7 +581,7 @@ async fn run_socket_server(
                 match result {
                     Ok((stream, addr)) => {
                         let (read, write) = tokio::io::split(stream);
-                        serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None).await;
+                        serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None, config.validator_backend.clone()).await;
                         conn_manager.remove_closed_connections().await;
                     }
                     Err(e) => {
@@ -579,7 +619,7 @@ async fn run_websocket_server(
                             Ok(ws_stream) => {
                                 let ws_adapter = WebSocketStreamAdapter::new(ws_stream);
                                 let (read, write) = tokio::io::split(ws_adapter);
-                                serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None).await;
+                                serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None, config.validator_backend.clone()).await;
                                 conn_manager.remove_closed_connections().await;
                             }
                             Err(e) => {
@@ -618,7 +658,7 @@ async fn run_named_pipe_server(
                 _ = server.connect() => {
                     let addr = format!("named_pipe:{}", pipe_path);
                     let (read, write) = tokio::io::split(server);
-                    serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None).await;
+                    serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None, config.validator_backend.clone()).await;
                     conn_manager.remove_closed_connections().await;
                 }
                 _ = conn_manager.shutdown_notify.notified() => {
@@ -651,7 +691,7 @@ async fn run_named_pipe_server(
                         Ok((stream, addr)) => {
                             let addr = format!("unix_socket:{:?}", addr);
                             let (read, write) = tokio::io::split(stream);
-                            serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None).await;
+                            serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None, config.validator_backend.clone()).await;
                             conn_manager.remove_closed_connections().await;
                         }
                         Err(e) => {

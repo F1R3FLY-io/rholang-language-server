@@ -5,7 +5,8 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0"
-archery = "1.2.1"  # Matches rpds 1.1.1’s dependency
+archery = "1.2.1"  # Matches rpds 1.1.1's dependency
+async-trait = "0.1"
 clap = { version = "4.5", features = ["derive"] }
 futures-util = "0.3"
 lsp-types = "0.97"

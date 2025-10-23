@@ -1,16 +1,8 @@
 syntax = "proto3";
 package lsp;
 
-// If you are building for other languages "scalapb.proto"
-// can be manually obtained here:
-// https://raw.githubusercontent.com/scalapb/ScalaPB/master/protobuf/scalapb/scalapb.proto
-// make a scalapb directory in this file's location and place it inside
-
-import "scalapb/scalapb.proto";
-
-option (scalapb.options) = {
-    package_name: "coop.rchain.node.model"
-};
+// Note: The original proto file includes ScalaPB-specific options for the Scala version.
+// For Rust, these are not needed and have been removed.
 
 service Lsp {
     rpc Validate (ValidateRequest) returns (ValidateResponse) {}

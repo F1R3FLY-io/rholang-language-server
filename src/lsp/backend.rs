@@ -40,8 +40,8 @@ use crate::ir::transforms::symbol_table_builder::{SymbolTableBuilder, InvertedIn
 use crate::ir::transforms::document_symbol_visitor::{collect_document_symbols, collect_workspace_symbols};
 use crate::lsp::models::{CachedDocument, LspDocument, LspDocumentHistory, LspDocumentState, WorkspaceState};
 use crate::lsp::semantic_validator::SemanticValidator;
-use crate::rnode_apis::lsp::{lsp_client::LspClient, DiagnosticSeverity as LspDiagnosticSeverity, ValidateRequest};
-use crate::rnode_apis::lsp::validate_response;
+use crate::lsp::diagnostic_provider::{BackendConfig, DiagnosticProvider, create_provider};
+use crate::lsp::rust_validator::RustSemanticValidator;
 use crate::tree_sitter::{parse_code, parse_to_ir};
 
 use rholang_parser::RholangParser;
@@ -66,13 +66,15 @@ struct IndexingTask {
 }
 
 /// The Rholang language server backend, managing state and handling LSP requests.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RholangBackend {
     client: Client,
     documents_by_uri: Arc<RwLock<HashMap<Url, Arc<LspDocument>>>>,
     documents_by_id: Arc<RwLock<HashMap<u32, Arc<LspDocument>>>>,
     serial_document_id: Arc<AtomicU32>,
-    rnode_client: Option<Arc<AsyncMutex<LspClient<Channel>>>>,
+    /// Pluggable diagnostic provider (Rust interpreter or gRPC to RNode)
+    diagnostic_provider: Arc<Box<dyn DiagnosticProvider>>,
+    /// Direct access to SemanticValidator for validate_parsed optimization (if using Rust backend)
     semantic_validator: Option<SemanticValidator>,
     client_process_id: Arc<Mutex<Option<u32>>>,
     pid_channel: Option<tokio::sync::mpsc::Sender<u32>>,
@@ -88,30 +90,62 @@ pub struct RholangBackend {
     root_dir: Arc<RwLock<Option<PathBuf>>>,
 }
 
+// Manual Debug implementation since DiagnosticProvider doesn't implement Debug
+impl std::fmt::Debug for RholangBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RholangBackend")
+            .field("backend", &self.diagnostic_provider.backend_name())
+            .field("documents_count", &"<HashMap>")
+            .finish()
+    }
+}
+
 impl RholangBackend {
     /// Creates a new instance of the Rholang backend with the given client and connections.
-    pub fn new(
+    ///
+    /// If `grpc_address` is provided, uses gRPC backend to connect to RNode server.
+    /// Otherwise, uses the Rust interpreter backend (if available).
+    /// Backend can also be selected via RHOLANG_VALIDATOR_BACKEND environment variable.
+    pub async fn new(
         client: Client,
-        rnode_client: Option<LspClient<Channel>>,
+        grpc_address: Option<String>,
         client_process_id: Option<u32>,
         pid_channel: Option<tokio::sync::mpsc::Sender<u32>>,
-    ) -> Self {
-        let rnode_client = rnode_client.map(|c| Arc::new(AsyncMutex::new(c)));
+    ) -> anyhow::Result<Self> {
+        // Determine backend configuration
+        let backend_config = if let Some(addr) = grpc_address {
+            info!("Using gRPC backend at {}", addr);
+            BackendConfig::Grpc(addr)
+        } else {
+            // Check environment variable, otherwise use default
+            BackendConfig::from_env_or_default(None)
+        };
 
-        // Initialize semantic validator if RNode is not present and interpreter feature is enabled
-        let semantic_validator = if rnode_client.is_none() {
-            match SemanticValidator::new() {
-                Ok(validator) => {
-                    info!("Initialized Rholang semantic validator");
-                    Some(validator)
-                }
-                Err(e) => {
-                    warn!("Failed to initialize semantic validator: {}", e);
-                    None
+        info!("Creating diagnostic provider with backend: {:?}", backend_config);
+
+        // Create the diagnostic provider
+        let diagnostic_provider = create_provider(backend_config.clone()).await?;
+        let diagnostic_provider = Arc::new(diagnostic_provider);
+
+        info!("Using {} backend for validation", diagnostic_provider.backend_name());
+
+        // If using Rust backend, keep direct access to SemanticValidator for optimize_parsed optimization
+        let semantic_validator = if matches!(backend_config, BackendConfig::Rust) {
+            #[cfg(feature = "interpreter")]
+            {
+                match SemanticValidator::new() {
+                    Ok(validator) => Some(validator),
+                    Err(e) => {
+                        warn!("Failed to get SemanticValidator for optimization: {}", e);
+                        None
+                    }
                 }
             }
+            #[cfg(not(feature = "interpreter"))]
+            {
+                None
+            }
         } else {
-            info!("RNode client present, semantic validator disabled");
             None
         };
 
@@ -127,8 +161,8 @@ impl RholangBackend {
             documents_by_uri: Arc::new(RwLock::new(HashMap::new())),
             documents_by_id: Arc::new(RwLock::new(HashMap::new())),
             serial_document_id: Arc::new(AtomicU32::new(0)),
-            rnode_client: rnode_client.clone(),
-            semantic_validator: semantic_validator.clone(),
+            diagnostic_provider,
+            semantic_validator,
             client_process_id: Arc::new(Mutex::new(client_process_id)),
             pid_channel,
             doc_change_tx: doc_change_tx.clone(),
@@ -155,7 +189,7 @@ impl RholangBackend {
         // Spawn progressive indexer
         Self::spawn_progressive_indexer(backend.clone(), indexing_rx);
 
-        backend
+        Ok(backend)
     }
 
     /// Spawns the document change debouncer task
@@ -576,9 +610,9 @@ impl RholangBackend {
             }
         };
 
-        // Semantic validation using interpreter (if no syntax errors and validator available)
-        // OPTIMIZATION: Pass pre-parsed AST to avoid redundant parsing
+        // Semantic validation (if no syntax errors)
         if local_diagnostics.is_empty() {
+            // OPTIMIZATION: If using Rust backend and have pre-parsed AST, use validate_parsed to avoid re-parsing
             if let Some(validator) = &self.semantic_validator {
                 if let Some(procs) = parsed_ast {
                     if procs.len() == 1 {
@@ -591,6 +625,7 @@ impl RholangBackend {
                             return Ok(semantic_diagnostics);
                         }
                         debug!("Semantic validation passed for URI={}", state.uri);
+                        return Ok(vec![]);
                     } else {
                         // Multiple procs - validate each one separately
                         let num_procs = procs.len();
@@ -606,83 +641,29 @@ impl RholangBackend {
                             return Ok(all_diagnostics);
                         }
                         debug!("Semantic validation passed for all {} processes", num_procs);
+                        return Ok(vec![]);
                     }
                 }
             }
-        }
 
-        if let Some(rnode_client) = &self.rnode_client {
-            if !local_diagnostics.is_empty() {
-                info!("Local syntax errors found for URI={} (version={}): {:?}",
-                      state.uri, version, local_diagnostics);
-                return Ok(local_diagnostics);
+            // Use generic diagnostic provider (works for both Rust and gRPC backends)
+            debug!("Running semantic validation via {} backend for URI={}",
+                   self.diagnostic_provider.backend_name(), state.uri);
+            let semantic_diagnostics = self.diagnostic_provider.validate(text).await;
+
+            if !semantic_diagnostics.is_empty() {
+                info!("{} validation found {} errors for URI={} (version={})",
+                      self.diagnostic_provider.backend_name(),
+                      semantic_diagnostics.len(), state.uri, version);
+            } else {
+                debug!("{} validation passed for URI={}",
+                       self.diagnostic_provider.backend_name(), state.uri);
             }
 
-            // Remote validation using RNode if local validation passes
-            let mut client = rnode_client.lock().await.clone();
-            let request = Request::new(ValidateRequest {
-                text: text.to_string(),
-            });
-            match client.validate(request).await {
-                Ok(response) => match response.into_inner().result{
-                    Some(result) => match result {
-                        validate_response::Result::Success(diagnostic_list) => {
-                            let diagnostics = diagnostic_list
-                                .diagnostics
-                                .into_iter()
-                                .map(|diagnostic| {
-                                    let range = diagnostic.range.expect("Missing range in diagnostic");
-                                    let start = range.start.expect("Missing start position");
-                                    let end = range.end.expect("Missing end position");
-                                    let severity = match LspDiagnosticSeverity::try_from(diagnostic.severity) {
-                                        Ok(severity) => match severity {
-                                            LspDiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
-                                            LspDiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
-                                            LspDiagnosticSeverity::Information => DiagnosticSeverity::INFORMATION,
-                                            LspDiagnosticSeverity::Hint => DiagnosticSeverity::HINT,
-                                        },
-                                        Err(e) => {
-                                            error!("Invalid DiagnosticSeverity: {}", e);
-                                            DiagnosticSeverity::ERROR
-                                        }
-                                    };
-                                    Diagnostic {
-                                        range: Range {
-                                            start: LspPosition {
-                                                line: start.line as u32,
-                                                character: start.column as u32,
-                                            },
-                                            end: LspPosition {
-                                                line: end.line as u32,
-                                                character: end.column as u32,
-                                            },
-                                        },
-                                        severity: Some(severity),
-                                        source: Some(diagnostic.source),
-                                        message: diagnostic.message,
-                                        ..Default::default()
-                                    }
-                                })
-                                .collect();
-                            info!("RNode validation diagnostics for URI={} (version={}): {:?}", state.uri, version, diagnostics);
-                            Ok(diagnostics)
-                        }
-                        validate_response::Result::Error(message) => Err(format!(
-                            "RNode validation failed for URI={}: {}",
-                            state.uri, message
-                        )),
-                    },
-                    None => Err("RNode returned no response".to_string()),
-                },
-                Err(e) => Err(format!(
-                    "Failed to communicate with RNode for URI={}: {}",
-                    state.uri, e
-                )),
-            }
+            Ok(semantic_diagnostics)
         } else {
-            if local_diagnostics.is_empty() {
-                debug!("RNode disabled; skipping semantic validation for URI={}", state.uri);
-            }
+            // Return syntax errors if present
+            debug!("Syntax errors found for URI={}, skipping semantic validation", state.uri);
             Ok(local_diagnostics)
         }
     }

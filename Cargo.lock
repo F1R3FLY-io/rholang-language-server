@@ -3811,6 +3811,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "archery",
+ "async-trait",
  "cargo-nextest",
  "clap",
  "futures-util",
