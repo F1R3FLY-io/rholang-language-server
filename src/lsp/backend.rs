@@ -88,6 +88,7 @@ pub struct RholangBackend {
     file_sender: Arc<Mutex<Sender<notify::Result<notify::Event>>>>,
     version_counter: Arc<AtomicI32>,
     root_dir: Arc<RwLock<Option<PathBuf>>>,
+    shutdown_tx: Arc<tokio::sync::broadcast::Sender<()>>,
 }
 
 // Manual Debug implementation since DiagnosticProvider doesn't implement Debug
@@ -155,6 +156,7 @@ impl RholangBackend {
         let (doc_change_tx, doc_change_rx) = tokio::sync::mpsc::channel::<DocumentChangeEvent>(100);
         let (indexing_tx, indexing_rx) = tokio::sync::mpsc::channel::<IndexingTask>(100);
         let validation_cancel = Arc::new(Mutex::new(HashMap::new()));
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
 
         let backend = Self {
             client: client.clone(),
@@ -181,6 +183,7 @@ impl RholangBackend {
             file_sender: Arc::new(Mutex::new(tx)),
             version_counter: Arc::new(AtomicI32::new(0)),
             root_dir: Arc::new(RwLock::new(None)),
+            shutdown_tx: Arc::new(shutdown_tx),
         };
 
         // Spawn document change debouncer
@@ -197,6 +200,8 @@ impl RholangBackend {
         backend: RholangBackend,
         mut doc_change_rx: tokio::sync::mpsc::Receiver<DocumentChangeEvent>,
     ) {
+        let mut shutdown_rx = backend.shutdown_tx.subscribe();
+
         tokio::spawn(async move {
             use std::collections::HashMap;
             use tokio::time::{sleep, Duration};
@@ -205,7 +210,7 @@ impl RholangBackend {
             let debounce_duration = Duration::from_millis(300);
 
             loop {
-                // Wait for a change or timeout
+                // Wait for a change, timeout, or shutdown signal
                 tokio::select! {
                     Some(event) = doc_change_rx.recv() => {
                         // Store/update pending change
@@ -256,8 +261,13 @@ impl RholangBackend {
                             });
                         }
                     }
+                    _ = shutdown_rx.recv() => {
+                        info!("Document debouncer received shutdown signal, exiting gracefully");
+                        break;
+                    }
                 }
             }
+            debug!("Document debouncer task terminated");
         });
     }
 
@@ -266,6 +276,8 @@ impl RholangBackend {
         backend: RholangBackend,
         mut indexing_rx: tokio::sync::mpsc::Receiver<IndexingTask>,
     ) {
+        let mut shutdown_rx = backend.shutdown_tx.subscribe();
+
         tokio::spawn(async move {
             use std::collections::BinaryHeap;
             use std::cmp::Ordering;
@@ -289,8 +301,9 @@ impl RholangBackend {
             let mut queue = BinaryHeap::new();
 
             loop {
-                // Collect tasks
-                if let Some(task) = indexing_rx.recv().await {
+                // Collect tasks or shutdown
+                tokio::select! {
+                    Some(task) = indexing_rx.recv() => {
                     queue.push(PrioritizedTask(task.priority, task));
 
                     // Drain any immediately available tasks
@@ -314,8 +327,14 @@ impl RholangBackend {
 
                     // After batch, link symbols
                     backend.link_symbols().await;
+                    }
+                    _ = shutdown_rx.recv() => {
+                        info!("Progressive indexer received shutdown signal, exiting gracefully");
+                        break;
+                    }
                 }
             }
+            debug!("Progressive indexer task terminated");
         });
     }
 
@@ -326,6 +345,19 @@ impl RholangBackend {
     ) {
         use std::collections::HashSet;
         use tokio::time::{Duration, Instant};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let shutdown_flag_clone = shutdown_flag.clone();
+        let shutdown_tx = backend.shutdown_tx.clone();
+
+        // Spawn a task to watch for shutdown signal and set the flag
+        tokio::spawn(async move {
+            let mut shutdown_rx = shutdown_tx.subscribe();
+            let _ = shutdown_rx.recv().await;
+            shutdown_flag_clone.store(true, Ordering::Relaxed);
+            info!("File watcher received shutdown signal");
+        });
 
         task::spawn_blocking(move || {
             let mut pending_paths: HashSet<PathBuf> = HashSet::new();
@@ -333,6 +365,12 @@ impl RholangBackend {
             let mut last_event_time = Instant::now();
 
             loop {
+                // Check for shutdown
+                if shutdown_flag.load(Ordering::Relaxed) {
+                    info!("File watcher task exiting gracefully");
+                    break;
+                }
+
                 // Try to receive an event with timeout
                 match file_events.lock().unwrap().recv_timeout(batch_duration) {
                     Ok(Ok(event)) => {
@@ -364,6 +402,7 @@ impl RholangBackend {
                     }
                 }
             }
+            debug!("File watcher task terminated");
         });
     }
 
@@ -1166,6 +1205,11 @@ impl LanguageServer for RholangBackend {
     /// Handles the LSP shutdown request.
     async fn shutdown(&self) -> jsonrpc::Result<()> {
         info!("Received shutdown request");
+
+        // Signal all background tasks to shut down gracefully
+        let _ = self.shutdown_tx.send(());
+        info!("Shutdown signal sent to all background tasks");
+
         Ok(())
     }
 

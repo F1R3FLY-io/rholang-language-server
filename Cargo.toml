@@ -8,6 +8,7 @@ anyhow = "1.0"
 archery = "1.2.1"  # Matches rpds 1.1.1's dependency
 async-trait = "0.1"
 clap = { version = "4.5", features = ["derive"] }
+dirs = "5.0"
 futures-util = "0.3"
 lsp-types = "0.97"
 notify = "5.0"
@@ -30,6 +31,7 @@ tonic = "0.13"
 tower-lsp = "0.20"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
+tracing-appender = "0.2"
 tree-sitter = "0.25"
 url = "2.5"
 uuid = { version = "1", features = ["v4"] }

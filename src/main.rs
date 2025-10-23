@@ -721,7 +721,7 @@ async fn run_named_pipe_server(
 }
 
 async fn run_server(config: ServerConfig, conn_manager: ConnectionManager) -> io::Result<()> {
-    init_logger(config.no_color, Some(&config.log_level))?;
+    let _log_guard = init_logger(config.no_color, Some(&config.log_level), true)?;
     info!("Initializing rholang-language-server with log level {} ...", config.log_level);
 
     let rnode_client_opt: Option<LspClient<tonic::transport::Channel>> = if !config.no_rnode {
