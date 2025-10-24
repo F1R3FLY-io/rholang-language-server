@@ -3930,6 +3930,7 @@ dependencies = [
  "futures-util",
  "indoc",
  "lsp-types 0.97.0",
+ "mettatron",
  "mork",
  "mork-expr",
  "mork-frontend",
