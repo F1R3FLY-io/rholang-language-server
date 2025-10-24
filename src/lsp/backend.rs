@@ -1927,7 +1927,25 @@ impl LanguageServer for RholangBackend {
         debug!("Handling documentSymbol request for {}", uri);
         let workspace = self.workspace.read().await;
         if let Some(doc) = workspace.documents.get(&uri) {
-            let symbols = collect_document_symbols(&doc.ir, &*doc.positions);
+            use crate::lsp::models::DocumentLanguage;
+
+            let symbols = match doc.language {
+                DocumentLanguage::Metta => {
+                    // Collect symbols from MeTTa IR
+                    if let Some(metta_ir) = &doc.metta_ir {
+                        use crate::ir::transforms::metta_symbol_collector::collect_metta_document_symbols;
+                        collect_metta_document_symbols(metta_ir)
+                    } else {
+                        debug!("MeTTa document has no metta_ir: {}", uri);
+                        vec![]
+                    }
+                }
+                DocumentLanguage::Rholang | DocumentLanguage::Unknown => {
+                    // Collect symbols from Rholang IR
+                    collect_document_symbols(&doc.ir, &*doc.positions)
+                }
+            };
+
             debug!("Found {} symbols in document {}", symbols.len(), uri);
             Ok(Some(DocumentSymbolResponse::Nested(symbols)))
         } else {
