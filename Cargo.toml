@@ -16,7 +16,7 @@ petgraph = "0.8.2"
 prost = "0.13"
 # rholang-parser = { git = "https://github.com/dylon/rholang-rs.git", branch = "dylon/comments" }
 # rholang-tree-sitter = { git = "https://github.com/dylon/rholang-rs.git", branch = "dylon/comments" }
-rholang-parser = { path = "../rholang-rs/rholang-parser/" }
+rholang-parser = { path = "../rholang-rs/rholang-parser/", features = ["named-comments"] }
 rholang-tree-sitter = { path = "../rholang-rs/rholang-tree-sitter/", features = ["named-comments"] }
 ropey = "1.6"
 rpds = "1.1"
