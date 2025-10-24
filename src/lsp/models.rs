@@ -7,6 +7,7 @@ use tower_lsp::lsp_types::{TextDocumentContentChangeEvent, Url};
 use tree_sitter::Tree;
 
 use crate::ir::rholang_node::{RholangNode, Position as IrPosition};
+use crate::ir::metta_node::MettaNode;
 use crate::ir::semantic_node::SemanticNode;
 use crate::ir::symbol_table::SymbolTable;
 use crate::ir::transforms::symbol_table_builder::InvertedIndex;
@@ -63,6 +64,8 @@ pub struct VersionedChanges {
 pub struct CachedDocument {
     /// Language-specific IR (RholangNode or MettaNode)
     pub ir: Arc<RholangNode>,
+    /// MeTTa-specific IR (only present for MeTTa files)
+    pub metta_ir: Option<Vec<Arc<MettaNode>>>,
     /// Language-agnostic unified IR for cross-language features
     pub unified_ir: Arc<dyn SemanticNode>,
     /// Language detected from file extension

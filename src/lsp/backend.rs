@@ -491,6 +491,7 @@ impl RholangBackend {
 
         Ok(CachedDocument {
             ir: transformed_ir,
+            metta_ir: None, // Will be populated for MeTTa files
             unified_ir,
             language,
             tree: Arc::new(parse_code("")), // Tree is not used for text, but keep for other
@@ -512,36 +513,136 @@ impl RholangBackend {
         _version: i32,
         tree: Option<tree_sitter::Tree>,
     ) -> Result<CachedDocument, String> {
-        let uri_clone = uri.clone();
-        let mut workspace = self.workspace.write().await;
-        workspace.global_table.symbols.write().unwrap().retain(|_, s| &s.declaration_uri != &uri_clone);
-        let mut global_symbols = workspace.global_symbols.clone();
-        global_symbols.retain(|_, (u, _)| u != &uri_clone);
-        workspace.global_symbols = global_symbols;
-        workspace.global_inverted_index.retain(|(d_uri, _), us| {
-            if d_uri == &uri_clone {
-                false
-            } else {
-                us.retain(|(u_uri, _)| u_uri != &uri_clone);
-                !us.is_empty()
-            }
-        });
-        workspace.global_contracts.retain(|(u, _)| u != &uri_clone);
-        workspace.global_calls.retain(|(u, _)| u != &uri_clone);
-        drop(workspace);
+        use crate::lsp::models::DocumentLanguage;
 
-        let tree = Arc::new(tree.unwrap_or_else(|| parse_code(text)));
+        // Detect language from file extension
+        let language = DocumentLanguage::from_uri(uri);
+
+        // Route to appropriate parser based on language
+        match language {
+            DocumentLanguage::Metta => {
+                // Handle MeTTa files
+                self.index_metta_file(uri, text, _version).await
+            }
+            DocumentLanguage::Rholang | DocumentLanguage::Unknown => {
+                // Handle Rholang files (existing logic)
+                let uri_clone = uri.clone();
+                let mut workspace = self.workspace.write().await;
+                workspace.global_table.symbols.write().unwrap().retain(|_, s| &s.declaration_uri != &uri_clone);
+                let mut global_symbols = workspace.global_symbols.clone();
+                global_symbols.retain(|_, (u, _)| u != &uri_clone);
+                workspace.global_symbols = global_symbols;
+                workspace.global_inverted_index.retain(|(d_uri, _), us| {
+                    if d_uri == &uri_clone {
+                        false
+                    } else {
+                        us.retain(|(u_uri, _)| u_uri != &uri_clone);
+                        !us.is_empty()
+                    }
+                });
+                workspace.global_contracts.retain(|(u, _)| u != &uri_clone);
+                workspace.global_calls.retain(|(u, _)| u != &uri_clone);
+                drop(workspace);
+
+                let tree = Arc::new(tree.unwrap_or_else(|| parse_code(text)));
+                let rope = Rope::from_str(text);
+                let ir = parse_to_ir(&tree, &rope);
+                let cached = self.process_document(ir, uri, &rope).await?;
+                let mut workspace = self.workspace.write().await;
+                let mut contracts = Vec::new();
+                collect_contracts(&cached.ir, &mut contracts);
+                let mut calls = Vec::new();
+                collect_calls(&cached.ir, &mut calls);
+                workspace.global_contracts.extend(contracts.into_iter().map(|c| (uri.clone(), c)));
+                workspace.global_calls.extend(calls.into_iter().map(|c| (uri.clone(), c)));
+                Ok(cached)
+            }
+        }
+    }
+
+    /// Indexes a MeTTa file by parsing and creating a cached document
+    async fn index_metta_file(
+        &self,
+        uri: &Url,
+        text: &str,
+        version: i32,
+    ) -> Result<CachedDocument, String> {
+        use crate::parsers::MettaParser;
+        use crate::lsp::models::DocumentLanguage;
+        use crate::ir::semantic_node::{NodeBase, RelativePosition};
+        use crate::ir::unified_ir::UnifiedIR;
+
+        debug!("Indexing MeTTa file: {}", uri);
+
+        // Parse MeTTa source to IR
+        let mut parser = MettaParser::new()
+            .map_err(|e| format!("Failed to create MeTTa parser: {}", e))?;
+        let metta_nodes = parser.parse_to_ir(text)
+            .map_err(|e| format!("Failed to parse MeTTa file: {}", e))?;
+
+        debug!("Parsed {} MeTTa expressions", metta_nodes.len());
+
+        // Create a placeholder RholangNode for the ir field
+        // This is temporary - in future we'll refactor CachedDocument to use Arc<dyn SemanticNode>
+        let placeholder_ir = Arc::new(crate::ir::rholang_node::RholangNode::Nil {
+            base: NodeBase::new(
+                RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+                text.len(),
+                0,
+                text.len(),
+            ),
+            metadata: None,
+        });
+
+        // Create unified IR from first MeTTa node (or error if empty)
+        let unified_ir: Arc<dyn crate::ir::semantic_node::SemanticNode> = if let Some(first_node) = metta_nodes.first() {
+            use crate::ir::semantic_node::SemanticNode;
+            Arc::new(UnifiedIR::MettaExt {
+                base: first_node.as_ref().base().clone(),
+                node: first_node.clone() as Arc<dyn std::any::Any + Send + Sync>,
+                metadata: None,
+            })
+        } else {
+            Arc::new(UnifiedIR::Error {
+                base: NodeBase::new(
+                    RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+                    0,
+                    0,
+                    0,
+                ),
+                message: "Empty MeTTa file".to_string(),
+                children: vec![],
+                metadata: None,
+            })
+        };
+
+        // Create empty symbol table and inverted index for now
+        // TODO: Implement symbol table building for MeTTa
+        let global_table = self.workspace.read().await.global_table.clone();
+        let symbol_table = Arc::new(crate::ir::symbol_table::SymbolTable::new(Some(global_table)));
+        let inverted_index = std::collections::HashMap::new();
+        let potential_global_refs = Vec::new();
+
+        // Create empty symbol index
+        let symbol_index = Arc::new(crate::lsp::symbol_index::SymbolIndex::new(Vec::new()));
+
         let rope = Rope::from_str(text);
-        let ir = parse_to_ir(&tree, &rope);
-        let cached = self.process_document(ir, uri, &rope).await?;
-        let mut workspace = self.workspace.write().await;
-        let mut contracts = Vec::new();
-        collect_contracts(&cached.ir, &mut contracts);
-        let mut calls = Vec::new();
-        collect_calls(&cached.ir, &mut calls);
-        workspace.global_contracts.extend(contracts.into_iter().map(|c| (uri.clone(), c)));
-        workspace.global_calls.extend(calls.into_iter().map(|c| (uri.clone(), c)));
-        Ok(cached)
+        let positions = Arc::new(std::collections::HashMap::new());
+
+        Ok(CachedDocument {
+            ir: placeholder_ir,
+            metta_ir: Some(metta_nodes),
+            unified_ir,
+            language: DocumentLanguage::Metta,
+            tree: Arc::new(parse_code("")), // Placeholder tree
+            symbol_table,
+            inverted_index,
+            version,
+            text: rope,
+            positions,
+            potential_global_refs,
+            symbol_index,
+        })
     }
 
     /// Links contract symbols across all documents in the workspace for cross-file resolution.
@@ -652,7 +753,20 @@ impl RholangBackend {
             return Ok(Vec::new());
         }
 
-        // Local validation with parser reuse for semantic validation
+        // Detect language and route to appropriate validator
+        use crate::lsp::models::DocumentLanguage;
+        let language = DocumentLanguage::from_uri(&state.uri);
+
+        if language == DocumentLanguage::Metta {
+            // Validate MeTTa file
+            use crate::validators::MettaValidator;
+            debug!("Validating MeTTa file: {}", state.uri);
+            let validator = MettaValidator::new();
+            let diagnostics = validator.validate(text);
+            return Ok(diagnostics);
+        }
+
+        // Local validation with parser reuse for semantic validation (Rholang)
         let parser = RholangParser::new();
         let parse_result = parser.parse(&text);
 
