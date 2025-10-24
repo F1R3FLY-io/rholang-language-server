@@ -10,6 +10,8 @@ use ropey::{Rope, RopeSlice};
 
 use tracing::{debug, warn};
 
+use super::semantic_node::Metadata;
+
 pub type NodeVector = Vector<Arc<Node>, ArcK>;
 pub type NodePairVector = Vector<(Arc<Node>, Arc<Node>), ArcK>;
 pub type BranchVector = Vector<(NodeVector, Arc<Node>), ArcK>;
@@ -4293,6 +4295,166 @@ impl Ord for Node {
     }
 }
 
+// Implementation of SemanticNode trait for language-agnostic IR operations
+impl super::semantic_node::SemanticNode for Node {
+    fn base(&self) -> &NodeBase {
+        match self {
+            Node::Par { base, .. } => base,
+            Node::SendSync { base, .. } => base,
+            Node::Send { base, .. } => base,
+            Node::New { base, .. } => base,
+            Node::IfElse { base, .. } => base,
+            Node::Let { base, .. } => base,
+            Node::Bundle { base, .. } => base,
+            Node::Match { base, .. } => base,
+            Node::Choice { base, .. } => base,
+            Node::Contract { base, .. } => base,
+            Node::Input { base, .. } => base,
+            Node::Block { base, .. } => base,
+            Node::Parenthesized { base, .. } => base,
+            Node::BinOp { base, .. } => base,
+            Node::UnaryOp { base, .. } => base,
+            Node::Method { base, .. } => base,
+            Node::Eval { base, .. } => base,
+            Node::Quote { base, .. } => base,
+            Node::VarRef { base, .. } => base,
+            Node::BoolLiteral { base, .. } => base,
+            Node::LongLiteral { base, .. } => base,
+            Node::StringLiteral { base, .. } => base,
+            Node::UriLiteral { base, .. } => base,
+            Node::Nil { base, .. } => base,
+            Node::List { base, .. } => base,
+            Node::Set { base, .. } => base,
+            Node::Map { base, .. } => base,
+            Node::Tuple { base, .. } => base,
+            Node::Var { base, .. } => base,
+            Node::NameDecl { base, .. } => base,
+            Node::Decl { base, .. } => base,
+            Node::LinearBind { base, .. } => base,
+            Node::RepeatedBind { base, .. } => base,
+            Node::PeekBind { base, .. } => base,
+            Node::Comment { base, .. } => base,
+            Node::Wildcard { base, .. } => base,
+            Node::SimpleType { base, .. } => base,
+            Node::ReceiveSendSource { base, .. } => base,
+            Node::SendReceiveSource { base, .. } => base,
+            Node::Error { base, .. } => base,
+            Node::Disjunction { base, .. } => base,
+            Node::Conjunction { base, .. } => base,
+            Node::Negation { base, .. } => base,
+            Node::Unit { base, .. } => base,
+            Node::Position { base, .. } => base,
+        }
+    }
+
+    fn metadata(&self) -> Option<&Metadata> {
+        match self {
+            Node::Par { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::SendSync { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Send { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::New { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::IfElse { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Let { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Bundle { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Match { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Choice { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Contract { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Input { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Block { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Parenthesized { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::BinOp { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::UnaryOp { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Method { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Eval { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Quote { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::VarRef { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::BoolLiteral { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::LongLiteral { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::StringLiteral { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::UriLiteral { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Nil { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::List { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Set { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Map { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Tuple { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Var { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::NameDecl { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Decl { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::LinearBind { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::RepeatedBind { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::PeekBind { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Comment { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Wildcard { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::SimpleType { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::ReceiveSendSource { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::SendReceiveSource { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Error { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Disjunction { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Conjunction { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Negation { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Unit { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            Node::Position { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+        }
+    }
+
+    fn metadata_mut(&mut self) -> Option<&mut Metadata> {
+        // Metadata is currently Option<Arc<Metadata>> which is immutable
+        // This would require refactoring to support mutable access
+        // For now, return None to indicate unsupported
+        None
+    }
+
+    fn node_type(&self) -> super::semantic_node::NodeType {
+        use super::semantic_node::NodeType;
+        match self {
+            Node::Par { .. } => NodeType::RholangPar,
+            Node::SendSync { .. } | Node::Send { .. } => NodeType::RholangSend,
+            Node::New { .. } => NodeType::RholangNew,
+            Node::IfElse { .. } => NodeType::Conditional,
+            Node::Let { .. } => NodeType::Binding,
+            Node::Bundle { .. } => NodeType::RholangBundle,
+            Node::Match { .. } => NodeType::Match,
+            Node::Choice { .. } => NodeType::Conditional,
+            Node::Contract { .. } => NodeType::RholangContract,
+            Node::Input { .. } => NodeType::RholangInput,
+            Node::Block { .. } | Node::Parenthesized { .. } => NodeType::Block,
+            Node::BinOp { .. } | Node::UnaryOp { .. } | Node::Method { .. } => NodeType::Invocation,
+            Node::Eval { .. } => NodeType::RholangEval,
+            Node::Quote { .. } => NodeType::RholangQuote,
+            Node::VarRef { .. } | Node::Var { .. } => NodeType::Variable,
+            Node::BoolLiteral { .. } | Node::LongLiteral { .. }
+            | Node::StringLiteral { .. } | Node::UriLiteral { .. } => NodeType::Literal,
+            Node::Nil { .. } | Node::Wildcard { .. } => NodeType::Literal,
+            Node::List { .. } | Node::Set { .. } | Node::Map { .. } | Node::Tuple { .. } => NodeType::Collection,
+            Node::NameDecl { .. } | Node::Decl { .. } => NodeType::Binding,
+            Node::LinearBind { .. } | Node::RepeatedBind { .. } | Node::PeekBind { .. } => NodeType::Binding,
+            Node::Comment { .. } => NodeType::Unknown,
+            Node::SimpleType { .. } => NodeType::Literal,
+            Node::ReceiveSendSource { .. } | Node::SendReceiveSource { .. } => NodeType::RholangSend,
+            Node::Error { .. } => NodeType::Unknown,
+            Node::Disjunction { .. } | Node::Conjunction { .. } | Node::Negation { .. } => NodeType::Match,
+            Node::Unit { .. } => NodeType::Literal,
+            Node::Position { .. } => NodeType::Literal,
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn super::semantic_node::SemanticNode> {
+        // This is complex due to lifetime issues with trait objects
+        // Returning empty for now - can be implemented per-variant as needed
+        vec![]
+    }
+
+    fn children_arc(&self) -> Vec<Arc<dyn super::semantic_node::SemanticNode>> {
+        // This is also complex - would need to clone and box each child
+        // Returning empty for now - can be implemented per-variant as needed
+        vec![]
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4302,7 +4464,7 @@ mod tests {
 
     #[test]
     fn test_position_computation() {
-        let _ = crate::logging::init_logger(false, Some("warn"));
+        let _ = crate::logging::init_logger(false, Some("warn"), false);
         let code = "ch!(\"msg\")\nNil";
         let tree = parse_code(code);
         let rope = Rope::from_str(code);
@@ -4332,7 +4494,7 @@ mod tests {
 
     #[test]
     fn test_nested_position() {
-        let _ = crate::logging::init_logger(false, Some("warn"));
+        let _ = crate::logging::init_logger(false, Some("warn"), false);
         let code = r#"new x in { x!("msg") }"#;
         let tree = parse_code(code);
         let rope = Rope::from_str(code);
@@ -4385,7 +4547,7 @@ mod tests {
 
     #[test]
     fn test_multi_line_positions() {
-        let _ = crate::logging::init_logger(false, Some("warn"));
+        let _ = crate::logging::init_logger(false, Some("warn"), false);
         let code = "ch!(\n\"msg\"\n)";
         let tree = parse_code(code);
         let rope = Rope::from_str(code);
@@ -4402,7 +4564,7 @@ mod tests {
 
     #[test]
     fn test_match_positioning() {
-        let _ = crate::logging::init_logger(false, Some("warn"));
+        let _ = crate::logging::init_logger(false, Some("warn"), false);
         let code = r#"match "target" { "pat" => Nil }"#;
         let tree = parse_code(code);
         let rope = Rope::from_str(code);
