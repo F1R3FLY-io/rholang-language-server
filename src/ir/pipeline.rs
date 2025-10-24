@@ -93,7 +93,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use super::*;
-    use crate::ir::node::{Metadata, Node, NodeBase, RelativePosition};
+    use crate::ir::rholang_node::{Metadata, Node, NodeBase, RelativePosition};
     use crate::ir::visitor::Visitor;
 
     // Define an IdentityVisitor that preserves the node
@@ -115,7 +115,7 @@ mod tests {
         let base = NodeBase::new(RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, 0, 0);
         let mut data = HashMap::new();
         data.insert("version".to_string(), Arc::new(0_usize) as Arc<dyn Any + Send + Sync>);
-        let metadata = Some(Arc::new(Metadata { data }));
+        let metadata = Some(Arc::new(data));
         let node = Arc::new(Node::Nil { base, metadata });
         let result = pipeline.apply(&node);
         assert!(Arc::ptr_eq(&node, &result));

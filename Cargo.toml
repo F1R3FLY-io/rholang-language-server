@@ -16,9 +16,8 @@ petgraph = "0.8.2"
 prost = "0.13"
 # rholang-parser = { git = "https://github.com/dylon/rholang-rs.git", branch = "dylon/comments" }
 # rholang-tree-sitter = { git = "https://github.com/dylon/rholang-rs.git", branch = "dylon/comments" }
-rholang-parser = { path = "/home/dylon/Workspace/f1r3fly.io/rholang-rs/rholang-parser/" }
-# rholang-tree-sitter = { path = "/home/dylon/Workspace/f1r3fly.io/rholang-rs/rholang-tree-sitter/", features = ["named-comments"] }
-rholang-tree-sitter = { path = "/home/dylon/Workspace/f1r3fly.io/rholang-rs/rholang-tree-sitter/" }
+rholang-parser = { path = "../rholang-rs/rholang-parser/" }
+rholang-tree-sitter = { path = "../rholang-rs/rholang-tree-sitter/", features = ["named-comments"] }
 ropey = "1.6"
 rpds = "1.1"
 scopeguard = "1.2"
@@ -63,8 +62,3 @@ interpreter = ["rholang"]
 [[bin]]
 name = "dummy_client"
 path = "test_utils/src/bin/dummy_client.rs"
-
-# Patch git dependencies to use local paths for development
-[patch.'https://github.com/F1R3FLY-io/rholang-rs']
-rholang-parser = { path = "/home/dylon/Workspace/f1r3fly.io/rholang-rs/rholang-parser/" }
-rholang-tree-sitter = { path = "/home/dylon/Workspace/f1r3fly.io/rholang-rs/rholang-tree-sitter/", features = ["named-comments"] }

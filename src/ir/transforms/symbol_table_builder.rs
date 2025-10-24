@@ -7,7 +7,7 @@ use rpds::Vector;
 use tower_lsp::lsp_types::Url;
 use tracing::trace;
 
-use crate::ir::node::{Metadata, Node, NodeBase, Position};
+use crate::ir::rholang_node::{Metadata, Node, NodeBase, Position};
 use crate::ir::symbol_table::{Symbol, SymbolTable, SymbolType};
 use crate::ir::visitor::Visitor;
 
@@ -100,12 +100,12 @@ impl SymbolTableBuilder {
         symbol: Option<Arc<Symbol>>,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node> {
-        let mut data = metadata.as_ref().map_or(HashMap::new(), |m| m.data.clone());
+        let mut data = metadata.as_ref().map_or(HashMap::new(), |m| (**m).clone());
         data.insert("symbol_table".to_string(), Arc::new(table) as Arc<dyn Any + Send + Sync>);
         if let Some(sym) = symbol {
             data.insert("referenced_symbol".to_string(), Arc::new(sym) as Arc<dyn Any + Send + Sync>);
         }
-        node.with_metadata(Some(Arc::new(Metadata { data })))
+        node.with_metadata(Some(Arc::new(data)))
     }
 
     /// Updates a node's metadata with the current symbol table and optional symbol.
@@ -724,7 +724,7 @@ mod tests {
     use super::*;
     use ropey::Rope;
     use crate::tree_sitter::{parse_code, parse_to_ir};
-    use crate::ir::node::{compute_absolute_positions, find_node_at_position};
+    use crate::ir::rholang_node::{compute_absolute_positions, find_node_at_position};
     use tower_lsp::lsp_types::Url;
 
     #[test]
@@ -746,7 +746,7 @@ mod tests {
                 if let Node::Let { proc: contract_block, .. } = &**let_node {
                     if let Node::Block { proc: contract_node, .. } = &**contract_block {
                         let contract_table = contract_node.metadata()
-                            .and_then(|m| m.data.get("symbol_table"))
+                            .and_then(|m| m.get("symbol_table"))
                             .and_then(|t| t.downcast_ref::<Arc<SymbolTable>>())
                             .cloned()
                             .unwrap();
@@ -774,7 +774,7 @@ mod tests {
         if let Node::New { proc, .. } = &*transformed {
             if let Node::Block { proc: contract_node, .. } = &**proc {
                 let contract_table = contract_node.metadata()
-                    .and_then(|m| m.data.get("symbol_table"))
+                    .and_then(|m| m.get("symbol_table"))
                     .and_then(|t| t.downcast_ref::<Arc<SymbolTable>>())
                     .cloned()
                     .unwrap();
@@ -836,7 +836,7 @@ mod tests {
 
         if let Node::New { proc, .. } = &*transformed {
             if let Node::Block { proc: let_node, .. } = &**proc {
-                let let_table = let_node.metadata().and_then(|m| m.data.get("symbol_table"))
+                let let_table = let_node.metadata().and_then(|m| m.get("symbol_table"))
                     .and_then(|t| t.downcast_ref::<Arc<SymbolTable>>())
                     .cloned()
                     .unwrap();
@@ -857,7 +857,7 @@ mod tests {
                         }
                     }
                     if let Node::Block { proc: y_node, .. } = &**proc {
-                        let y_table = y_node.metadata().and_then(|m| m.data.get("symbol_table"))
+                        let y_table = y_node.metadata().and_then(|m| m.get("symbol_table"))
                             .and_then(|t| t.downcast_ref::<Arc<SymbolTable>>())
                             .cloned()
                             .unwrap();
@@ -913,7 +913,7 @@ mod tests {
 
         if let Node::Contract { metadata, .. } = &*transformed {
             let symbol_table = metadata.as_ref().unwrap()
-                .data.get("symbol_table")
+                .get("symbol_table")
                 .and_then(|t| t.downcast_ref::<Arc<SymbolTable>>())
                 .cloned()
                 .unwrap();

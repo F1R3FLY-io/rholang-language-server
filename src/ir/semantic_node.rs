@@ -185,7 +185,7 @@ pub fn metadata_with<T: Any + Send + Sync>(key: &str, value: T) -> Metadata {
 }
 
 /// Helper function to get a typed value from metadata
-pub fn get_metadata<T: Any + Send + Sync>(metadata: &Metadata, key: &str) -> Option<&T> {
+pub fn get_metadata<'a, T: Any + Send + Sync>(metadata: &'a Metadata, key: &str) -> Option<&'a T> {
     metadata
         .get(key)
         .and_then(|arc| arc.downcast_ref::<T>())

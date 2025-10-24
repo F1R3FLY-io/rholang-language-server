@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::any::Any;
-use rholang_language_server::ir::node::{
+use rholang_language_server::ir::rholang_node::{
     BinOperator, BundleType, CommentKind, Metadata, Node, NodeBase, Position,
     RelativePosition, SendType, UnaryOperator, VarRefKind
 };
@@ -111,15 +111,15 @@ impl Visitor for IncrementVersion {
     ) -> Arc<Node> {
         let new_left = self.visit_node(left);
         let new_right = self.visit_node(right);
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::Par {
             base: base.clone(),
             left: new_left,
             right: new_right,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -135,8 +135,8 @@ impl Visitor for IncrementVersion {
         let new_channel = self.visit_node(channel);
         let new_inputs = inputs.iter().map(|i| self.visit_node(i)).collect::<Vector<_, ArcK>>();
         let new_cont = self.visit_node(cont);
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::SendSync {
@@ -144,7 +144,7 @@ impl Visitor for IncrementVersion {
             channel: new_channel,
             inputs: new_inputs,
             cont: new_cont,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -160,8 +160,8 @@ impl Visitor for IncrementVersion {
     ) -> Arc<Node> {
         let new_channel = self.visit_node(channel);
         let new_inputs = inputs.iter().map(|i| self.visit_node(i)).collect::<Vector<_, ArcK>>();
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::Send {
@@ -170,7 +170,7 @@ impl Visitor for IncrementVersion {
             send_type: send_type.clone(),
             send_type_delta: *send_type_delta,
             inputs: new_inputs,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -184,15 +184,15 @@ impl Visitor for IncrementVersion {
     ) -> Arc<Node> {
         let new_decls = decls.iter().map(|d| self.visit_node(d)).collect::<Vector<_, ArcK>>();
         let new_proc = self.visit_node(proc);
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::New {
             base: base.clone(),
             decls: new_decls,
             proc: new_proc,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -208,8 +208,8 @@ impl Visitor for IncrementVersion {
         let new_condition = self.visit_node(condition);
         let new_consequence = self.visit_node(consequence);
         let new_alternative = alternative.as_ref().map(|a| self.visit_node(a));
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::IfElse {
@@ -217,7 +217,7 @@ impl Visitor for IncrementVersion {
             condition: new_condition,
             consequence: new_consequence,
             alternative: new_alternative,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -231,15 +231,15 @@ impl Visitor for IncrementVersion {
     ) -> Arc<Node> {
         let new_decls = decls.iter().map(|d| self.visit_node(d)).collect::<Vector<_, ArcK>>();
         let new_proc = self.visit_node(proc);
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::Let {
             base: base.clone(),
             decls: new_decls,
             proc: new_proc,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -252,15 +252,15 @@ impl Visitor for IncrementVersion {
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node> {
         let new_proc = self.visit_node(proc);
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::Bundle {
             base: base.clone(),
             bundle_type: bundle_type.clone(),
             proc: new_proc,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -274,15 +274,15 @@ impl Visitor for IncrementVersion {
     ) -> Arc<Node> {
         let new_expression = self.visit_node(expression);
         let new_cases = cases.iter().map(|(pat, proc)| (self.visit_node(pat), self.visit_node(proc))).collect::<Vector<_, ArcK>>();
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::Match {
             base: base.clone(),
             expression: new_expression,
             cases: new_cases,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -298,14 +298,14 @@ impl Visitor for IncrementVersion {
             let new_proc = self.visit_node(proc);
             (new_inputs, new_proc)
         }).collect::<Vector<_, ArcK>>();
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::Choice {
             base: base.clone(),
             branches: new_branches,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -323,8 +323,8 @@ impl Visitor for IncrementVersion {
         let new_formals = formals.iter().map(|f| self.visit_node(f)).collect::<Vector<_, ArcK>>();
         let new_formals_remainder = formals_remainder.as_ref().map(|r| self.visit_node(r));
         let new_proc = self.visit_node(proc);
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::Contract {
@@ -333,7 +333,7 @@ impl Visitor for IncrementVersion {
             formals: new_formals,
             formals_remainder: new_formals_remainder,
             proc: new_proc,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -347,15 +347,15 @@ impl Visitor for IncrementVersion {
     ) -> Arc<Node> {
         let new_receipts = receipts.iter().map(|r| r.iter().map(|n| self.visit_node(n)).collect::<Vector<_, ArcK>>()).collect::<Vector<_, ArcK>>();
         let new_proc = self.visit_node(proc);
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::Input {
             base: base.clone(),
             receipts: new_receipts,
             proc: new_proc,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -367,14 +367,14 @@ impl Visitor for IncrementVersion {
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node> {
         let new_proc = self.visit_node(proc);
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::Block {
             base: base.clone(),
             proc: new_proc,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -389,8 +389,8 @@ impl Visitor for IncrementVersion {
     ) -> Arc<Node> {
         let new_left = self.visit_node(left);
         let new_right = self.visit_node(right);
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::BinOp {
@@ -398,7 +398,7 @@ impl Visitor for IncrementVersion {
             op,
             left: new_left,
             right: new_right,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -411,15 +411,15 @@ impl Visitor for IncrementVersion {
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node> {
         let new_operand = self.visit_node(operand);
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::UnaryOp {
             base: base.clone(),
             op,
             operand: new_operand,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -434,8 +434,8 @@ impl Visitor for IncrementVersion {
     ) -> Arc<Node> {
         let new_receiver = self.visit_node(receiver);
         let new_args = args.iter().map(|a| self.visit_node(a)).collect::<Vector<_, ArcK>>();
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::Method {
@@ -443,7 +443,7 @@ impl Visitor for IncrementVersion {
             receiver: new_receiver,
             name: name.clone(),
             args: new_args,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -455,14 +455,14 @@ impl Visitor for IncrementVersion {
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node> {
         let new_name = self.visit_node(name);
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::Eval {
             base: base.clone(),
             name: new_name,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -474,14 +474,14 @@ impl Visitor for IncrementVersion {
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node> {
         let new_quotable = self.visit_node(quotable);
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::Quote {
             base: base.clone(),
             quotable: new_quotable,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -494,15 +494,15 @@ impl Visitor for IncrementVersion {
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node> {
         let new_var = self.visit_node(var);
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::VarRef {
             base: base.clone(),
             kind,
             var: new_var,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -513,14 +513,14 @@ impl Visitor for IncrementVersion {
         value: bool,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node> {
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::BoolLiteral {
             base: base.clone(),
             value,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -531,14 +531,14 @@ impl Visitor for IncrementVersion {
         value: i64,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node> {
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::LongLiteral {
             base: base.clone(),
             value,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -549,14 +549,14 @@ impl Visitor for IncrementVersion {
         value: &String,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node> {
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::StringLiteral {
             base: base.clone(),
             value: value.clone(),
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -567,14 +567,14 @@ impl Visitor for IncrementVersion {
         value: &String,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node> {
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::UriLiteral {
             base: base.clone(),
             value: value.clone(),
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -584,13 +584,13 @@ impl Visitor for IncrementVersion {
         base: &NodeBase,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node> {
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::Nil {
             base: base.clone(),
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -604,15 +604,15 @@ impl Visitor for IncrementVersion {
     ) -> Arc<Node> {
         let new_elements = elements.iter().map(|e| self.visit_node(e)).collect::<Vector<_, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::List {
             base: base.clone(),
             elements: new_elements,
             remainder: new_remainder,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -626,15 +626,15 @@ impl Visitor for IncrementVersion {
     ) -> Arc<Node> {
         let new_elements = elements.iter().map(|e| self.visit_node(e)).collect::<Vector<_, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::Set {
             base: base.clone(),
             elements: new_elements,
             remainder: new_remainder,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -648,15 +648,15 @@ impl Visitor for IncrementVersion {
     ) -> Arc<Node> {
         let new_pairs = pairs.iter().map(|(k, v)| (self.visit_node(k), self.visit_node(v))).collect::<Vector<_, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::Map {
             base: base.clone(),
             pairs: new_pairs,
             remainder: new_remainder,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -668,14 +668,14 @@ impl Visitor for IncrementVersion {
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node> {
         let new_elements = elements.iter().map(|e| self.visit_node(e)).collect::<Vector<_, ArcK>>();
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::Tuple {
             base: base.clone(),
             elements: new_elements,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -686,14 +686,14 @@ impl Visitor for IncrementVersion {
         name: &String,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node> {
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::Var {
             base: base.clone(),
             name: name.clone(),
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -707,15 +707,15 @@ impl Visitor for IncrementVersion {
     ) -> Arc<Node> {
         let new_var = self.visit_node(var);
         let new_uri = uri.as_ref().map(|u| self.visit_node(u));
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::NameDecl {
             base: base.clone(),
             var: new_var,
             uri: new_uri,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -731,8 +731,8 @@ impl Visitor for IncrementVersion {
         let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<_, ArcK>>();
         let new_names_remainder = names_remainder.as_ref().map(|r| self.visit_node(r));
         let new_procs = procs.iter().map(|p| self.visit_node(p)).collect::<Vector<_, ArcK>>();
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::Decl {
@@ -740,7 +740,7 @@ impl Visitor for IncrementVersion {
             names: new_names,
             names_remainder: new_names_remainder,
             procs: new_procs,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -756,8 +756,8 @@ impl Visitor for IncrementVersion {
         let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<_, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         let new_source = self.visit_node(source);
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::LinearBind {
@@ -765,7 +765,7 @@ impl Visitor for IncrementVersion {
             names: new_names,
             remainder: new_remainder,
             source: new_source,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -781,8 +781,8 @@ impl Visitor for IncrementVersion {
         let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<_, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         let new_source = self.visit_node(source);
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::RepeatedBind {
@@ -790,7 +790,7 @@ impl Visitor for IncrementVersion {
             names: new_names,
             remainder: new_remainder,
             source: new_source,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -806,8 +806,8 @@ impl Visitor for IncrementVersion {
         let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<_, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         let new_source = self.visit_node(source);
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::PeekBind {
@@ -815,7 +815,7 @@ impl Visitor for IncrementVersion {
             names: new_names,
             remainder: new_remainder,
             source: new_source,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -826,14 +826,14 @@ impl Visitor for IncrementVersion {
         kind: &CommentKind,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node> {
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::Comment {
             base: base.clone(),
             kind: kind.clone(),
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -845,14 +845,14 @@ impl Visitor for IncrementVersion {
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node> {
         let new_name = self.visit_node(name);
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::ReceiveSendSource {
             base: base.clone(),
             name: new_name,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -866,15 +866,15 @@ impl Visitor for IncrementVersion {
     ) -> Arc<Node> {
         let new_name = self.visit_node(name);
         let new_inputs = inputs.iter().map(|i| self.visit_node(i)).collect::<Vector<_, ArcK>>();
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::SendReceiveSource {
             base: base.clone(),
             name: new_name,
             inputs: new_inputs,
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -884,13 +884,13 @@ impl Visitor for IncrementVersion {
         base: &NodeBase,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node> {
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::Wildcard {
             base: base.clone(),
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 
@@ -901,14 +901,14 @@ impl Visitor for IncrementVersion {
         value: &String,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<Node> {
-        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(Metadata { data: HashMap::new() }));
-        let mut data = new_metadata.data.clone();
+        let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
+        let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
         Arc::new(Node::SimpleType {
             base: base.clone(),
             value: value.clone(),
-            metadata: Some(Arc::new(Metadata { data })),
+            metadata: Some(Arc::new(data)),
         })
     }
 }
@@ -1024,7 +1024,11 @@ mod tests {
         let transformed = pipeline.apply(&ir);
         assert!(matches!(*transformed, Node::LongLiteral { value: 42, .. }), "Pipeline should simplify double negation");
         if let Some(metadata) = transformed.metadata() {
-            assert_eq!(metadata.get_version(), 1, "Metadata version should be incremented");
+            let version = metadata.get("version")
+                .and_then(|v| v.downcast_ref::<usize>())
+                .copied()
+                .unwrap_or(0);
+            assert_eq!(version, 1, "Metadata version should be incremented");
         } else {
             panic!("Expected metadata on transformed node");
         }

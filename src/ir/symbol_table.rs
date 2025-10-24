@@ -1,7 +1,7 @@
 use std::sync::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::ir::node::Position;
+use crate::ir::rholang_node::Position;
 use tower_lsp::lsp_types::Url;
 
 /// Represents the type of a symbol in Rholang.

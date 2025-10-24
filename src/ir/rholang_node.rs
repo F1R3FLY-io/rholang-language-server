@@ -10,7 +10,7 @@ use ropey::{Rope, RopeSlice};
 
 use tracing::{debug, warn};
 
-use super::semantic_node::Metadata;
+pub use super::semantic_node::Metadata;
 
 pub type NodeVector = Vector<Arc<Node>, ArcK>;
 pub type NodePairVector = Vector<(Arc<Node>, Arc<Node>), ArcK>;
@@ -446,30 +446,6 @@ pub enum VarRefKind {
 pub enum CommentKind {
     Line,
     Block,
-}
-
-#[derive(Clone, Debug)]
-pub struct Metadata {
-    pub data: HashMap<String, Arc<dyn Any + Send + Sync>>,
-}
-
-impl Metadata {
-    /// Retrieves the version from the metadata data map, defaulting to 0 if absent.
-    pub fn get_version(&self) -> usize {
-        self.data
-            .get("version")
-            .and_then(|v| v.downcast_ref::<usize>())
-            .cloned()
-            .unwrap_or(0)
-    }
-
-    /// Sets the version in the metadata data map.
-    pub fn set_version(&mut self, version: usize) {
-        self.data.insert(
-            "version".to_string(),
-            Arc::new(version) as Arc<dyn Any + Send + Sync>,
-        );
-    }
 }
 
 /// Computes absolute positions for all nodes in the IR tree, storing them in a HashMap.
@@ -4343,7 +4319,6 @@ impl super::semantic_node::SemanticNode for Node {
             Node::Conjunction { base, .. } => base,
             Node::Negation { base, .. } => base,
             Node::Unit { base, .. } => base,
-            Node::Position { base, .. } => base,
         }
     }
 
@@ -4393,7 +4368,6 @@ impl super::semantic_node::SemanticNode for Node {
             Node::Conjunction { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
             Node::Negation { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
             Node::Unit { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Position { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
         }
     }
 
@@ -4434,7 +4408,6 @@ impl super::semantic_node::SemanticNode for Node {
             Node::Error { .. } => NodeType::Unknown,
             Node::Disjunction { .. } | Node::Conjunction { .. } | Node::Negation { .. } => NodeType::Match,
             Node::Unit { .. } => NodeType::Literal,
-            Node::Position { .. } => NodeType::Literal,
         }
     }
 
@@ -4600,7 +4573,7 @@ mod tests {
             "custom".to_string(),
             Arc::new("test".to_string()) as Arc<dyn Any + Send + Sync>,
         );
-        let metadata = Arc::new(Metadata { data });
+        let metadata = Arc::new(data);
         let base = NodeBase::new(
             RelativePosition {
                 delta_lines: 0,
@@ -4618,7 +4591,6 @@ mod tests {
         assert_eq!(
             node.metadata()
                 .unwrap()
-                .data
                 .get("version")
                 .unwrap()
                 .downcast_ref::<usize>(),
@@ -4627,7 +4599,6 @@ mod tests {
         assert_eq!(
             node.metadata()
                 .unwrap()
-                .data
                 .get("custom")
                 .unwrap()
                 .downcast_ref::<String>(),
@@ -4956,7 +4927,7 @@ mod tests {
             metadata: None,
         });
         let mut subst = HashMap::new();
-        assert!(crate::ir::node::match_pat(&pat, &concrete, &mut subst));
+        assert!(crate::ir::rholang_node::match_pat(&pat, &concrete, &mut subst));
     }
 
     #[test]
@@ -5114,7 +5085,7 @@ mod tests {
             metadata: None,
         });
         let mut subst = HashMap::new();
-        assert!(crate::ir::node::match_pat(&pat, &concrete, &mut subst));
+        assert!(crate::ir::rholang_node::match_pat(&pat, &concrete, &mut subst));
     }
 
     #[test]
@@ -5206,7 +5177,7 @@ mod tests {
             metadata: None,
         });
         let mut subst = HashMap::new();
-        assert!(crate::ir::node::match_pat(&pat, &concrete, &mut subst));
+        assert!(crate::ir::rholang_node::match_pat(&pat, &concrete, &mut subst));
     }
 
     #[test]

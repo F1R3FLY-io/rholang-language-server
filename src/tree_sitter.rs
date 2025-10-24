@@ -12,7 +12,7 @@ use archery::ArcK;
 
 use ropey::Rope;
 
-use crate::ir::node::{
+use crate::ir::rholang_node::{
     BinOperator, BundleType, CommentKind, Node, NodeBase, SendType, UnaryOperator, VarRefKind,
     Metadata, Position, RelativePosition
 };
@@ -250,7 +250,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
     );
     let mut data = HashMap::new();
     data.insert("version".to_string(), Arc::new(0usize) as Arc<dyn Any + Send + Sync>);
-    let metadata = Some(Arc::new(Metadata { data }));
+    let metadata = Some(Arc::new(data));
 
     match ts_node.kind() {
         "source_file" => {
@@ -924,7 +924,7 @@ fn binary_op(ts_node: TSNode, rope: &Rope, base: NodeBase, op: BinOperator, prev
     let (right, right_end) = convert_ts_node_to_ir(right_ts, rope, left_end);
     let mut data = HashMap::new();
     data.insert("version".to_string(), Arc::new(0usize) as Arc<dyn Any + Send + Sync>);
-    let metadata = Some(Arc::new(Metadata { data }));
+    let metadata = Some(Arc::new(data));
     let node = Arc::new(Node::BinOp { base, op, left, right, metadata });
     (node, right_end)
 }
@@ -934,7 +934,7 @@ fn unary_op(ts_node: TSNode, rope: &Rope, base: NodeBase, op: UnaryOperator, pre
     let (operand, operand_end) = convert_ts_node_to_ir(operand_ts, rope, prev_end);
     let mut data = HashMap::new();
     data.insert("version".to_string(), Arc::new(0usize) as Arc<dyn Any + Send + Sync>);
-    let metadata = Some(Arc::new(Metadata { data }));
+    let metadata = Some(Arc::new(data));
     let node = Arc::new(Node::UnaryOp { base, op, operand, metadata });
     (node, operand_end)
 }

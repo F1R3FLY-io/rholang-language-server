@@ -310,7 +310,7 @@ impl SemanticNode for MettaNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::node::RelativePosition;
+    use super::super::rholang_node::RelativePosition;
 
     fn test_base() -> NodeBase {
         NodeBase::new(

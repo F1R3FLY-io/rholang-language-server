@@ -34,7 +34,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use walkdir::WalkDir;
 
 use crate::ir::pipeline::Pipeline;
-use crate::ir::node::{Node, Position as IrPosition, compute_absolute_positions, collect_contracts, collect_calls, match_contract, find_node_at_position_with_path, find_node_at_position};
+use crate::ir::rholang_node::{Node, Position as IrPosition, compute_absolute_positions, collect_contracts, collect_calls, match_contract, find_node_at_position_with_path, find_node_at_position};
 use crate::ir::symbol_table::{Symbol, SymbolTable, SymbolType};
 use crate::ir::transforms::symbol_table_builder::{SymbolTableBuilder, InvertedIndex};
 use crate::ir::transforms::document_symbol_visitor::{collect_document_symbols, collect_workspace_symbols};
@@ -422,7 +422,7 @@ impl RholangBackend {
         let inverted_index = builder.get_inverted_index();
         let potential_global_refs = builder.get_potential_global_refs();
         let symbol_table = transformed_ir.metadata()
-            .and_then(|m| m.data.get("symbol_table"))
+            .and_then(|m| m.get("symbol_table"))
             .map(|st| Arc::clone(st.downcast_ref::<Arc<SymbolTable>>().unwrap()))
             .unwrap_or_else(|| {
                 debug!("No symbol table found on root for {}, using default empty table", uri);
@@ -718,7 +718,7 @@ impl RholangBackend {
         if let Some(doc) = opt_doc {
             if let Some(node) = find_node_at_position(&doc.ir, &*doc.positions, position) {
                 let symbol_table = node.metadata()
-                    .and_then(|m| m.data.get("symbol_table"))
+                    .and_then(|m| m.get("symbol_table"))
                     .and_then(|t| t.downcast_ref::<Arc<SymbolTable>>())
                     .cloned()
                     .unwrap_or_else(|| doc.symbol_table.clone());
@@ -769,7 +769,7 @@ impl RholangBackend {
                         let path_result = find_node_at_position_with_path(&doc.ir, &*doc.positions, pos);
                         let symbol_table = path_result.as_ref().and_then(|(node, _)| {
                             node.metadata()
-                                .and_then(|m| m.data.get("symbol_table"))
+                                .and_then(|m| m.get("symbol_table"))
                                 .and_then(|t| t.downcast_ref::<Arc<SymbolTable>>())
                                 .cloned()
                         }).unwrap_or_else(|| doc.symbol_table.clone());
@@ -904,7 +904,7 @@ impl RholangBackend {
                                                 debug!("Position within Send input Var '{}'", input_name);
                                                 // Use the input node's own symbol table if it has one, which should include all parent scopes
                                                 let input_symbol_table = input.metadata()
-                                                    .and_then(|m| m.data.get("symbol_table"))
+                                                    .and_then(|m| m.get("symbol_table"))
                                                     .and_then(|t| t.downcast_ref::<Arc<SymbolTable>>())
                                                     .cloned()
                                                     .unwrap_or_else(|| doc.symbol_table.clone());

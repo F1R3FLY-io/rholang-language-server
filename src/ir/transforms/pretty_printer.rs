@@ -8,7 +8,7 @@ use archery::ArcK;
 
 use tracing::debug;
 
-use crate::ir::node::{
+use crate::ir::rholang_node::{
     BinOperator, BundleType, CommentKind, Node, NodeBase, Metadata, SendType, UnaryOperator,
     VarRefKind, Position, RelativePosition, compute_absolute_positions,
 };
@@ -413,11 +413,11 @@ impl PrettyPrinter {
     fn add_metadata(&self, metadata: &Option<Arc<Metadata>>) {
         if let Some(meta) = metadata {
             self.add_field("metadata", |p| {
-                if meta.data.is_empty() {
+                if meta.is_empty() {
                     p.append("{}");
                     return;
                 }
-                let mut sorted: Vec<_> = meta.data.iter().collect();
+                let mut sorted: Vec<_> = meta.iter().collect();
                 sorted.sort_by_key(|&(k, _)| k);
                 if p.pretty_print {
                     p.append("{");
@@ -1211,7 +1211,7 @@ impl Visitor for PrettyPrinter {
 mod tests {
     use super::*;
     use indoc::indoc;
-    use crate::ir::node::{Metadata, Node, NodeBase, RelativePosition};
+    use crate::ir::rholang_node::{Metadata, Node, NodeBase, RelativePosition};
     use crate::ir::transforms::pretty_printer::format;
     use std::sync::Arc;
     use ropey::Rope;
@@ -1921,16 +1921,15 @@ Nil"#;
         let base = NodeBase::new(RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 3, 0, 3);
         let mut data = HashMap::new();
         data.insert("version".to_string(), Arc::new(0_usize) as Arc<dyn Any + Send + Sync>);
-        let metadata = Some(Arc::new(Metadata { data }));
+        let metadata = Some(Arc::new(data));
         Arc::new(Node::Nil { base, metadata })
     }
 
     /// Adds a key-value pair to the node's metadata, returning a new node.
     fn add_metadata<T: 'static + Send + Sync>(node: Arc<Node>, key: &str, value: T) -> Arc<Node> {
-        let mut data = node.metadata().unwrap().data.clone();
+        let mut data = node.metadata().unwrap().as_ref().clone();
         data.insert(key.to_string(), Arc::new(value) as Arc<dyn Any + Send + Sync>);
-        let new_metadata = Arc::new(Metadata { data });
-        node.with_metadata(Some(new_metadata))
+        node.with_metadata(Some(Arc::new(data)))
     }
 
     /// Helper to assert that the formatted output contains the expected key-value pair.
@@ -2150,7 +2149,7 @@ Nil"#;
         let node = create_nil_node();
         let mut data = HashMap::new();
         data.insert("empty".to_string(), Arc::new(HashMap::<String, i32>::new()) as Arc<dyn Any + Send + Sync>);
-        let node_with_empty = node.with_metadata(Some(Arc::new(Metadata { data })));
+        let node_with_empty = node.with_metadata(Some(Arc::new(data)));
         let rope = Rope::from_str("Nil");
         let formatted = format(&node_with_empty, true, &rope).unwrap();
         let expected = indoc! {r#"

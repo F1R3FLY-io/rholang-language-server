@@ -8,7 +8,7 @@ use archery::ArcK;
 use tower_lsp::lsp_types::{DocumentSymbol, Range, SymbolKind, SymbolInformation, Location, Url};
 use tracing::debug;
 
-use crate::ir::node::{Metadata, Node, NodeBase, Position as IrPosition};
+use crate::ir::rholang_node::{Metadata, Node, NodeBase, Position as IrPosition};
 use crate::ir::symbol_table::{Symbol, SymbolTable, SymbolType};
 use crate::ir::visitor::Visitor;
 
@@ -127,7 +127,6 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
         if let Some(metadata) = metadata {
             if let Some(symbol_table) = metadata
-                .data
                 .get("symbol_table")
                 .and_then(|st| st.downcast_ref::<Arc<SymbolTable>>())
             {
@@ -314,7 +313,6 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
         // Add bound variables from the process's symbol table
         if let Some(metadata) = metadata {
             if let Some(symbol_table) = metadata
-                .data
                 .get("symbol_table")
                 .and_then(|st| st.downcast_ref::<Arc<SymbolTable>>())
             {
@@ -376,7 +374,7 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
             let mut case_children = Vec::new();
             // Add bound variables from the process's symbol table
             if let Some(proc_metadata) = proc.metadata() {
-                if let Some(symbol_table) = proc_metadata.data.get("symbol_table")
+                if let Some(symbol_table) = proc_metadata.get("symbol_table")
                     .and_then(|st| st.downcast_ref::<Arc<SymbolTable>>()) {
                     case_children.extend(self.add_symbols_from_table(symbol_table));
                 }
@@ -444,7 +442,7 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
             let mut branch_children = Vec::new();
             // Add bound variables from the process's symbol table
             if let Some(proc_metadata) = proc.metadata() {
-                if let Some(symbol_table) = proc_metadata.data.get("symbol_table")
+                if let Some(symbol_table) = proc_metadata.get("symbol_table")
                     .and_then(|st| st.downcast_ref::<Arc<SymbolTable>>()) {
                     branch_children.extend(self.add_symbols_from_table(symbol_table));
                 }

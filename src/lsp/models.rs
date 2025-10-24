@@ -6,7 +6,7 @@ use ropey::Rope;
 use tower_lsp::lsp_types::{TextDocumentContentChangeEvent, Url};
 use tree_sitter::Tree;
 
-use crate::ir::node::{Node, Position as IrPosition};
+use crate::ir::rholang_node::{Node, Position as IrPosition};
 use crate::ir::symbol_table::SymbolTable;
 use crate::ir::transforms::symbol_table_builder::InvertedIndex;
 
