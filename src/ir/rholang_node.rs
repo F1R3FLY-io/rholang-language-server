@@ -10,77 +10,12 @@ use ropey::{Rope, RopeSlice};
 
 use tracing::{debug, warn};
 
-pub use super::semantic_node::Metadata;
+pub use super::semantic_node::{Metadata, NodeBase, Position, RelativePosition};
 
 pub type RholangNodeVector = Vector<Arc<RholangNode>, ArcK>;
 pub type RholangNodePairVector = Vector<(Arc<RholangNode>, Arc<RholangNode>), ArcK>;
 pub type RholangBranchVector = Vector<(RholangNodeVector, Arc<RholangNode>), ArcK>;
 pub type RholangReceiptVector = Vector<RholangNodeVector, ArcK>;
-
-/// Represents the position of a node relative to the previous node's end position in the source code.
-/// Used to compute absolute positions dynamically during traversal.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct RelativePosition {
-    pub delta_lines: i32,    // Difference in line numbers from the previous node's end
-    pub delta_columns: i32,  // Difference in column numbers, or start column if on a new line
-    pub delta_bytes: usize,  // Difference in byte offsets from the previous node's end
-}
-
-/// Represents an absolute position in the source code, computed when needed from relative positions.
-/// Coordinates are zero-based (row, column, byte).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub struct Position {
-    pub row: usize,    // Line number (0-based)
-    pub column: usize, // Column number (0-based)
-    pub byte: usize,   // Byte offset from the start of the source code
-}
-
-/// Base structure for all Intermediate Representation (IR) nodes, encapsulating positional and textual metadata.
-/// Provides the foundation for tracking node locations and source text.
-#[derive(Debug, Clone)]
-pub struct NodeBase {
-    relative_start: RelativePosition, // Position relative to the previous node's end
-    length: usize,                    // Length of the node's text in bytes
-    span_lines: usize,                // Number of lines spanned by the node
-    span_columns: usize,              // Columns on the last line
-}
-
-impl NodeBase {
-    /// Creates a new NodeBase instance with the specified attributes.
-    pub fn new(
-        relative_start: RelativePosition,
-        length: usize,
-        span_lines: usize,
-        span_columns: usize,
-    ) -> Self {
-        NodeBase {
-            relative_start,
-            length,
-            span_lines,
-            span_columns,
-        }
-    }
-
-    /// Returns the relative start position of the node.
-    pub fn relative_start(&self) -> RelativePosition {
-        self.relative_start
-    }
-
-    /// Returns the length of the node's text in bytes.
-    pub fn length(&self) -> usize {
-        self.length
-    }
-
-    /// Returns the number of lines spanned by the node.
-    pub fn span_lines(&self) -> usize {
-        self.span_lines
-    }
-
-    /// Returns the number of columns on the last line spanned by the node.
-    pub fn span_columns(&self) -> usize {
-        self.span_columns
-    }
-}
 
 /// Represents all possible constructs in the Rholang Intermediate Representation (IR).
 /// Each variant corresponds to a syntactic element in Rholang, such as processes, expressions, or bindings.
@@ -2106,9 +2041,9 @@ impl RholangNode {
         positions.get(&key).expect("RholangNode not found").0.byte
     }
 
-    /// Returns the length of the node’s text in bytes.
+    /// Returns the length of the node's text in bytes.
     pub fn length(&self) -> usize {
-        self.base().length
+        self.base().length()
     }
 
     /// Returns the absolute start position of the node in the source code.
@@ -4378,49 +4313,372 @@ impl super::semantic_node::SemanticNode for RholangNode {
         None
     }
 
-    fn node_type(&self) -> super::semantic_node::NodeType {
-        use super::semantic_node::NodeType;
+    fn semantic_category(&self) -> super::semantic_node::SemanticCategory {
+        use super::semantic_node::SemanticCategory;
         match self {
-            RholangNode::Par { .. } => NodeType::RholangPar,
-            RholangNode::SendSync { .. } | RholangNode::Send { .. } => NodeType::RholangSend,
-            RholangNode::New { .. } => NodeType::RholangNew,
-            RholangNode::IfElse { .. } => NodeType::Conditional,
-            RholangNode::Let { .. } => NodeType::Binding,
-            RholangNode::Bundle { .. } => NodeType::RholangBundle,
-            RholangNode::Match { .. } => NodeType::Match,
-            RholangNode::Choice { .. } => NodeType::Conditional,
-            RholangNode::Contract { .. } => NodeType::RholangContract,
-            RholangNode::Input { .. } => NodeType::RholangInput,
-            RholangNode::Block { .. } | RholangNode::Parenthesized { .. } => NodeType::Block,
-            RholangNode::BinOp { .. } | RholangNode::UnaryOp { .. } | RholangNode::Method { .. } => NodeType::Invocation,
-            RholangNode::Eval { .. } => NodeType::RholangEval,
-            RholangNode::Quote { .. } => NodeType::RholangQuote,
-            RholangNode::VarRef { .. } | RholangNode::Var { .. } => NodeType::Variable,
+            // Rholang-specific process calculus constructs
+            RholangNode::Par { .. } => SemanticCategory::LanguageSpecific,
+            RholangNode::SendSync { .. } | RholangNode::Send { .. } => SemanticCategory::LanguageSpecific,
+            RholangNode::New { .. } => SemanticCategory::Binding,
+            RholangNode::IfElse { .. } | RholangNode::Choice { .. } => SemanticCategory::Conditional,
+            RholangNode::Let { .. } => SemanticCategory::Binding,
+            RholangNode::Bundle { .. } => SemanticCategory::LanguageSpecific,
+            RholangNode::Match { .. } => SemanticCategory::Match,
+            RholangNode::Contract { .. } => SemanticCategory::Binding,
+            RholangNode::Input { .. } => SemanticCategory::LanguageSpecific,
+            RholangNode::Block { .. } | RholangNode::Parenthesized { .. } => SemanticCategory::Block,
+            RholangNode::BinOp { .. } | RholangNode::UnaryOp { .. } | RholangNode::Method { .. } => SemanticCategory::Invocation,
+            RholangNode::Eval { .. } => SemanticCategory::LanguageSpecific,
+            RholangNode::Quote { .. } => SemanticCategory::LanguageSpecific,
+            RholangNode::VarRef { .. } | RholangNode::Var { .. } => SemanticCategory::Variable,
             RholangNode::BoolLiteral { .. } | RholangNode::LongLiteral { .. }
-            | RholangNode::StringLiteral { .. } | RholangNode::UriLiteral { .. } => NodeType::Literal,
-            RholangNode::Nil { .. } | RholangNode::Wildcard { .. } => NodeType::Literal,
-            RholangNode::List { .. } | RholangNode::Set { .. } | RholangNode::Map { .. } | RholangNode::Tuple { .. } => NodeType::Collection,
-            RholangNode::NameDecl { .. } | RholangNode::Decl { .. } => NodeType::Binding,
-            RholangNode::LinearBind { .. } | RholangNode::RepeatedBind { .. } | RholangNode::PeekBind { .. } => NodeType::Binding,
-            RholangNode::Comment { .. } => NodeType::Unknown,
-            RholangNode::SimpleType { .. } => NodeType::Literal,
-            RholangNode::ReceiveSendSource { .. } | RholangNode::SendReceiveSource { .. } => NodeType::RholangSend,
-            RholangNode::Error { .. } => NodeType::Unknown,
-            RholangNode::Disjunction { .. } | RholangNode::Conjunction { .. } | RholangNode::Negation { .. } => NodeType::Match,
-            RholangNode::Unit { .. } => NodeType::Literal,
+            | RholangNode::StringLiteral { .. } | RholangNode::UriLiteral { .. } => SemanticCategory::Literal,
+            RholangNode::Nil { .. } | RholangNode::Wildcard { .. } | RholangNode::Unit { .. } => SemanticCategory::Literal,
+            RholangNode::List { .. } | RholangNode::Set { .. } | RholangNode::Map { .. } | RholangNode::Tuple { .. } => SemanticCategory::Collection,
+            RholangNode::NameDecl { .. } | RholangNode::Decl { .. } => SemanticCategory::Binding,
+            RholangNode::LinearBind { .. } | RholangNode::RepeatedBind { .. } | RholangNode::PeekBind { .. } => SemanticCategory::Binding,
+            RholangNode::Comment { .. } => SemanticCategory::Unknown,
+            RholangNode::SimpleType { .. } => SemanticCategory::Literal,
+            RholangNode::ReceiveSendSource { .. } | RholangNode::SendReceiveSource { .. } => SemanticCategory::LanguageSpecific,
+            RholangNode::Error { .. } => SemanticCategory::Unknown,
+            RholangNode::Disjunction { .. } | RholangNode::Conjunction { .. } | RholangNode::Negation { .. } => SemanticCategory::Match,
         }
     }
 
-    fn children(&self) -> Vec<&dyn super::semantic_node::SemanticNode> {
-        // This is complex due to lifetime issues with trait objects
-        // Returning empty for now - can be implemented per-variant as needed
-        vec![]
+    fn type_name(&self) -> &'static str {
+        match self {
+            RholangNode::Par { .. } => "Rholang::Par",
+            RholangNode::SendSync { .. } => "Rholang::SendSync",
+            RholangNode::Send { .. } => "Rholang::Send",
+            RholangNode::New { .. } => "Rholang::New",
+            RholangNode::IfElse { .. } => "Rholang::IfElse",
+            RholangNode::Let { .. } => "Rholang::Let",
+            RholangNode::Bundle { .. } => "Rholang::Bundle",
+            RholangNode::Match { .. } => "Rholang::Match",
+            RholangNode::Choice { .. } => "Rholang::Choice",
+            RholangNode::Contract { .. } => "Rholang::Contract",
+            RholangNode::Input { .. } => "Rholang::Input",
+            RholangNode::Block { .. } => "Rholang::Block",
+            RholangNode::Parenthesized { .. } => "Rholang::Parenthesized",
+            RholangNode::BinOp { .. } => "Rholang::BinOp",
+            RholangNode::UnaryOp { .. } => "Rholang::UnaryOp",
+            RholangNode::Method { .. } => "Rholang::Method",
+            RholangNode::Eval { .. } => "Rholang::Eval",
+            RholangNode::Quote { .. } => "Rholang::Quote",
+            RholangNode::VarRef { .. } => "Rholang::VarRef",
+            RholangNode::Var { .. } => "Rholang::Var",
+            RholangNode::BoolLiteral { .. } => "Rholang::BoolLiteral",
+            RholangNode::LongLiteral { .. } => "Rholang::LongLiteral",
+            RholangNode::StringLiteral { .. } => "Rholang::StringLiteral",
+            RholangNode::UriLiteral { .. } => "Rholang::UriLiteral",
+            RholangNode::Nil { .. } => "Rholang::Nil",
+            RholangNode::Wildcard { .. } => "Rholang::Wildcard",
+            RholangNode::Unit { .. } => "Rholang::Unit",
+            RholangNode::List { .. } => "Rholang::List",
+            RholangNode::Set { .. } => "Rholang::Set",
+            RholangNode::Map { .. } => "Rholang::Map",
+            RholangNode::Tuple { .. } => "Rholang::Tuple",
+            RholangNode::NameDecl { .. } => "Rholang::NameDecl",
+            RholangNode::Decl { .. } => "Rholang::Decl",
+            RholangNode::LinearBind { .. } => "Rholang::LinearBind",
+            RholangNode::RepeatedBind { .. } => "Rholang::RepeatedBind",
+            RholangNode::PeekBind { .. } => "Rholang::PeekBind",
+            RholangNode::Comment { .. } => "Rholang::Comment",
+            RholangNode::SimpleType { .. } => "Rholang::SimpleType",
+            RholangNode::ReceiveSendSource { .. } => "Rholang::ReceiveSendSource",
+            RholangNode::SendReceiveSource { .. } => "Rholang::SendReceiveSource",
+            RholangNode::Error { .. } => "Rholang::Error",
+            RholangNode::Disjunction { .. } => "Rholang::Disjunction",
+            RholangNode::Conjunction { .. } => "Rholang::Conjunction",
+            RholangNode::Negation { .. } => "Rholang::Negation",
+        }
     }
 
-    fn children_arc(&self) -> Vec<Arc<dyn super::semantic_node::SemanticNode>> {
-        // This is also complex - would need to clone and box each child
-        // Returning empty for now - can be implemented per-variant as needed
-        vec![]
+    fn children_count(&self) -> usize {
+        match self {
+            // Binary nodes (2 children)
+            RholangNode::Par { left, right, .. } => {
+                let _ = (left, right);
+                2
+            }
+            RholangNode::BinOp { left, right, .. } => {
+                let _ = (left, right);
+                2
+            }
+            RholangNode::Disjunction { left, right, .. } => {
+                let _ = (left, right);
+                2
+            }
+            RholangNode::Conjunction { left, right, .. } => {
+                let _ = (left, right);
+                2
+            }
+
+            // Unary nodes (1 child)
+            RholangNode::UnaryOp { operand, .. } => {
+                let _ = operand;
+                1
+            }
+            RholangNode::Bundle { proc, .. } => {
+                let _ = proc;
+                1
+            }
+            RholangNode::Eval { name, .. } => {
+                let _ = name;
+                1
+            }
+            RholangNode::Quote { quotable, .. } => {
+                let _ = quotable;
+                1
+            }
+            RholangNode::Block { proc, .. } => {
+                let _ = proc;
+                1
+            }
+            RholangNode::Parenthesized { expr, .. } => {
+                let _ = expr;
+                1
+            }
+            RholangNode::Negation { operand, .. } => {
+                let _ = operand;
+                1
+            }
+
+            // Nodes with vector children
+            RholangNode::SendSync { channel, inputs, cont, .. } => {
+                let _ = (channel, cont);
+                1 + inputs.len() + 1 // channel + inputs + cont
+            }
+            RholangNode::Send { channel, inputs, .. } => {
+                let _ = channel;
+                1 + inputs.len() // channel + inputs
+            }
+            RholangNode::New { decls, proc, .. } => {
+                let _ = (decls, proc);
+                decls.len() + 1 // decls + proc
+            }
+            RholangNode::Let { decls, proc, .. } => {
+                let _ = (decls, proc);
+                decls.len() + 1 // decls + proc
+            }
+            RholangNode::Match { expression, cases, .. } => {
+                let _ = expression;
+                1 + cases.len() * 2 // target + (pattern, body) for each case
+            }
+            RholangNode::Choice { branches, .. } => {
+                branches.len() * 2 // (patterns, body) for each branch
+            }
+            RholangNode::Input { receipts, proc, .. } => {
+                let _ = proc;
+                receipts.len() + 1 // receipts + proc
+            }
+            RholangNode::Contract { name, formals, proc, .. } => {
+                let _ = (name, proc);
+                1 + formals.len() + 1 // name + formals + proc
+            }
+            RholangNode::Method { receiver, args, .. } => {
+                let _ = receiver;
+                1 + args.len() // receiver + args
+            }
+
+            // Conditional nodes
+            RholangNode::IfElse { condition, consequence, alternative, .. } => {
+                let _ = (condition, consequence);
+                if alternative.is_some() { 3 } else { 2 }
+            }
+
+            // Collection nodes
+            RholangNode::List { elements, remainder, .. } => {
+                if remainder.is_some() {
+                    elements.len() + 1
+                } else {
+                    elements.len()
+                }
+            }
+            RholangNode::Set { elements, .. } => elements.len(),
+            RholangNode::Map { pairs, .. } => pairs.len() * 2, // key + value for each pair
+            RholangNode::Tuple { elements, .. } => elements.len(),
+
+            // Leaf nodes and nodes we'll skip for now
+            _ => 0,
+        }
+    }
+
+    fn child_at(&self, index: usize) -> Option<&dyn super::semantic_node::SemanticNode> {
+        match self {
+            // Binary nodes
+            RholangNode::Par { left, right, .. } => match index {
+                0 => Some(&**left),
+                1 => Some(&**right),
+                _ => None,
+            },
+            RholangNode::BinOp { left, right, .. } => match index {
+                0 => Some(&**left),
+                1 => Some(&**right),
+                _ => None,
+            },
+            RholangNode::Disjunction { left, right, .. } => match index {
+                0 => Some(&**left),
+                1 => Some(&**right),
+                _ => None,
+            },
+            RholangNode::Conjunction { left, right, .. } => match index {
+                0 => Some(&**left),
+                1 => Some(&**right),
+                _ => None,
+            },
+
+            // Unary nodes
+            RholangNode::UnaryOp { operand, .. } if index == 0 => Some(&**operand),
+            RholangNode::Bundle { proc, .. } if index == 0 => Some(&**proc),
+            RholangNode::Eval { name, .. } if index == 0 => Some(&**name),
+            RholangNode::Quote { quotable, .. } if index == 0 => Some(&**quotable),
+            RholangNode::Block { proc, .. } if index == 0 => Some(&**proc),
+            RholangNode::Parenthesized { expr, .. } if index == 0 => Some(&**expr),
+            RholangNode::Negation { operand, .. } if index == 0 => Some(&**operand),
+
+            // Nodes with vector children
+            RholangNode::SendSync { channel, inputs, cont, .. } => {
+                if index == 0 {
+                    Some(&**channel)
+                } else if index <= inputs.len() {
+                    Some(&**inputs.get(index - 1)?)
+                } else if index == inputs.len() + 1 {
+                    Some(&**cont)
+                } else {
+                    None
+                }
+            }
+            RholangNode::Send { channel, inputs, .. } => {
+                if index == 0 {
+                    Some(&**channel)
+                } else if index <= inputs.len() {
+                    Some(&**inputs.get(index - 1)?)
+                } else {
+                    None
+                }
+            }
+            RholangNode::New { decls, proc, .. } => {
+                if index < decls.len() {
+                    Some(&**decls.get(index)?)
+                } else if index == decls.len() {
+                    Some(&**proc)
+                } else {
+                    None
+                }
+            }
+            RholangNode::Let { decls, proc, .. } => {
+                if index < decls.len() {
+                    decls.get(index).map(|d| &**d as &dyn super::semantic_node::SemanticNode)
+                } else if index == decls.len() {
+                    Some(&**proc)
+                } else {
+                    None
+                }
+            }
+            RholangNode::Match { expression, cases, .. } => {
+                if index == 0 {
+                    Some(&**expression)
+                } else {
+                    let case_index = (index - 1) / 2;
+                    if case_index < cases.len() {
+                        let (pattern, body) = cases.get(case_index)?;
+                        if (index - 1) % 2 == 0 {
+                            Some(&**pattern)
+                        } else {
+                            Some(&**body)
+                        }
+                    } else {
+                        None
+                    }
+                }
+            }
+            RholangNode::Choice { branches, .. } => {
+                let branch_index = index / 2;
+                if branch_index < branches.len() {
+                    let (patterns, body) = branches.get(branch_index)?;
+                    if index % 2 == 0 {
+                        // Return first pattern as representative
+                        patterns.get(0).map(|p| &**p as &dyn super::semantic_node::SemanticNode)
+                    } else {
+                        Some(&**body)
+                    }
+                } else {
+                    None
+                }
+            }
+            RholangNode::Input { receipts, proc, .. } => {
+                if index < receipts.len() {
+                    // Access first receipt pattern as representative
+                    receipts.get(index).and_then(|r| r.get(0).map(|p| &**p as &dyn super::semantic_node::SemanticNode))
+                } else if index == receipts.len() {
+                    Some(&**proc)
+                } else {
+                    None
+                }
+            }
+            RholangNode::Contract { name, formals, proc, .. } => {
+                if index == 0 {
+                    Some(&**name)
+                } else if index <= formals.len() {
+                    Some(&**formals.get(index - 1)?)
+                } else if index == formals.len() + 1 {
+                    Some(&**proc)
+                } else {
+                    None
+                }
+            }
+            RholangNode::Method { receiver, args, .. } => {
+                if index == 0 {
+                    Some(&**receiver)
+                } else if index <= args.len() {
+                    Some(&**args.get(index - 1)?)
+                } else {
+                    None
+                }
+            }
+
+            // Conditional nodes
+            RholangNode::IfElse { condition, consequence, alternative, .. } => match index {
+                0 => Some(&**condition),
+                1 => Some(&**consequence),
+                2 => alternative.as_ref().map(|alt| &**alt as &dyn super::semantic_node::SemanticNode),
+                _ => None,
+            },
+
+            // Collection nodes
+            RholangNode::List { elements, remainder, .. } => {
+                if index < elements.len() {
+                    Some(&**elements.get(index)?)
+                } else if index == elements.len() && remainder.is_some() {
+                    remainder.as_ref().map(|r| &**r as &dyn super::semantic_node::SemanticNode)
+                } else {
+                    None
+                }
+            }
+            RholangNode::Set { elements, .. } => {
+                elements.get(index).map(|e| &**e as &dyn super::semantic_node::SemanticNode)
+            }
+            RholangNode::Map { pairs, .. } => {
+                let pair_index = index / 2;
+                if pair_index < pairs.len() {
+                    let (key, value) = pairs.get(pair_index)?;
+                    if index % 2 == 0 {
+                        Some(&**key)
+                    } else {
+                        Some(&**value)
+                    }
+                } else {
+                    None
+                }
+            }
+            RholangNode::Tuple { elements, .. } => {
+                elements.get(index).map(|e| &**e as &dyn super::semantic_node::SemanticNode)
+            }
+
+            // Leaf nodes and unhandled return None
+            _ => None,
+        }
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -5198,6 +5456,6 @@ mod tests {
             let _ = match_pat(&pat_ir, &concrete_ir, &mut subst);
             TestResult::passed()
         }
-        QuickCheck::new().quickcheck(prop as fn(RholangProc, RholangProc) -> TestResult);
+        QuickCheck::new().tests(50).max_tests(500).quickcheck(prop as fn(RholangProc, RholangProc) -> TestResult);
     }
 }

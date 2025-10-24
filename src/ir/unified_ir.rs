@@ -11,9 +11,9 @@ use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
 
-use super::rholang_node::{NodeBase, RholangNode};
+use super::semantic_node::{NodeBase, Metadata, SemanticNode, SemanticCategory};
+use super::rholang_node::RholangNode;
 use super::metta_node::{MettaNode, MettaVariableType};
-use super::semantic_node::{Metadata, NodeType, SemanticNode};
 
 /// Common literal types across languages
 #[derive(Debug, Clone, PartialEq)]
@@ -474,22 +474,40 @@ impl UnifiedIR {
         }
     }
 
-    /// Get the semantic node type
-    pub fn node_type(&self) -> NodeType {
+    /// Get the semantic category
+    pub fn semantic_category(&self) -> SemanticCategory {
         match self {
-            UnifiedIR::Literal { .. } => NodeType::Literal,
-            UnifiedIR::Variable { .. } => NodeType::Variable,
-            UnifiedIR::Binding { .. } => NodeType::Binding,
-            UnifiedIR::Invocation { .. } => NodeType::Invocation,
-            UnifiedIR::Match { .. } => NodeType::Match,
-            UnifiedIR::Collection { .. } => NodeType::Collection,
-            UnifiedIR::Conditional { .. } => NodeType::Conditional,
-            UnifiedIR::Block { .. } => NodeType::Block,
-            UnifiedIR::Composition { is_parallel: true, .. } => NodeType::RholangPar,
-            UnifiedIR::Composition { is_parallel: false, .. } => NodeType::Block,
-            UnifiedIR::RholangExt { .. } => NodeType::Unknown,
-            UnifiedIR::MettaExt { .. } => NodeType::Unknown,
-            UnifiedIR::Error { .. } => NodeType::Unknown,
+            UnifiedIR::Literal { .. } => SemanticCategory::Literal,
+            UnifiedIR::Variable { .. } => SemanticCategory::Variable,
+            UnifiedIR::Binding { .. } => SemanticCategory::Binding,
+            UnifiedIR::Invocation { .. } => SemanticCategory::Invocation,
+            UnifiedIR::Match { .. } => SemanticCategory::Match,
+            UnifiedIR::Collection { .. } => SemanticCategory::Collection,
+            UnifiedIR::Conditional { .. } => SemanticCategory::Conditional,
+            UnifiedIR::Block { .. } => SemanticCategory::Block,
+            UnifiedIR::Composition { is_parallel: true, .. } => SemanticCategory::LanguageSpecific,
+            UnifiedIR::Composition { is_parallel: false, .. } => SemanticCategory::Block,
+            UnifiedIR::RholangExt { .. } | UnifiedIR::MettaExt { .. } => SemanticCategory::LanguageSpecific,
+            UnifiedIR::Error { .. } => SemanticCategory::Unknown,
+        }
+    }
+
+    /// Get the type name
+    pub fn type_name_str(&self) -> &'static str {
+        match self {
+            UnifiedIR::Literal { .. } => "UnifiedIR::Literal",
+            UnifiedIR::Variable { .. } => "UnifiedIR::Variable",
+            UnifiedIR::Binding { .. } => "UnifiedIR::Binding",
+            UnifiedIR::Invocation { .. } => "UnifiedIR::Invocation",
+            UnifiedIR::Match { .. } => "UnifiedIR::Match",
+            UnifiedIR::Collection { .. } => "UnifiedIR::Collection",
+            UnifiedIR::Conditional { .. } => "UnifiedIR::Conditional",
+            UnifiedIR::Block { .. } => "UnifiedIR::Block",
+            UnifiedIR::Composition { is_parallel: true, .. } => "UnifiedIR::ParallelComposition",
+            UnifiedIR::Composition { is_parallel: false, .. } => "UnifiedIR::SequentialComposition",
+            UnifiedIR::RholangExt { .. } => "UnifiedIR::RholangExt",
+            UnifiedIR::MettaExt { .. } => "UnifiedIR::MettaExt",
+            UnifiedIR::Error { .. } => "UnifiedIR::Error",
         }
     }
 }
@@ -509,18 +527,159 @@ impl SemanticNode for UnifiedIR {
         None
     }
 
-    fn node_type(&self) -> NodeType {
-        UnifiedIR::node_type(self)
+    fn semantic_category(&self) -> SemanticCategory {
+        UnifiedIR::semantic_category(self)
     }
 
-    fn children(&self) -> Vec<&dyn SemanticNode> {
-        // Simplified for now
-        vec![]
+    fn type_name(&self) -> &'static str {
+        UnifiedIR::type_name_str(self)
     }
 
-    fn children_arc(&self) -> Vec<Arc<dyn SemanticNode>> {
-        // Simplified for now
-        vec![]
+    fn children_count(&self) -> usize {
+        match self {
+            // Leaf nodes
+            UnifiedIR::Literal { .. } | UnifiedIR::Variable { .. } => 0,
+
+            // Nodes with dynamic children
+            UnifiedIR::Binding { names, values, body, .. } => {
+                names.len() + values.len() + if body.is_some() { 1 } else { 0 }
+            }
+            UnifiedIR::Invocation { target, args, .. } => {
+                let _ = target;
+                1 + args.len()
+            }
+            UnifiedIR::Match { scrutinee, cases, .. } => {
+                let _ = scrutinee;
+                1 + cases.len() * 2  // scrutinee + (pattern, body) for each case
+            }
+            UnifiedIR::Collection { elements, .. } => elements.len(),
+            UnifiedIR::Conditional { condition, consequence, alternative, .. } => {
+                let _ = consequence;
+                (if condition.is_some() { 1 } else { 0 })
+                    + 1  // consequence
+                    + (if alternative.is_some() { 1 } else { 0 })
+            }
+            UnifiedIR::Block { body, .. } => {
+                let _ = body;
+                1
+            }
+            UnifiedIR::Composition { left, right, .. } => {
+                let _ = (left, right);
+                2
+            }
+            UnifiedIR::Error { children, .. } => children.len(),
+
+            // Extension nodes - delegate to wrapped nodes
+            UnifiedIR::RholangExt { node, .. } => node.children_count(),
+            UnifiedIR::MettaExt { node, .. } => {
+                // Downcast from Arc<dyn Any> to Arc<MettaNode>
+                if let Some(metta_node) = node.downcast_ref::<MettaNode>() {
+                    metta_node.children_count()
+                } else {
+                    0
+                }
+            }
+        }
+    }
+
+    fn child_at(&self, index: usize) -> Option<&dyn SemanticNode> {
+        match self {
+            // Binding
+            UnifiedIR::Binding { names, values, body, .. } => {
+                if index < names.len() {
+                    Some(&**names.get(index)?)
+                } else if index < names.len() + values.len() {
+                    Some(&**values.get(index - names.len())?)
+                } else if index == names.len() + values.len() && body.is_some() {
+                    body.as_ref().map(|b| &**b as &dyn SemanticNode)
+                } else {
+                    None
+                }
+            }
+
+            // Invocation
+            UnifiedIR::Invocation { target, args, .. } => {
+                if index == 0 {
+                    Some(&**target)
+                } else if index <= args.len() {
+                    Some(&**args.get(index - 1)?)
+                } else {
+                    None
+                }
+            }
+
+            // Match
+            UnifiedIR::Match { scrutinee, cases, .. } => {
+                if index == 0 {
+                    Some(&**scrutinee)
+                } else {
+                    let case_index = (index - 1) / 2;
+                    if case_index < cases.len() {
+                        let (pattern, body) = &cases[case_index];
+                        if (index - 1) % 2 == 0 {
+                            Some(&**pattern)
+                        } else {
+                            Some(&**body)
+                        }
+                    } else {
+                        None
+                    }
+                }
+            }
+
+            // Collection
+            UnifiedIR::Collection { elements, .. } => {
+                elements.get(index).map(|e| &**e as &dyn SemanticNode)
+            }
+
+            // Conditional
+            UnifiedIR::Conditional { condition, consequence, alternative, .. } => {
+                let mut curr_index = 0;
+                if condition.is_some() {
+                    if index == curr_index {
+                        return condition.as_ref().map(|c| &**c as &dyn SemanticNode);
+                    }
+                    curr_index += 1;
+                }
+                if index == curr_index {
+                    return Some(&**consequence);
+                }
+                curr_index += 1;
+                if alternative.is_some() && index == curr_index {
+                    return alternative.as_ref().map(|alt| &**alt as &dyn SemanticNode);
+                }
+                None
+            }
+
+            // Block
+            UnifiedIR::Block { body, .. } if index == 0 => Some(&**body),
+
+            // Composition
+            UnifiedIR::Composition { left, right, .. } => match index {
+                0 => Some(&**left),
+                1 => Some(&**right),
+                _ => None,
+            },
+
+            // Error
+            UnifiedIR::Error { children, .. } => {
+                children.get(index).map(|c| &**c as &dyn SemanticNode)
+            }
+
+            // Extension nodes - delegate to wrapped nodes
+            UnifiedIR::RholangExt { node, .. } => node.child_at(index),
+            UnifiedIR::MettaExt { node, .. } => {
+                // Downcast from Arc<dyn Any> to Arc<MettaNode>
+                if let Some(metta_node) = node.downcast_ref::<MettaNode>() {
+                    metta_node.child_at(index)
+                } else {
+                    None
+                }
+            }
+
+            // Leaf nodes
+            _ => None,
+        }
     }
 
     fn as_any(&self) -> &dyn Any {

@@ -324,10 +324,16 @@ impl Visitor for SymbolTableBuilder {
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<RholangNode> {
         let contract_pos = name.absolute_start(&self.root);
-        let contract_name = if let RholangNode::Var { name, .. } = &**name {
-            name.clone()
-        } else {
-            String::new()
+        let contract_name = match &**name {
+            RholangNode::Var { name, .. } => name.clone(),
+            RholangNode::Quote { quotable, .. } => {
+                // Handle quoted contract identifiers like @"contractName"
+                match &**quotable {
+                    RholangNode::StringLiteral { value, .. } => value.clone(),
+                    _ => String::new()
+                }
+            }
+            _ => String::new()
         };
 
         let symbol = if !contract_name.is_empty() {

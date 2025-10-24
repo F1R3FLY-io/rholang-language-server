@@ -1,5 +1,9 @@
 pub mod formatter;
+pub mod global_index;
 pub mod metta_node;
+pub mod mork_convert;
+pub mod pattern_matching;
+pub mod pattern_matching_debug;
 pub mod pipeline;
 pub mod rholang_node;
 pub mod semantic_node;

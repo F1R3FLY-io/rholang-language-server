@@ -4,4 +4,6 @@ pub mod document;
 pub mod grpc_validator;
 pub mod models;
 pub mod rust_validator;
+pub mod semantic_features;
 pub mod semantic_validator;
+pub mod symbol_index;

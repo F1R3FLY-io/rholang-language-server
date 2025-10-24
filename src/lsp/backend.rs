@@ -21,7 +21,7 @@ use tower_lsp::lsp_types::{
     RenameParams, ServerCapabilities, TextDocumentSyncCapability,
     TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit, DocumentSymbolParams,
     DocumentSymbolResponse, WorkspaceSymbolParams, WorkspaceSymbol,
-    SymbolInformation,
+    SymbolInformation, SymbolKind, Hover, HoverContents, HoverParams, MarkupContent, MarkupKind,
 };
 use tower_lsp::lsp_types::request::{GotoDeclarationParams, GotoDeclarationResponse};
 use tower_lsp::jsonrpc::Result as LspResult;
@@ -37,6 +37,7 @@ use crate::ir::pipeline::Pipeline;
 use crate::ir::rholang_node::{RholangNode, Position as IrPosition, compute_absolute_positions, collect_contracts, collect_calls, match_contract, find_node_at_position_with_path, find_node_at_position};
 use crate::ir::symbol_table::{Symbol, SymbolTable, SymbolType};
 use crate::ir::transforms::symbol_table_builder::{SymbolTableBuilder, InvertedIndex};
+use crate::ir::transforms::symbol_index_builder::SymbolIndexBuilder;
 use crate::ir::transforms::document_symbol_visitor::{collect_document_symbols, collect_workspace_symbols};
 use crate::lsp::models::{CachedDocument, LspDocument, LspDocumentHistory, LspDocumentState, WorkspaceState};
 use crate::lsp::semantic_validator::SemanticValidator;
@@ -177,6 +178,7 @@ impl RholangBackend {
                 global_inverted_index: HashMap::new(),
                 global_contracts: Vec::new(),
                 global_calls: Vec::new(),
+                global_index: Arc::new(std::sync::RwLock::new(crate::ir::global_index::GlobalSymbolIndex::new())),
             })),
             file_watcher: Arc::new(Mutex::new(None)),
             file_events: Arc::new(Mutex::new(rx)),
@@ -410,15 +412,29 @@ impl RholangBackend {
     async fn process_document(&self, ir: Arc<RholangNode>, uri: &Url, text: &Rope) -> Result<CachedDocument, String> {
         let mut pipeline = Pipeline::new();
         let global_table = self.workspace.read().await.global_table.clone();
+        let global_index = self.workspace.read().await.global_index.clone();
+
+        // Symbol table builder for local symbol tracking
         let builder = Arc::new(SymbolTableBuilder::new(ir.clone(), uri.clone(), global_table.clone()));
         pipeline.add_transform(crate::ir::pipeline::Transform {
             id: "symbol_table_builder".to_string(),
             dependencies: vec![],
-            visitor: builder.clone(),
+            kind: crate::ir::pipeline::TransformKind::Specific(builder.clone()),
         });
+
+        // Apply pipeline transformations first to get transformed IR
         let transformed_ir = pipeline.apply(&ir);
+
+        // Compute positions from transformed IR (structural positions are unchanged, but node addresses differ)
         let positions = Arc::new(compute_absolute_positions(&transformed_ir));
         debug!("Cached {} node positions for {}", positions.len(), uri);
+
+        // Symbol index builder for global pattern-based lookups (needs positions)
+        // MUST use transformed_ir because positions HashMap is keyed by transformed_ir node addresses.
+        // SymbolTableBuilder.with_metadata() creates new Arc allocations, so ir and transformed_ir
+        // have different memory addresses. Using ir would cause position lookups to fail.
+        let mut index_builder = SymbolIndexBuilder::new(global_index.clone(), uri.clone(), positions.clone());
+        index_builder.index_tree(&transformed_ir);
         let inverted_index = builder.get_inverted_index();
         let potential_global_refs = builder.get_potential_global_refs();
         let symbol_table = transformed_ir.metadata()
@@ -440,8 +456,43 @@ impl RholangBackend {
         collect_calls(&transformed_ir, &mut calls);
         debug!("Collected {} contracts and {} calls in {}", contracts.len(), calls.len(), uri);
 
+        // Detect language and create UnifiedIR
+        let language = crate::lsp::models::DocumentLanguage::from_uri(uri);
+        let unified_ir: Arc<dyn crate::ir::semantic_node::SemanticNode> = match language {
+            crate::lsp::models::DocumentLanguage::Rholang | crate::lsp::models::DocumentLanguage::Unknown => {
+                // Convert RholangNode to UnifiedIR
+                use crate::ir::unified_ir::UnifiedIR;
+                UnifiedIR::from_rholang(&transformed_ir)
+            }
+            crate::lsp::models::DocumentLanguage::Metta => {
+                // MeTTa support not yet implemented - for now, just wrap as UnifiedIR
+                // TODO: Implement MeTTa parsing and conversion
+                use crate::ir::unified_ir::UnifiedIR;
+                use crate::ir::semantic_node::{NodeBase, RelativePosition};
+                Arc::new(UnifiedIR::Error {
+                    base: NodeBase::new(
+                        RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+                        0,
+                        0,
+                        0
+                    ),
+                    message: "MeTTa support not yet implemented".to_string(),
+                    children: Vec::new(),
+                    metadata: None,
+                }) as Arc<dyn crate::ir::semantic_node::SemanticNode>
+            }
+        };
+        debug!("Created UnifiedIR for {} (language: {:?})", uri, language);
+
+        // Build suffix array-based symbol index for O(m log n + k) substring search
+        let workspace_symbols = crate::ir::transforms::document_symbol_visitor::collect_workspace_symbols(&symbol_table, uri);
+        let symbol_index = Arc::new(crate::lsp::symbol_index::SymbolIndex::new(workspace_symbols));
+        debug!("Built suffix array index for {} symbols in {}", symbol_index.len(), uri);
+
         Ok(CachedDocument {
             ir: transformed_ir,
+            unified_ir,
+            language,
             tree: Arc::new(parse_code("")), // Tree is not used for text, but keep for other
             symbol_table,
             inverted_index,
@@ -449,6 +500,7 @@ impl RholangBackend {
             text: text.clone(),
             positions,
             potential_global_refs,
+            symbol_index,
         })
     }
 
@@ -789,6 +841,8 @@ impl RholangBackend {
                         RholangNode::New {..} => "New",
                         RholangNode::Bundle {..} => "Bundle",
                         RholangNode::Match {..} => "Match",
+                        RholangNode::Quote {..} => "Quote",
+                        RholangNode::StringLiteral {..} => "StringLiteral",
                         _ => "Other"
                     });
                     match &*node {
@@ -840,10 +894,16 @@ impl RholangBackend {
                             }
                         }
                         RholangNode::Contract { name, .. } => {
-                            // Handle contract declarations
-                            if let RholangNode::Var { name: contract_name, .. } = &**name {
+                            // Handle contract declarations (both Var and StringLiteral names)
+                            let contract_name_opt = match &**name {
+                                RholangNode::Var { name, .. } => Some(name.clone()),
+                                RholangNode::StringLiteral { value, .. } => Some(value.clone()),
+                                _ => None
+                            };
+
+                            if let Some(contract_name) = contract_name_opt {
                                 let workspace = self.workspace.read().await;
-                                if let Some((def_uri, def_pos)) = workspace.global_symbols.get(contract_name).cloned() {
+                                if let Some((def_uri, def_pos)) = workspace.global_symbols.get(&contract_name).cloned() {
                                     debug!("Found contract symbol '{}' at {}:{} in {}",
                                         contract_name, position.line, position.character, uri);
                                     return Some(Arc::new(Symbol {
@@ -946,14 +1006,20 @@ impl RholangBackend {
                                         // (allowing for whitespace/offset differences)
                                         let tolerance = 5; // bytes
                                         if ch_start.byte.saturating_sub(tolerance) <= byte && byte <= ch_end.byte {
-                                            if let RholangNode::Var { name: channel_name, .. } = &**channel {
-                                                debug!("Position within Send channel Var '{}'", channel_name);
+                                            let channel_name_opt = match &**channel {
+                                                RholangNode::Var { name, .. } => Some(name.clone()),
+                                                RholangNode::StringLiteral { value, .. } => Some(value.clone()),
+                                                _ => None
+                                            };
+
+                                            if let Some(channel_name) = channel_name_opt {
+                                                debug!("Position within Send channel '{}'", channel_name);
                                                 // First try symbol table for local variables
-                                                if let Some(symbol) = symbol_table.lookup(channel_name) {
+                                                if let Some(symbol) = symbol_table.lookup(&channel_name) {
                                                     debug!("Found local symbol '{}' for Send at {}:{} in {}",
                                                         channel_name, position.line, position.character, uri);
                                                     return Some(symbol);
-                                                } else if let Some((def_uri, def_pos)) = workspace.global_symbols.get(channel_name).cloned() {
+                                                } else if let Some((def_uri, def_pos)) = workspace.global_symbols.get(&channel_name).cloned() {
                                                     debug!("Found global contract symbol '{}' for Send at {}:{} in {}",
                                                         channel_name, position.line, position.character, uri);
                                                     return Some(Arc::new(Symbol {
@@ -996,14 +1062,20 @@ impl RholangBackend {
                                 debug!("Found {} contracts in document", contracts.len());
                                 for contract in contracts {
                                     if let RholangNode::Contract { name, .. } = &*contract {
-                                        if let RholangNode::Var { name: contract_name, .. } = &**name {
+                                        let contract_name_opt = match &**name {
+                                            RholangNode::Var { name, .. } => Some(name.clone()),
+                                            RholangNode::StringLiteral { value, .. } => Some(value.clone()),
+                                            _ => None
+                                        };
+
+                                        if let Some(contract_name) = contract_name_opt {
                                             let key = &**name as *const RholangNode as usize;
                                             if let Some(&(start, end)) = doc.positions.get(&key) {
                                                 debug!("Contract '{}' name position: start={:?}, end={:?}, byte={}",
                                                     contract_name, start, end, byte);
                                                 if start.byte <= byte && byte <= end.byte {
                                                     debug!("Position is within contract name '{}' in document", contract_name);
-                                                    if let Some((def_uri, def_pos)) = workspace.global_symbols.get(contract_name).cloned() {
+                                                    if let Some((def_uri, def_pos)) = workspace.global_symbols.get(&contract_name).cloned() {
                                                         debug!("Found global contract symbol '{}' at {}:{} in {}",
                                                             contract_name, position.line, position.character, uri);
                                                         return Some(Arc::new(Symbol {
@@ -1022,6 +1094,52 @@ impl RholangBackend {
                             }
                             debug!("RholangNode at {}:{} in {} is Par but position not in any contract names or send channels",
                                 position.line, position.character, uri);
+                        }
+                        RholangNode::Quote { quotable, .. } => {
+                            // Handle quoted contract identifiers like @"contractName"
+                            // The Quote wraps the actual contract name (usually a StringLiteral)
+                            debug!("Found Quote node at position, checking quotable content");
+                            let contract_name_opt = match &**quotable {
+                                RholangNode::Var { name, .. } => Some(name.clone()),
+                                RholangNode::StringLiteral { value, .. } => Some(value.clone()),
+                                _ => None
+                            };
+
+                            if let Some(contract_name) = contract_name_opt {
+                                debug!("Quote contains contract name: {}", contract_name);
+                                let workspace = self.workspace.read().await;
+                                if let Some((def_uri, def_pos)) = workspace.global_symbols.get(&contract_name).cloned() {
+                                    debug!("Found global contract symbol '{}' for Quote at {}:{} in {}",
+                                        contract_name, position.line, position.character, uri);
+                                    return Some(Arc::new(Symbol {
+                                        name: contract_name.to_string(),
+                                        symbol_type: SymbolType::Contract,
+                                        declaration_uri: def_uri.clone(),
+                                        declaration_location: def_pos,
+                                        definition_location: Some(def_pos),
+                                    }));
+                                }
+                            }
+                        }
+                        RholangNode::StringLiteral { value, .. } => {
+                            // Handle direct string literal contract identifiers
+                            // This could be the name in a contract declaration or a channel in a Send
+                            debug!("Found StringLiteral node at position: {}", value);
+
+                            // Check if this is inside a Quote (for @"contractName")
+                            // or directly used as a contract name
+                            let workspace = self.workspace.read().await;
+                            if let Some((def_uri, def_pos)) = workspace.global_symbols.get(value).cloned() {
+                                debug!("Found global contract symbol '{}' for StringLiteral at {}:{} in {}",
+                                    value, position.line, position.character, uri);
+                                return Some(Arc::new(Symbol {
+                                    name: value.to_string(),
+                                    symbol_type: SymbolType::Contract,
+                                    declaration_uri: def_uri.clone(),
+                                    declaration_location: def_pos,
+                                    definition_location: Some(def_pos),
+                                }));
+                            }
                         }
                         _ => {
                             debug!("RholangNode at {}:{} in {} is not a supported node type",
@@ -1191,6 +1309,7 @@ impl LanguageServer for RholangBackend {
                 document_symbol_provider: Some(tower_lsp::lsp_types::OneOf::Left(true)),
                 workspace_symbol_provider: Some(tower_lsp::lsp_types::OneOf::Left(true)),
                 document_highlight_provider: Some(tower_lsp::lsp_types::OneOf::Left(true)),
+                hover_provider: Some(tower_lsp::lsp_types::HoverProviderCapability::Simple(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -1434,6 +1553,31 @@ impl LanguageServer for RholangBackend {
                     };
                     debug!("Is channel in Send/SendSync: {}", is_channel);
                     if is_channel {
+                        // Fast path: Try GlobalSymbolIndex pattern matching for O(k) lookup
+                        let contract_name_opt = match node.as_ref() {
+                            RholangNode::Var { name, .. } => Some(name.clone()),
+                            RholangNode::StringLiteral { value, .. } => Some(value.clone()),
+                            _ => None
+                        };
+
+                        if let Some(contract_name) = contract_name_opt {
+                            debug!("Attempting fast-path contract lookup via GlobalSymbolIndex for: {}", contract_name);
+                            let global_index = workspace.global_index.clone();
+                            drop(workspace); // Release lock before potentially async work
+
+                            if let Ok(global_index_guard) = global_index.read() {
+                                if let Ok(Some(symbol_loc)) = global_index_guard.find_contract_definition(&contract_name) {
+                                    debug!("Found contract '{}' via GlobalSymbolIndex at {}", contract_name, symbol_loc.uri);
+                                    return Ok(Some(GotoDefinitionResponse::Scalar(symbol_loc.to_lsp_location())));
+                                } else {
+                                    debug!("Contract '{}' not found in GlobalSymbolIndex, falling back to iteration", contract_name);
+                                }
+                            }
+                        }
+
+                        // Reacquire workspace lock for fallback (or use existing if not dropped)
+                        let workspace = self.workspace.read().await;
+
                         if let RholangNode::Send { channel, inputs, .. } | RholangNode::SendSync { channel, inputs, .. } = &*parent {
                             let matching = workspace.global_contracts.iter().filter(|(_, contract)| match_contract(channel, inputs, contract)).map(|(u, c)| {
                                 let cached_doc = workspace.documents.get(u).expect("Document not found");
@@ -1565,6 +1709,36 @@ impl LanguageServer for RholangBackend {
                     };
                     debug!("Is name in Contract: {}", is_name);
                     if is_name {
+                        // Fast path: Try GlobalSymbolIndex for O(k) reference lookup
+                        if let RholangNode::Var { name: contract_name, .. } = node.as_ref() {
+                            debug!("Attempting fast-path reference lookup via GlobalSymbolIndex for: {}", contract_name);
+                            let global_index = workspace.global_index.clone();
+
+                            if let Ok(global_index_guard) = global_index.read() {
+                                if let Ok(ref_locs) = global_index_guard.find_contract_references(contract_name) {
+                                    if !ref_locs.is_empty() {
+                                        debug!("Found {} references via GlobalSymbolIndex", ref_locs.len());
+                                        let mut locations: Vec<Location> = ref_locs.into_iter()
+                                            .map(|loc| loc.to_lsp_location())
+                                            .collect();
+
+                                        // Add declaration if requested
+                                        if include_decl {
+                                            let key = &*node as *const RholangNode as usize;
+                                            if let Some((start, _)) = (*doc.positions).get(&key) {
+                                                let decl_range = Self::position_to_range(*start, contract_name.len());
+                                                locations.push(Location { uri: uri.clone(), range: decl_range });
+                                            }
+                                        }
+
+                                        return Ok(Some(locations));
+                                    } else {
+                                        debug!("No references found in GlobalSymbolIndex, falling back");
+                                    }
+                                }
+                            }
+                        }
+
                         if let RholangNode::Contract { .. } = &*parent {
                             let contract = parent.clone();
                             let matching_calls = workspace.global_calls.iter().filter(|(_, call)| {
@@ -1650,15 +1824,18 @@ impl LanguageServer for RholangBackend {
 
     /// Searches for workspace symbols matching the query.
     async fn symbol(&self, params: WorkspaceSymbolParams) -> LspResult<Option<Vec<SymbolInformation>>> {
-        let query = params.query.to_lowercase();
+        let query = params.query;
         debug!("Handling workspace symbol request with query '{}'", query);
         let workspace = self.workspace.read().await;
-        let mut symbols = Vec::new();
-        for (uri, doc) in &workspace.documents {
-            let doc_symbols = collect_workspace_symbols(&doc.symbol_table, uri);
-            symbols.extend(doc_symbols.into_iter().filter(|s| s.name.to_lowercase().contains(&query)));
-        }
-        debug!("Found {} matching workspace symbols", symbols.len());
+
+        // Ultra-fast path: Use suffix array for O(m log n + k) substring search
+        // This is significantly faster than O(documents × symbols × name_length) filtering
+        let symbols: Vec<SymbolInformation> = workspace.documents
+            .values()
+            .flat_map(|doc| doc.symbol_index.search(&query))
+            .collect();
+
+        debug!("Found {} matching workspace symbols via suffix array", symbols.len());
         Ok(Some(symbols))
     }
 
@@ -1697,5 +1874,77 @@ impl LanguageServer for RholangBackend {
         debug!("Found {} highlights", highlights.len());
 
         Ok(Some(highlights))
+    }
+
+    async fn hover(&self, params: HoverParams) -> LspResult<Option<Hover>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        debug!("Hover request at {}:{:?}", uri, position);
+
+        // Get the document
+        let workspace = self.workspace.read().await;
+        let doc = match workspace.documents.get(&uri) {
+            Some(doc) => doc,
+            None => {
+                debug!("Document not found: {}", uri);
+                return Ok(None);
+            }
+        };
+
+        // Find the node at the cursor position
+        let ir_position = IrPosition {
+            row: position.line as usize,
+            column: position.character as usize,
+            byte: 0,
+        };
+
+        let node = crate::ir::rholang_node::find_node_at_position(&doc.ir, &doc.positions, ir_position)
+            .ok_or_else(|| jsonrpc::Error::internal_error())?;
+
+        // Check if this is a contract name
+        if let RholangNode::Var { name: contract_name, .. } = node.as_ref() {
+            debug!("Hovering over contract name: {}", contract_name);
+
+            // Try to find contract definition in global index
+            let global_index = workspace.global_index.clone();
+
+            if let Ok(global_index_guard) = global_index.read() {
+                if let Ok(Some(symbol_loc)) = global_index_guard.find_contract_definition(contract_name) {
+                    // Build hover content with signature
+                    if let Some(signature) = &symbol_loc.signature {
+                        let mut hover_text = format!("```rholang\n{}\n```", signature);
+
+                        // Add documentation if available
+                        if let Some(doc_text) = &symbol_loc.documentation {
+                            hover_text.push_str("\n\n---\n\n");
+                            hover_text.push_str(doc_text);
+                        }
+
+                        // Add location information
+                        hover_text.push_str(&format!("\n\n*Defined in: {}*", symbol_loc.uri.path()));
+
+                        debug!("Returning hover for contract '{}': {}", contract_name, signature);
+
+                        return Ok(Some(Hover {
+                            contents: HoverContents::Markup(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: hover_text,
+                            }),
+                            range: Some(Range {
+                                start: position,
+                                end: LspPosition {
+                                    line: position.line,
+                                    character: position.character + contract_name.len() as u32,
+                                },
+                            }),
+                        }));
+                    }
+                }
+            }
+        }
+
+        debug!("No hover information available");
+        Ok(None)
     }
 }

@@ -8,8 +8,8 @@ use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
 
-use super::rholang_node::{NodeBase, Position};
-use super::semantic_node::{Metadata, NodeType, SemanticNode};
+use super::semantic_node::{NodeBase, Position};
+use super::semantic_node::{Metadata, SemanticNode, SemanticCategory};
 
 /// MeTTa-specific node types
 #[derive(Debug, Clone)]
@@ -270,36 +270,187 @@ impl SemanticNode for MettaNode {
         None
     }
 
-    fn node_type(&self) -> NodeType {
+    fn semantic_category(&self) -> SemanticCategory {
         match self {
-            MettaNode::SExpr { .. } => NodeType::MettaSExpr,
-            MettaNode::Atom { .. } => NodeType::MettaAtom,
-            MettaNode::Variable { .. } => NodeType::Variable,
-            MettaNode::Definition { .. } => NodeType::MettaDefinition,
-            MettaNode::TypeAnnotation { .. } => NodeType::MettaType,
-            MettaNode::Eval { .. } => NodeType::Invocation,
-            MettaNode::Match { .. } => NodeType::Match,
-            MettaNode::Let { .. } => NodeType::Binding,
-            MettaNode::Lambda { .. } => NodeType::Binding,
-            MettaNode::If { .. } => NodeType::Conditional,
+            MettaNode::SExpr { .. } => SemanticCategory::LanguageSpecific,
+            MettaNode::Atom { .. } => SemanticCategory::LanguageSpecific,
+            MettaNode::Variable { .. } => SemanticCategory::Variable,
+            MettaNode::Definition { .. } => SemanticCategory::Binding,
+            MettaNode::TypeAnnotation { .. } => SemanticCategory::LanguageSpecific,
+            MettaNode::Eval { .. } => SemanticCategory::Invocation,
+            MettaNode::Match { .. } => SemanticCategory::Match,
+            MettaNode::Let { .. } | MettaNode::Lambda { .. } => SemanticCategory::Binding,
+            MettaNode::If { .. } => SemanticCategory::Conditional,
             MettaNode::Bool { .. }
             | MettaNode::Integer { .. }
             | MettaNode::Float { .. }
             | MettaNode::String { .. }
-            | MettaNode::Nil { .. } => NodeType::Literal,
-            MettaNode::Error { .. } => NodeType::MettaError,
-            MettaNode::Comment { .. } => NodeType::Unknown,
+            | MettaNode::Nil { .. } => SemanticCategory::Literal,
+            MettaNode::Error { .. } => SemanticCategory::Unknown,
+            MettaNode::Comment { .. } => SemanticCategory::Unknown,
         }
     }
 
-    fn children(&self) -> Vec<&dyn SemanticNode> {
-        // Simplified - full implementation would return actual children
-        vec![]
+    fn type_name(&self) -> &'static str {
+        match self {
+            MettaNode::SExpr { .. } => "MeTTa::SExpr",
+            MettaNode::Atom { .. } => "MeTTa::Atom",
+            MettaNode::Variable { .. } => "MeTTa::Variable",
+            MettaNode::Definition { .. } => "MeTTa::Definition",
+            MettaNode::TypeAnnotation { .. } => "MeTTa::TypeAnnotation",
+            MettaNode::Eval { .. } => "MeTTa::Eval",
+            MettaNode::Match { .. } => "MeTTa::Match",
+            MettaNode::Let { .. } => "MeTTa::Let",
+            MettaNode::Lambda { .. } => "MeTTa::Lambda",
+            MettaNode::If { .. } => "MeTTa::If",
+            MettaNode::Bool { .. } => "MeTTa::Bool",
+            MettaNode::Integer { .. } => "MeTTa::Integer",
+            MettaNode::Float { .. } => "MeTTa::Float",
+            MettaNode::String { .. } => "MeTTa::String",
+            MettaNode::Nil { .. } => "MeTTa::Nil",
+            MettaNode::Error { .. } => "MeTTa::Error",
+            MettaNode::Comment { .. } => "MeTTa::Comment",
+        }
     }
 
-    fn children_arc(&self) -> Vec<Arc<dyn SemanticNode>> {
-        // Simplified - full implementation would return actual children
-        vec![]
+    fn children_count(&self) -> usize {
+        match self {
+            // Nodes with vector children
+            MettaNode::SExpr { elements, .. } => elements.len(),
+
+            // Nodes with 2 children
+            MettaNode::Definition { pattern, body, .. } => {
+                let _ = (pattern, body);
+                2
+            }
+            MettaNode::TypeAnnotation { expr, type_expr, .. } => {
+                let _ = (expr, type_expr);
+                2
+            }
+
+            // Nodes with 1 child
+            MettaNode::Eval { expr, .. } => {
+                let _ = expr;
+                1
+            }
+
+            // Match has scrutinee + cases
+            MettaNode::Match { scrutinee, cases, .. } => {
+                let _ = scrutinee;
+                1 + cases.len() * 2  // scrutinee + (pattern, result) for each case
+            }
+
+            // Let has bindings + body
+            MettaNode::Let { bindings, body, .. } => {
+                let _ = body;
+                bindings.len() * 2 + 1  // (var, val) for each binding + body
+            }
+
+            // Lambda has params + body
+            MettaNode::Lambda { params, body, .. } => {
+                let _ = body;
+                params.len() + 1
+            }
+
+            // If has 2 or 3 children
+            MettaNode::If { condition, consequence, alternative, .. } => {
+                let _ = (condition, consequence);
+                if alternative.is_some() { 3 } else { 2 }
+            }
+
+            // Leaf nodes
+            MettaNode::Atom { .. } |
+            MettaNode::Variable { .. } |
+            MettaNode::Bool { .. } |
+            MettaNode::Integer { .. } |
+            MettaNode::Float { .. } |
+            MettaNode::String { .. } |
+            MettaNode::Nil { .. } |
+            MettaNode::Error { .. } |
+            MettaNode::Comment { .. } => 0,
+        }
+    }
+
+    fn child_at(&self, index: usize) -> Option<&dyn SemanticNode> {
+        match self {
+            // Nodes with vector children
+            MettaNode::SExpr { elements, .. } => {
+                elements.get(index).map(|e| &**e as &dyn SemanticNode)
+            }
+
+            // Nodes with 2 children
+            MettaNode::Definition { pattern, body, .. } => match index {
+                0 => Some(&**pattern),
+                1 => Some(&**body),
+                _ => None,
+            },
+            MettaNode::TypeAnnotation { expr, type_expr, .. } => match index {
+                0 => Some(&**expr),
+                1 => Some(&**type_expr),
+                _ => None,
+            },
+
+            // Nodes with 1 child
+            MettaNode::Eval { expr, .. } if index == 0 => Some(&**expr),
+
+            // Match
+            MettaNode::Match { scrutinee, cases, .. } => {
+                if index == 0 {
+                    Some(&**scrutinee)
+                } else {
+                    let case_index = (index - 1) / 2;
+                    if case_index < cases.len() {
+                        let (pattern, result) = &cases[case_index];
+                        if (index - 1) % 2 == 0 {
+                            Some(&**pattern)
+                        } else {
+                            Some(&**result)
+                        }
+                    } else {
+                        None
+                    }
+                }
+            }
+
+            // Let
+            MettaNode::Let { bindings, body, .. } => {
+                let binding_index = index / 2;
+                if binding_index < bindings.len() {
+                    let (var, val) = &bindings[binding_index];
+                    if index % 2 == 0 {
+                        Some(&**var)
+                    } else {
+                        Some(&**val)
+                    }
+                } else if index == bindings.len() * 2 {
+                    Some(&**body)
+                } else {
+                    None
+                }
+            }
+
+            // Lambda
+            MettaNode::Lambda { params, body, .. } => {
+                if index < params.len() {
+                    Some(&**params.get(index)?)
+                } else if index == params.len() {
+                    Some(&**body)
+                } else {
+                    None
+                }
+            }
+
+            // If
+            MettaNode::If { condition, consequence, alternative, .. } => match index {
+                0 => Some(&**condition),
+                1 => Some(&**consequence),
+                2 => alternative.as_ref().map(|alt| &**alt as &dyn SemanticNode),
+                _ => None,
+            },
+
+            // Leaf nodes
+            _ => None,
+        }
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -356,7 +507,8 @@ mod tests {
     #[test]
     fn test_semantic_node_impl() {
         let atom = MettaNode::atom("test", test_base());
-        assert_eq!(atom.node_type(), NodeType::MettaAtom);
+        assert_eq!(atom.semantic_category(), SemanticCategory::LanguageSpecific);
+        assert_eq!(atom.type_name(), "MeTTa::Atom");
         assert!(atom.metadata().is_none());
     }
 }

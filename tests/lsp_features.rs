@@ -564,3 +564,67 @@ with_lsp_client!(test_references_after_goto_definition_reverse_order, CommType::
     let references = client.references(&contract_doc.uri(), decl_pos, true).unwrap();
     assert_eq!(references.len(), 2, "Should find declaration + usage in reverse order");
 });
+
+// Test quoted string literal contract identifiers for cross-file navigation
+with_lsp_client!(test_goto_definition_quoted_contract_cross_file, CommType::Stdio, |client: &LspClient| {
+    let contract_code = indoc! {r#"
+        // contract.rho
+        contract @"otherContract"(x) = { x!("Hello World!") }
+        contract @"myContract"(y) = { Nil }
+    "#};
+
+    let usage_code = indoc! {r#"
+        // usage.rho
+        new x in { @"myContract"!("foo") }
+        new y in { @"otherContract"!("bar") }
+        new chan in {
+            chan!() |
+            new chan in {
+                chan!() |
+                chan!()
+            }
+        }
+    "#};
+
+    let contract_doc = client
+        .open_document("/var/tmp/contract.rho", contract_code)
+        .expect("Failed to open contract.rho");
+
+    let usage_doc = client
+        .open_document("/var/tmp/usage.rho", usage_code)
+        .expect("Failed to open usage.rho");
+
+    // Wait for both documents to be indexed
+    client.await_diagnostics(&contract_doc)
+        .expect("Failed to receive diagnostics for contract.rho");
+    client.await_diagnostics(&usage_doc)
+        .expect("Failed to receive diagnostics for usage.rho");
+
+    // Test 1: Goto definition from usage of @"otherContract" (clicking on the string)
+    let usage_pos1 = Position { line: 2, character: 13 }; // Inside "otherContract"
+    let location1 = client.definition(&usage_doc.uri(), usage_pos1).unwrap()
+        .expect("Should find definition for quoted contract identifier");
+
+    assert_eq!(location1.uri.to_string(), contract_doc.uri(),
+        "Definition should be in contract.rho");
+    assert_eq!(location1.range.start.line, 1,
+        "Definition should be on line 1 (contract @\"otherContract\")");
+
+    // Test 2: Goto definition from usage of @"myContract"
+    let usage_pos2 = Position { line: 1, character: 13 }; // Inside "myContract"
+    let location2 = client.definition(&usage_doc.uri(), usage_pos2).unwrap()
+        .expect("Should find definition for quoted contract identifier");
+
+    assert_eq!(location2.uri.to_string(), contract_doc.uri(),
+        "Definition should be in contract.rho");
+    assert_eq!(location2.range.start.line, 2,
+        "Definition should be on line 2 (contract @\"myContract\")");
+
+    // Test 3: Goto definition by clicking on the @ symbol
+    let usage_pos3 = Position { line: 2, character: 11 }; // On the @ symbol
+    let location3 = client.definition(&usage_doc.uri(), usage_pos3).unwrap()
+        .expect("Should find definition when clicking on @ symbol");
+
+    assert_eq!(location3.uri.to_string(), contract_doc.uri(),
+        "Definition should be in contract.rho when clicking @");
+});

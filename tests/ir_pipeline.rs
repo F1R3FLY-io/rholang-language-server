@@ -1005,16 +1005,18 @@ mod tests {
 
     #[test]
     fn test_pipeline_with_simplification() {
+        use rholang_language_server::ir::pipeline::TransformKind;
+
         let mut pipeline = Pipeline::new();
         pipeline.add_transform(Transform {
             id: "simplify_double_unary".to_string(),
             dependencies: vec![],
-            visitor: Arc::new(SimplifyDoubleUnary),
+            kind: TransformKind::Specific(Arc::new(SimplifyDoubleUnary)),
         });
         pipeline.add_transform(Transform {
             id: "increment_version".to_string(),
             dependencies: vec!["simplify_double_unary".to_string()],
-            visitor: Arc::new(IncrementVersion),
+            kind: TransformKind::Specific(Arc::new(IncrementVersion)),
         });
 
         let code = "--42";
