@@ -11,8 +11,8 @@ use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
 
-use super::rholang_node::{NodeBase, Node};
-use super::metta_node::{MettaNode, VariableType};
+use super::rholang_node::{NodeBase, RholangNode};
+use super::metta_node::{MettaNode, MettaVariableType};
 use super::semantic_node::{Metadata, NodeType, SemanticNode};
 
 /// Common literal types across languages
@@ -142,7 +142,7 @@ pub enum UnifiedIR {
     /// Language-specific extension for Rholang
     RholangExt {
         base: NodeBase,
-        node: Arc<Node>,
+        node: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
 
@@ -165,34 +165,34 @@ pub enum UnifiedIR {
 }
 
 impl UnifiedIR {
-    /// Convert a Rholang Node to UnifiedIR
-    pub fn from_rholang(node: &Arc<Node>) -> Arc<UnifiedIR> {
+    /// Convert a Rholang RholangNode to UnifiedIR
+    pub fn from_rholang(node: &Arc<RholangNode>) -> Arc<UnifiedIR> {
         // Extract base from the node
         let base = node.base().clone();
 
         match &**node {
             // Literals
-            Node::BoolLiteral { value, metadata, .. } => Arc::new(UnifiedIR::Literal {
+            RholangNode::BoolLiteral { value, metadata, .. } => Arc::new(UnifiedIR::Literal {
                 base,
                 value: Literal::Bool(*value),
                 metadata: metadata.clone(),
             }),
-            Node::LongLiteral { value, metadata, .. } => Arc::new(UnifiedIR::Literal {
+            RholangNode::LongLiteral { value, metadata, .. } => Arc::new(UnifiedIR::Literal {
                 base,
                 value: Literal::Integer(*value),
                 metadata: metadata.clone(),
             }),
-            Node::StringLiteral { value, metadata, .. } => Arc::new(UnifiedIR::Literal {
+            RholangNode::StringLiteral { value, metadata, .. } => Arc::new(UnifiedIR::Literal {
                 base,
                 value: Literal::String(value.clone()),
                 metadata: metadata.clone(),
             }),
-            Node::UriLiteral { value, metadata, .. } => Arc::new(UnifiedIR::Literal {
+            RholangNode::UriLiteral { value, metadata, .. } => Arc::new(UnifiedIR::Literal {
                 base,
                 value: Literal::Uri(value.clone()),
                 metadata: metadata.clone(),
             }),
-            Node::Nil { metadata, .. } | Node::Wildcard { metadata, .. } => {
+            RholangNode::Nil { metadata, .. } | RholangNode::Wildcard { metadata, .. } => {
                 Arc::new(UnifiedIR::Literal {
                     base,
                     value: Literal::Nil,
@@ -201,26 +201,26 @@ impl UnifiedIR {
             }
 
             // Variables
-            Node::Var { name, metadata, .. } => Arc::new(UnifiedIR::Variable {
+            RholangNode::Var { name, metadata, .. } => Arc::new(UnifiedIR::Variable {
                 base,
                 name: name.clone(),
                 metadata: metadata.clone(),
             }),
 
             // Collections
-            Node::List { elements, metadata, .. } => Arc::new(UnifiedIR::Collection {
+            RholangNode::List { elements, metadata, .. } => Arc::new(UnifiedIR::Collection {
                 base,
                 kind: CollectionKind::List,
                 elements: elements.iter().map(UnifiedIR::from_rholang).collect(),
                 metadata: metadata.clone(),
             }),
-            Node::Set { elements, metadata, .. } => Arc::new(UnifiedIR::Collection {
+            RholangNode::Set { elements, metadata, .. } => Arc::new(UnifiedIR::Collection {
                 base,
                 kind: CollectionKind::Set,
                 elements: elements.iter().map(UnifiedIR::from_rholang).collect(),
                 metadata: metadata.clone(),
             }),
-            Node::Tuple { elements, metadata, .. } => Arc::new(UnifiedIR::Collection {
+            RholangNode::Tuple { elements, metadata, .. } => Arc::new(UnifiedIR::Collection {
                 base,
                 kind: CollectionKind::Tuple,
                 elements: elements.iter().map(UnifiedIR::from_rholang).collect(),
@@ -228,7 +228,7 @@ impl UnifiedIR {
             }),
 
             // Parallel composition (Rholang-specific)
-            Node::Par { left, right, metadata, .. } => Arc::new(UnifiedIR::Composition {
+            RholangNode::Par { left, right, metadata, .. } => Arc::new(UnifiedIR::Composition {
                 base,
                 is_parallel: true,
                 left: UnifiedIR::from_rholang(left),
@@ -237,7 +237,7 @@ impl UnifiedIR {
             }),
 
             // Match
-            Node::Match { expression, cases, metadata, .. } => Arc::new(UnifiedIR::Match {
+            RholangNode::Match { expression, cases, metadata, .. } => Arc::new(UnifiedIR::Match {
                 base,
                 scrutinee: UnifiedIR::from_rholang(expression),
                 cases: cases
@@ -250,7 +250,7 @@ impl UnifiedIR {
             }),
 
             // Conditional
-            Node::IfElse { condition, consequence, alternative, metadata, .. } => {
+            RholangNode::IfElse { condition, consequence, alternative, metadata, .. } => {
                 Arc::new(UnifiedIR::Conditional {
                     base,
                     condition: Some(UnifiedIR::from_rholang(condition)),
@@ -261,7 +261,7 @@ impl UnifiedIR {
             }
 
             // Block
-            Node::Block { proc, metadata, .. } | Node::Parenthesized { expr: proc, metadata, .. } => {
+            RholangNode::Block { proc, metadata, .. } | RholangNode::Parenthesized { expr: proc, metadata, .. } => {
                 Arc::new(UnifiedIR::Block {
                     base,
                     body: UnifiedIR::from_rholang(proc),
@@ -278,7 +278,7 @@ impl UnifiedIR {
         }
     }
 
-    /// Convert a MeTTa Node to UnifiedIR
+    /// Convert a MeTTa RholangNode to UnifiedIR
     pub fn from_metta(node: &Arc<MettaNode>) -> Arc<UnifiedIR> {
         let base = node.base().clone();
 
@@ -505,7 +505,7 @@ impl SemanticNode for UnifiedIR {
     }
 
     fn metadata_mut(&mut self) -> Option<&mut Metadata> {
-        // Similar to Node, metadata is Arc-wrapped so mutation not supported
+        // Similar to RholangNode, metadata is Arc-wrapped so mutation not supported
         None
     }
 

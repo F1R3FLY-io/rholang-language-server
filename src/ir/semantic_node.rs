@@ -205,7 +205,7 @@ pub fn insert_metadata<T: Any + Send + Sync>(
 /// This visitor works with any IR that implements SemanticNode, providing
 /// a unified way to traverse and transform IR trees regardless of the source language.
 ///
-/// Unlike the language-specific Visitor trait (for Rholang Node), this visitor
+/// Unlike the language-specific Visitor trait (for Rholang RholangNode), this visitor
 /// operates at the semantic level using NodeType discrimination.
 ///
 /// # Example

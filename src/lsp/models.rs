@@ -6,7 +6,7 @@ use ropey::Rope;
 use tower_lsp::lsp_types::{TextDocumentContentChangeEvent, Url};
 use tree_sitter::Tree;
 
-use crate::ir::rholang_node::{Node, Position as IrPosition};
+use crate::ir::rholang_node::{RholangNode, Position as IrPosition};
 use crate::ir::symbol_table::SymbolTable;
 use crate::ir::transforms::symbol_table_builder::InvertedIndex;
 
@@ -20,7 +20,7 @@ pub struct VersionedChanges {
 /// Represents a cached document with IR, symbol table, and metadata for LSP queries.
 #[derive(Debug)]
 pub struct CachedDocument {
-    pub ir: Arc<Node>,
+    pub ir: Arc<RholangNode>,
     pub tree: Arc<Tree>,
     pub symbol_table: Arc<SymbolTable>,
     pub inverted_index: InvertedIndex,
@@ -60,6 +60,6 @@ pub struct WorkspaceState {
     pub global_symbols: HashMap<String, (Url, IrPosition)>,
     pub global_table: Arc<SymbolTable>,
     pub global_inverted_index: HashMap<(Url, IrPosition), Vec<(Url, IrPosition)>>,
-    pub global_contracts: Vec<(Url, Arc<Node>)>,
-    pub global_calls: Vec<(Url, Arc<Node>)>,
+    pub global_contracts: Vec<(Url, Arc<RholangNode>)>,
+    pub global_calls: Vec<(Url, Arc<RholangNode>)>,
 }

@@ -9,8 +9,8 @@ use archery::ArcK;
 use tracing::debug;
 
 use crate::ir::rholang_node::{
-    BinOperator, BundleType, CommentKind, Node, NodeBase, Metadata, SendType, UnaryOperator,
-    VarRefKind, Position, RelativePosition, compute_absolute_positions,
+    BinOperator, RholangBundleType, CommentKind, RholangNode, NodeBase, Metadata, RholangSendType, UnaryOperator,
+    RholangVarRefKind, Position, RelativePosition, compute_absolute_positions,
 };
 use crate::ir::visitor::Visitor;
 use ropey::Rope;
@@ -25,13 +25,13 @@ use ropey::Rope;
 ///
 /// # Returns
 /// A Result containing the formatted string or an error if validation fails.
-pub fn format(tree: &Arc<Node>, pretty_print: bool, _rope: &Rope) -> Result<String, String> {
+pub fn format(tree: &Arc<RholangNode>, pretty_print: bool, _rope: &Rope) -> Result<String, String> {
     tree.validate()?;
     let positions = compute_absolute_positions(tree);
     let printer = PrettyPrinter::new(pretty_print, positions);
     printer.visit_node(tree);
     let result = printer.get_result();
-    let (start, _) = printer.positions.get(&(&**tree as *const Node as usize)).unwrap();
+    let (start, _) = printer.positions.get(&(&**tree as *const RholangNode as usize)).unwrap();
     debug!("Formatted IR at {}:{} (length={})", start.row, start.column, result.len());
     Ok(result)
 }
@@ -395,8 +395,8 @@ impl PrettyPrinter {
     }
 
     /// Adds common base fields (position, length, text) to the current map.
-    fn add_base_fields(&self, node: &Arc<Node>) {
-        let key = &**node as *const Node as usize;
+    fn add_base_fields(&self, node: &Arc<RholangNode>) {
+        let key = &**node as *const RholangNode as usize;
         let (start, end) = self.positions.get(&key).unwrap();
         // Compute length from positions instead of base to handle structural nodes
         // with zero span (like Par nodes created during reduction)
@@ -546,7 +546,7 @@ impl PrettyPrinter {
     }
 
     /// Formats a vector of nodes as an array, with alignment if pretty-printing.
-    fn visit_vector(&self, items: &Vector<Arc<Node>, ArcK>) {
+    fn visit_vector(&self, items: &Vector<Arc<RholangNode>, ArcK>) {
         if items.is_empty() {
             self.append("[]");
             return;
@@ -580,7 +580,7 @@ impl PrettyPrinter {
     }
 
     /// Formats a vector of key-value pairs as an array of maps.
-    fn format_pairs(&self, pairs: &Vector<(Arc<Node>, Arc<Node>), ArcK>, key_name: &str, value_name: &str) {
+    fn format_pairs(&self, pairs: &Vector<(Arc<RholangNode>, Arc<RholangNode>), ArcK>, key_name: &str, value_name: &str) {
         self.append("[");
         for (i, (key, value)) in pairs.iter().enumerate() {
             if i > 0 {
@@ -605,7 +605,7 @@ impl PrettyPrinter {
 }
 
 impl Visitor for PrettyPrinter {
-    fn visit_par(&self, node: &Arc<Node>, _base: &NodeBase, left: &Arc<Node>, right: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_par(&self, node: &Arc<RholangNode>, _base: &NodeBase, left: &Arc<RholangNode>, right: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"par\""));
         self.add_base_fields(node);
@@ -620,7 +620,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_send_sync(&self, node: &Arc<Node>, _base: &NodeBase, channel: &Arc<Node>, inputs: &Vector<Arc<Node>, ArcK>, cont: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_send_sync(&self, node: &Arc<RholangNode>, _base: &NodeBase, channel: &Arc<RholangNode>, inputs: &Vector<Arc<RholangNode>, ArcK>, cont: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"sendsync\""));
         self.add_base_fields(node);
@@ -636,7 +636,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_send(&self, node: &Arc<Node>, _base: &NodeBase, channel: &Arc<Node>, send_type: &SendType, _send_type_delta: &RelativePosition, inputs: &Vector<Arc<Node>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_send(&self, node: &Arc<RholangNode>, _base: &NodeBase, channel: &Arc<RholangNode>, send_type: &RholangSendType, _send_type_delta: &RelativePosition, inputs: &Vector<Arc<RholangNode>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"send\""));
         self.add_base_fields(node);
@@ -650,7 +650,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_new(&self, node: &Arc<Node>, _base: &NodeBase, decls: &Vector<Arc<Node>, ArcK>, proc: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_new(&self, node: &Arc<RholangNode>, _base: &NodeBase, decls: &Vector<Arc<RholangNode>, ArcK>, proc: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"new\""));
         self.add_base_fields(node);
@@ -663,7 +663,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_ifelse(&self, node: &Arc<Node>, _base: &NodeBase, condition: &Arc<Node>, consequence: &Arc<Node>, alternative: &Option<Arc<Node>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_ifelse(&self, node: &Arc<RholangNode>, _base: &NodeBase, condition: &Arc<RholangNode>, consequence: &Arc<RholangNode>, alternative: &Option<Arc<RholangNode>>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"ifelse\""));
         self.add_base_fields(node);
@@ -683,7 +683,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_let(&self, node: &Arc<Node>, _base: &NodeBase, decls: &Vector<Arc<Node>, ArcK>, proc: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_let(&self, node: &Arc<RholangNode>, _base: &NodeBase, decls: &Vector<Arc<RholangNode>, ArcK>, proc: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"let\""));
         self.add_base_fields(node);
@@ -696,7 +696,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_bundle(&self, node: &Arc<Node>, _base: &NodeBase, bundle_type: &BundleType, proc: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_bundle(&self, node: &Arc<RholangNode>, _base: &NodeBase, bundle_type: &RholangBundleType, proc: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"bundle\""));
         self.add_base_fields(node);
@@ -709,7 +709,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_match(&self, node: &Arc<Node>, _base: &NodeBase, expression: &Arc<Node>, cases: &Vector<(Arc<Node>, Arc<Node>), ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_match(&self, node: &Arc<RholangNode>, _base: &NodeBase, expression: &Arc<RholangNode>, cases: &Vector<(Arc<RholangNode>, Arc<RholangNode>), ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"match\""));
         self.add_base_fields(node);
@@ -722,7 +722,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_choice(&self, node: &Arc<Node>, _base: &NodeBase, branches: &Vector<(Vector<Arc<Node>, ArcK>, Arc<Node>), ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_choice(&self, node: &Arc<RholangNode>, _base: &NodeBase, branches: &Vector<(Vector<Arc<RholangNode>, ArcK>, Arc<RholangNode>), ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"choice\""));
         self.add_base_fields(node);
@@ -751,7 +751,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_contract(&self, node: &Arc<Node>, _base: &NodeBase, name: &Arc<Node>, formals: &Vector<Arc<Node>, ArcK>, formals_remainder: &Option<Arc<Node>>, proc: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_contract(&self, node: &Arc<RholangNode>, _base: &NodeBase, name: &Arc<RholangNode>, formals: &Vector<Arc<RholangNode>, ArcK>, formals_remainder: &Option<Arc<RholangNode>>, proc: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"contract\""));
         self.add_base_fields(node);
@@ -772,7 +772,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_input(&self, node: &Arc<Node>, _base: &NodeBase, receipts: &Vector<Vector<Arc<Node>, ArcK>, ArcK>, proc: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_input(&self, node: &Arc<RholangNode>, _base: &NodeBase, receipts: &Vector<Vector<Arc<RholangNode>, ArcK>, ArcK>, proc: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"input\""));
         self.add_base_fields(node);
@@ -799,7 +799,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_block(&self, node: &Arc<Node>, _base: &NodeBase, proc: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_block(&self, node: &Arc<RholangNode>, _base: &NodeBase, proc: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"block\""));
         self.add_base_fields(node);
@@ -811,7 +811,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_parenthesized(&self, node: &Arc<Node>, _base: &NodeBase, expr: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_parenthesized(&self, node: &Arc<RholangNode>, _base: &NodeBase, expr: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"parenthesized\""));
         self.add_base_fields(node);
@@ -823,7 +823,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_binop(&self, node: &Arc<Node>, _base: &NodeBase, op: BinOperator, left: &Arc<Node>, right: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_binop(&self, node: &Arc<RholangNode>, _base: &NodeBase, op: BinOperator, left: &Arc<RholangNode>, right: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"binop\""));
         self.add_base_fields(node);
@@ -839,7 +839,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_unaryop(&self, node: &Arc<Node>, _base: &NodeBase, op: UnaryOperator, operand: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_unaryop(&self, node: &Arc<RholangNode>, _base: &NodeBase, op: UnaryOperator, operand: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"unaryop\""));
         self.add_base_fields(node);
@@ -852,7 +852,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_method(&self, node: &Arc<Node>, _base: &NodeBase, receiver: &Arc<Node>, name: &String, args: &Vector<Arc<Node>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_method(&self, node: &Arc<RholangNode>, _base: &NodeBase, receiver: &Arc<RholangNode>, name: &String, args: &Vector<Arc<RholangNode>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"method\""));
         self.add_base_fields(node);
@@ -866,7 +866,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_eval(&self, node: &Arc<Node>, _base: &NodeBase, name: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_eval(&self, node: &Arc<RholangNode>, _base: &NodeBase, name: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"eval\""));
         self.add_base_fields(node);
@@ -878,7 +878,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_quote(&self, node: &Arc<Node>, _base: &NodeBase, quotable: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_quote(&self, node: &Arc<RholangNode>, _base: &NodeBase, quotable: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"quote\""));
         self.add_base_fields(node);
@@ -890,7 +890,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_varref(&self, node: &Arc<Node>, _base: &NodeBase, kind: VarRefKind, var: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_varref(&self, node: &Arc<RholangNode>, _base: &NodeBase, kind: RholangVarRefKind, var: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"varref\""));
         self.add_base_fields(node);
@@ -903,7 +903,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_bool_literal(&self, node: &Arc<Node>, _base: &NodeBase, _value: bool, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_bool_literal(&self, node: &Arc<RholangNode>, _base: &NodeBase, _value: bool, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"bool\""));
         self.add_base_fields(node);
@@ -912,7 +912,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_long_literal(&self, node: &Arc<Node>, _base: &NodeBase, _value: i64, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_long_literal(&self, node: &Arc<RholangNode>, _base: &NodeBase, _value: i64, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"long\""));
         self.add_base_fields(node);
@@ -921,7 +921,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_string_literal(&self, node: &Arc<Node>, _base: &NodeBase, _value: &String, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_string_literal(&self, node: &Arc<RholangNode>, _base: &NodeBase, _value: &String, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"string\""));
         self.add_base_fields(node);
@@ -930,7 +930,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_uri_literal(&self, node: &Arc<Node>, _base: &NodeBase, _value: &String, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_uri_literal(&self, node: &Arc<RholangNode>, _base: &NodeBase, _value: &String, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"uri\""));
         self.add_base_fields(node);
@@ -939,7 +939,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_nil(&self, node: &Arc<Node>, _base: &NodeBase, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_nil(&self, node: &Arc<RholangNode>, _base: &NodeBase, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"nil\""));
         self.add_base_fields(node);
@@ -948,7 +948,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_list(&self, node: &Arc<Node>, _base: &NodeBase, elements: &Vector<Arc<Node>, ArcK>, remainder: &Option<Arc<Node>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_list(&self, node: &Arc<RholangNode>, _base: &NodeBase, elements: &Vector<Arc<RholangNode>, ArcK>, remainder: &Option<Arc<RholangNode>>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"list\""));
         self.add_base_fields(node);
@@ -963,7 +963,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_set(&self, node: &Arc<Node>, _base: &NodeBase, elements: &Vector<Arc<Node>, ArcK>, remainder: &Option<Arc<Node>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_set(&self, node: &Arc<RholangNode>, _base: &NodeBase, elements: &Vector<Arc<RholangNode>, ArcK>, remainder: &Option<Arc<RholangNode>>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"set\""));
         self.add_base_fields(node);
@@ -978,7 +978,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_map(&self, node: &Arc<Node>, _base: &NodeBase, pairs: &Vector<(Arc<Node>, Arc<Node>), ArcK>, remainder: &Option<Arc<Node>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_map(&self, node: &Arc<RholangNode>, _base: &NodeBase, pairs: &Vector<(Arc<RholangNode>, Arc<RholangNode>), ArcK>, remainder: &Option<Arc<RholangNode>>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"map\""));
         self.add_base_fields(node);
@@ -993,7 +993,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_tuple(&self, node: &Arc<Node>, _base: &NodeBase, elements: &Vector<Arc<Node>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_tuple(&self, node: &Arc<RholangNode>, _base: &NodeBase, elements: &Vector<Arc<RholangNode>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"tuple\""));
         self.add_base_fields(node);
@@ -1003,7 +1003,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_var(&self, node: &Arc<Node>, _base: &NodeBase, name: &String, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_var(&self, node: &Arc<RholangNode>, _base: &NodeBase, name: &String, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"var\""));
         self.add_base_fields(node);
@@ -1013,7 +1013,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_name_decl(&self, node: &Arc<Node>, _base: &NodeBase, var: &Arc<Node>, uri: &Option<Arc<Node>>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_name_decl(&self, node: &Arc<RholangNode>, _base: &NodeBase, var: &Arc<RholangNode>, uri: &Option<Arc<RholangNode>>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"name_decl\""));
         self.add_base_fields(node);
@@ -1030,7 +1030,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_decl(&self, node: &Arc<Node>, _base: &NodeBase, names: &Vector<Arc<Node>, ArcK>, names_remainder: &Option<Arc<Node>>, procs: &Vector<Arc<Node>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_decl(&self, node: &Arc<RholangNode>, _base: &NodeBase, names: &Vector<Arc<RholangNode>, ArcK>, names_remainder: &Option<Arc<RholangNode>>, procs: &Vector<Arc<RholangNode>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"decl\""));
         self.add_base_fields(node);
@@ -1046,7 +1046,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_linear_bind(&self, node: &Arc<Node>, _base: &NodeBase, names: &Vector<Arc<Node>, ArcK>, remainder: &Option<Arc<Node>>, source: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_linear_bind(&self, node: &Arc<RholangNode>, _base: &NodeBase, names: &Vector<Arc<RholangNode>, ArcK>, remainder: &Option<Arc<RholangNode>>, source: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"linear_bind\""));
         self.add_base_fields(node);
@@ -1064,7 +1064,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_repeated_bind(&self, node: &Arc<Node>, _base: &NodeBase, names: &Vector<Arc<Node>, ArcK>, remainder: &Option<Arc<Node>>, source: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_repeated_bind(&self, node: &Arc<RholangNode>, _base: &NodeBase, names: &Vector<Arc<RholangNode>, ArcK>, remainder: &Option<Arc<RholangNode>>, source: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"repeated_bind\""));
         self.add_base_fields(node);
@@ -1082,7 +1082,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_peek_bind(&self, node: &Arc<Node>, _base: &NodeBase, names: &Vector<Arc<Node>, ArcK>, remainder: &Option<Arc<Node>>, source: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_peek_bind(&self, node: &Arc<RholangNode>, _base: &NodeBase, names: &Vector<Arc<RholangNode>, ArcK>, remainder: &Option<Arc<RholangNode>>, source: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"peek_bind\""));
         self.add_base_fields(node);
@@ -1100,7 +1100,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_comment(&self, node: &Arc<Node>, _base: &NodeBase, kind: &CommentKind, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_comment(&self, node: &Arc<RholangNode>, _base: &NodeBase, kind: &CommentKind, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"comment\""));
         self.add_base_fields(node);
@@ -1110,7 +1110,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_wildcard(&self, node: &Arc<Node>, _base: &NodeBase, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_wildcard(&self, node: &Arc<RholangNode>, _base: &NodeBase, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"wildcard\""));
         self.add_base_fields(node);
@@ -1119,7 +1119,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_simple_type(&self, node: &Arc<Node>, _base: &NodeBase, value: &String, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_simple_type(&self, node: &Arc<RholangNode>, _base: &NodeBase, value: &String, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"simple_type\""));
         self.add_base_fields(node);
@@ -1129,7 +1129,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_receive_send_source(&self, node: &Arc<Node>, _base: &NodeBase, name: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_receive_send_source(&self, node: &Arc<RholangNode>, _base: &NodeBase, name: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"receive_send_source\""));
         self.add_base_fields(node);
@@ -1141,7 +1141,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_send_receive_source(&self, node: &Arc<Node>, _base: &NodeBase, name: &Arc<Node>, inputs: &Vector<Arc<Node>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_send_receive_source(&self, node: &Arc<RholangNode>, _base: &NodeBase, name: &Arc<RholangNode>, inputs: &Vector<Arc<RholangNode>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"send_receive_source\""));
         self.add_base_fields(node);
@@ -1154,7 +1154,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_error(&self, node: &Arc<Node>, _base: &NodeBase, children: &Vector<Arc<Node>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_error(&self, node: &Arc<RholangNode>, _base: &NodeBase, children: &Vector<Arc<RholangNode>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"error\""));
         self.add_base_fields(node);
@@ -1164,7 +1164,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_disjunction(&self, node: &Arc<Node>, _base: &NodeBase, left: &Arc<Node>, right: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_disjunction(&self, node: &Arc<RholangNode>, _base: &NodeBase, left: &Arc<RholangNode>, right: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"disjunction\""));
         self.add_base_fields(node);
@@ -1179,7 +1179,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_conjunction(&self, node: &Arc<Node>, _base: &NodeBase, left: &Arc<Node>, right: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_conjunction(&self, node: &Arc<RholangNode>, _base: &NodeBase, left: &Arc<RholangNode>, right: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"conjunction\""));
         self.add_base_fields(node);
@@ -1194,7 +1194,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_negation(&self, node: &Arc<Node>, _base: &NodeBase, operand: &Arc<Node>, metadata: &Option<Arc<Metadata>>) -> Arc<Node> {
+    fn visit_negation(&self, node: &Arc<RholangNode>, _base: &NodeBase, operand: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"negation\""));
         self.add_base_fields(node);
@@ -1211,7 +1211,7 @@ impl Visitor for PrettyPrinter {
 mod tests {
     use super::*;
     use indoc::indoc;
-    use crate::ir::rholang_node::{Metadata, Node, NodeBase, RelativePosition};
+    use crate::ir::rholang_node::{Metadata, RholangNode, NodeBase, RelativePosition};
     use crate::ir::transforms::pretty_printer::format;
     use std::sync::Arc;
     use ropey::Rope;
@@ -1917,16 +1917,16 @@ Nil"#;
     }
 
     /// Creates a Nil node with default metadata containing a version field.
-    fn create_nil_node() -> Arc<Node> {
+    fn create_nil_node() -> Arc<RholangNode> {
         let base = NodeBase::new(RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 3, 0, 3);
         let mut data = HashMap::new();
         data.insert("version".to_string(), Arc::new(0_usize) as Arc<dyn Any + Send + Sync>);
         let metadata = Some(Arc::new(data));
-        Arc::new(Node::Nil { base, metadata })
+        Arc::new(RholangNode::Nil { base, metadata })
     }
 
     /// Adds a key-value pair to the node's metadata, returning a new node.
-    fn add_metadata<T: 'static + Send + Sync>(node: Arc<Node>, key: &str, value: T) -> Arc<Node> {
+    fn add_metadata<T: 'static + Send + Sync>(node: Arc<RholangNode>, key: &str, value: T) -> Arc<RholangNode> {
         let mut data = node.metadata().unwrap().as_ref().clone();
         data.insert(key.to_string(), Arc::new(value) as Arc<dyn Any + Send + Sync>);
         node.with_metadata(Some(Arc::new(data)))

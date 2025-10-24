@@ -34,7 +34,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use walkdir::WalkDir;
 
 use crate::ir::pipeline::Pipeline;
-use crate::ir::rholang_node::{Node, Position as IrPosition, compute_absolute_positions, collect_contracts, collect_calls, match_contract, find_node_at_position_with_path, find_node_at_position};
+use crate::ir::rholang_node::{RholangNode, Position as IrPosition, compute_absolute_positions, collect_contracts, collect_calls, match_contract, find_node_at_position_with_path, find_node_at_position};
 use crate::ir::symbol_table::{Symbol, SymbolTable, SymbolType};
 use crate::ir::transforms::symbol_table_builder::{SymbolTableBuilder, InvertedIndex};
 use crate::ir::transforms::document_symbol_visitor::{collect_document_symbols, collect_workspace_symbols};
@@ -407,7 +407,7 @@ impl RholangBackend {
     }
 
     /// Processes a parsed IR node through the transformation pipeline to build symbols and metadata.
-    async fn process_document(&self, ir: Arc<Node>, uri: &Url, text: &Rope) -> Result<CachedDocument, String> {
+    async fn process_document(&self, ir: Arc<RholangNode>, uri: &Url, text: &Rope) -> Result<CachedDocument, String> {
         let mut pipeline = Pipeline::new();
         let global_table = self.workspace.read().await.global_table.clone();
         let builder = Arc::new(SymbolTableBuilder::new(ir.clone(), uri.clone(), global_table.clone()));
@@ -708,7 +708,7 @@ impl RholangBackend {
     }
 
     /// Looks up the IR node, its symbol table, and inverted index at a given position in the document.
-    pub async fn lookup_node_at_position(&self, uri: &Url, position: IrPosition) -> Option<(Arc<Node>, Arc<SymbolTable>, InvertedIndex)> {
+    pub async fn lookup_node_at_position(&self, uri: &Url, position: IrPosition) -> Option<(Arc<RholangNode>, Arc<SymbolTable>, InvertedIndex)> {
         let opt_doc = {
             debug!("Acquiring workspace read lock for symbol at {}:{:?}", uri, position);
             let workspace = self.workspace.read().await;
@@ -780,22 +780,22 @@ impl RholangBackend {
                 };
 
                 if let (Some((node, path)), Some(symbol_table)) = (node_path_opt, symbol_table_opt) {
-                    debug!("Node at position: {}", match &*node {
-                        Node::Var {..} => "Var",
-                        Node::Contract {..} => "Contract",
-                        Node::Send {..} => "Send",
-                        Node::SendSync {..} => "SendSync",
-                        Node::Par {..} => "Par",
-                        Node::New {..} => "New",
-                        Node::Bundle {..} => "Bundle",
-                        Node::Match {..} => "Match",
+                    debug!("RholangNode at position: {}", match &*node {
+                        RholangNode::Var {..} => "Var",
+                        RholangNode::Contract {..} => "Contract",
+                        RholangNode::Send {..} => "Send",
+                        RholangNode::SendSync {..} => "SendSync",
+                        RholangNode::Par {..} => "Par",
+                        RholangNode::New {..} => "New",
+                        RholangNode::Bundle {..} => "Bundle",
+                        RholangNode::Match {..} => "Match",
                         _ => "Other"
                     });
                     match &*node {
-                        Node::Var { name, .. } => {
+                        RholangNode::Var { name, .. } => {
                             // Check if this Var is the name of a Contract (path should be [..., Contract, Var])
                             if path.len() >= 2 {
-                                if let Node::Contract { name: contract_name, .. } = &*path[path.len() - 2] {
+                                if let RholangNode::Contract { name: contract_name, .. } = &*path[path.len() - 2] {
                                     if Arc::ptr_eq(contract_name, &node) {
                                         // This Var is a contract name - handle as global symbol
                                         debug!("Var '{}' is a contract name", name);
@@ -839,9 +839,9 @@ impl RholangBackend {
                                 }
                             }
                         }
-                        Node::Contract { name, .. } => {
+                        RholangNode::Contract { name, .. } => {
                             // Handle contract declarations
-                            if let Node::Var { name: contract_name, .. } = &**name {
+                            if let RholangNode::Var { name: contract_name, .. } = &**name {
                                 let workspace = self.workspace.read().await;
                                 if let Some((def_uri, def_pos)) = workspace.global_symbols.get(contract_name).cloned() {
                                     debug!("Found contract symbol '{}' at {}:{} in {}",
@@ -856,18 +856,18 @@ impl RholangBackend {
                                 }
                             }
                         }
-                        Node::Send { channel, inputs, .. } | Node::SendSync { channel, inputs, .. } => {
+                        RholangNode::Send { channel, inputs, .. } | RholangNode::SendSync { channel, inputs, .. } => {
                             // Handle contract calls like foo!(42) and positions on send inputs
                             let workspace = self.workspace.read().await;
                             if let Some(doc) = workspace.documents.get(&uri) {
                                 // First check if position is within the channel node
-                                let channel_key = &**channel as *const Node as usize;
+                                let channel_key = &**channel as *const RholangNode as usize;
                                 if let Some(&(ch_start, ch_end)) = doc.positions.get(&channel_key) {
                                     debug!("Send channel position: start={:?}, end={:?}, cursor={}",
                                         ch_start, ch_end, byte);
                                     if ch_start.byte <= byte && byte <= ch_end.byte {
                                         // Position is within the channel, extract the name
-                                        if let Node::Var { name: channel_name, .. } = &**channel {
+                                        if let RholangNode::Var { name: channel_name, .. } = &**channel {
                                             debug!("Send channel is Var '{}'", channel_name);
                                             if let Some((def_uri, def_pos)) = workspace.global_symbols.get(channel_name).cloned() {
                                                 debug!("Found global contract symbol '{}' for Send at {}:{} in {}",
@@ -893,14 +893,14 @@ impl RholangBackend {
 
                                 // Check if position is within any of the Send's inputs
                                 for input in inputs {
-                                    let input_key = &**input as *const Node as usize;
+                                    let input_key = &**input as *const RholangNode as usize;
                                     if let Some(&(input_start, input_end)) = doc.positions.get(&input_key) {
                                         debug!("Send input position: start={:?}, end={:?}, cursor={}",
                                             input_start, input_end, byte);
                                         // Allow a small tolerance for position matching
                                         let tolerance = 2; // bytes
                                         if input_start.byte.saturating_sub(tolerance) <= byte && byte <= input_end.byte {
-                                            if let Node::Var { name: input_name, .. } = &**input {
+                                            if let RholangNode::Var { name: input_name, .. } = &**input {
                                                 debug!("Position within Send input Var '{}'", input_name);
                                                 // Use the input node's own symbol table if it has one, which should include all parent scopes
                                                 let input_symbol_table = input.metadata()
@@ -920,7 +920,7 @@ impl RholangBackend {
                                 }
                             }
                         }
-                        Node::Par { .. } => {
+                        RholangNode::Par { .. } => {
                             // When clicking on a contract name or call site in a Par, we might get a Par node.
                             // The node returned by find_node_at_position might be a nested Par,
                             // so we need to search from the document root to find all relevant nodes.
@@ -932,13 +932,13 @@ impl RholangBackend {
                                 debug!("Found {} send nodes in document", sends.len());
                                 for send in sends {
                                     let (channel, inputs) = match &*send {
-                                        Node::Send { channel, inputs, .. } => (channel, inputs),
-                                        Node::SendSync { channel, inputs, .. } => (channel, inputs),
+                                        RholangNode::Send { channel, inputs, .. } => (channel, inputs),
+                                        RholangNode::SendSync { channel, inputs, .. } => (channel, inputs),
                                         _ => continue,
                                     };
 
                                     // Check channel first
-                                    let channel_key = &**channel as *const Node as usize;
+                                    let channel_key = &**channel as *const RholangNode as usize;
                                     if let Some(&(ch_start, ch_end)) = doc.positions.get(&channel_key) {
                                         debug!("Send channel position: start={:?}, end={:?}, cursor={}",
                                             ch_start, ch_end, byte);
@@ -946,7 +946,7 @@ impl RholangBackend {
                                         // (allowing for whitespace/offset differences)
                                         let tolerance = 5; // bytes
                                         if ch_start.byte.saturating_sub(tolerance) <= byte && byte <= ch_end.byte {
-                                            if let Node::Var { name: channel_name, .. } = &**channel {
+                                            if let RholangNode::Var { name: channel_name, .. } = &**channel {
                                                 debug!("Position within Send channel Var '{}'", channel_name);
                                                 // First try symbol table for local variables
                                                 if let Some(symbol) = symbol_table.lookup(channel_name) {
@@ -970,14 +970,14 @@ impl RholangBackend {
 
                                     // Check if position is within any of the Send's inputs
                                     for input in inputs {
-                                        let input_key = &**input as *const Node as usize;
+                                        let input_key = &**input as *const RholangNode as usize;
                                         if let Some(&(input_start, input_end)) = doc.positions.get(&input_key) {
                                             debug!("Send input position: start={:?}, end={:?}, cursor={}",
                                                 input_start, input_end, byte);
                                             // Allow a small tolerance for position matching
                                             let tolerance = 2; // bytes
                                             if input_start.byte.saturating_sub(tolerance) <= byte && byte <= input_end.byte {
-                                                if let Node::Var { name: input_name, .. } = &**input {
+                                                if let RholangNode::Var { name: input_name, .. } = &**input {
                                                     debug!("Position within Send input Var '{}'", input_name);
                                                     if let Some(symbol) = symbol_table.lookup(input_name) {
                                                         debug!("Found local symbol '{}' for Send input at {}:{} in {}",
@@ -995,9 +995,9 @@ impl RholangBackend {
                                 collect_contracts(&doc.ir, &mut contracts);
                                 debug!("Found {} contracts in document", contracts.len());
                                 for contract in contracts {
-                                    if let Node::Contract { name, .. } = &*contract {
-                                        if let Node::Var { name: contract_name, .. } = &**name {
-                                            let key = &**name as *const Node as usize;
+                                    if let RholangNode::Contract { name, .. } = &*contract {
+                                        if let RholangNode::Var { name: contract_name, .. } = &**name {
+                                            let key = &**name as *const RholangNode as usize;
                                             if let Some(&(start, end)) = doc.positions.get(&key) {
                                                 debug!("Contract '{}' name position: start={:?}, end={:?}, byte={}",
                                                     contract_name, start, end, byte);
@@ -1020,11 +1020,11 @@ impl RholangBackend {
                                     }
                                 }
                             }
-                            debug!("Node at {}:{} in {} is Par but position not in any contract names or send channels",
+                            debug!("RholangNode at {}:{} in {} is Par but position not in any contract names or send channels",
                                 position.line, position.character, uri);
                         }
                         _ => {
-                            debug!("Node at {}:{} in {} is not a supported node type",
+                            debug!("RholangNode at {}:{} in {} is not a supported node type",
                                 position.line, position.character, uri);
                         }
                     }
@@ -1429,17 +1429,17 @@ impl LanguageServer for RholangBackend {
                 if path.len() >= 2 {
                     let parent = path[path.len() - 2].clone();
                     let is_channel = match &*parent {
-                        Node::Send { channel, .. } | Node::SendSync { channel, .. } => Arc::ptr_eq(channel, &node),
+                        RholangNode::Send { channel, .. } | RholangNode::SendSync { channel, .. } => Arc::ptr_eq(channel, &node),
                         _ => false,
                     };
                     debug!("Is channel in Send/SendSync: {}", is_channel);
                     if is_channel {
-                        if let Node::Send { channel, inputs, .. } | Node::SendSync { channel, inputs, .. } = &*parent {
+                        if let RholangNode::Send { channel, inputs, .. } | RholangNode::SendSync { channel, inputs, .. } = &*parent {
                             let matching = workspace.global_contracts.iter().filter(|(_, contract)| match_contract(channel, inputs, contract)).map(|(u, c)| {
                                 let cached_doc = workspace.documents.get(u).expect("Document not found");
                                 let positions = cached_doc.positions.clone();
                                 debug!("Matched contract in {}: '{}'", u, c.text(&cached_doc.text, &cached_doc.ir).to_string());
-                                let name = if let Node::Contract { name, .. } = &**c {
+                                let name = if let RholangNode::Contract { name, .. } = &**c {
                                     debug!("Contact name: {:?}", name);
                                     name
                                 } else {
@@ -1447,7 +1447,7 @@ impl LanguageServer for RholangBackend {
                                     unreachable!()
                                 };
                                 debug!("Found contract name");
-                                let key = &**name as *const Node as usize;
+                                let key = &**name as *const RholangNode as usize;
                                 let (start, _) = (*positions).get(&key).unwrap();
                                 Location {
                                     uri: u.clone(),
@@ -1560,16 +1560,16 @@ impl LanguageServer for RholangBackend {
                 if path.len() >= 2 {
                     let parent = path[path.len() - 2].clone();
                     let is_name = match &*parent {
-                        Node::Contract { name, .. } => Arc::ptr_eq(name, &node),
+                        RholangNode::Contract { name, .. } => Arc::ptr_eq(name, &node),
                         _ => false,
                     };
                     debug!("Is name in Contract: {}", is_name);
                     if is_name {
-                        if let Node::Contract { .. } = &*parent {
+                        if let RholangNode::Contract { .. } = &*parent {
                             let contract = parent.clone();
                             let matching_calls = workspace.global_calls.iter().filter(|(_, call)| {
                                 match &**call {
-                                    Node::Send { channel, inputs, .. } | Node::SendSync { channel, inputs, .. } => {
+                                    RholangNode::Send { channel, inputs, .. } | RholangNode::SendSync { channel, inputs, .. } => {
                                         match_contract(channel, inputs, &contract)
                                     }
                                     _ => false,
@@ -1581,10 +1581,10 @@ impl LanguageServer for RholangBackend {
                                 let call_positions = call_doc.positions.clone();
                                 debug!("Matched call in {}: '{}'", call_uri, call.text(&call_doc.text, &call_doc.ir).to_string());
                                 let channel = match &**call {
-                                    Node::Send { channel, .. } | Node::SendSync { channel, .. } => channel.clone(),
+                                    RholangNode::Send { channel, .. } | RholangNode::SendSync { channel, .. } => channel.clone(),
                                     _ => unreachable!()
                                 };
-                                let key = &*channel as *const Node as usize;
+                                let key = &*channel as *const RholangNode as usize;
                                 let (start, _) = (*call_positions).get(&key).unwrap();
                                 Location {
                                     uri: call_uri.clone(),
@@ -1592,7 +1592,7 @@ impl LanguageServer for RholangBackend {
                                 }
                             }).collect::<Vec<_>>();
                             if include_decl {
-                                let key = &*node as *const Node as usize;
+                                let key = &*node as *const RholangNode as usize;
                                 let (start, _) = (*doc.positions).get(&key).unwrap();
                                 let decl_range = Self::position_to_range(*start, node.text(&doc.text, root).len_chars());
                                 locations.push(Location { uri: uri.clone(), range: decl_range });

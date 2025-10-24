@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::any::Any;
 use rholang_language_server::ir::rholang_node::{
-    BinOperator, BundleType, CommentKind, Metadata, Node, NodeBase, Position,
-    RelativePosition, SendType, UnaryOperator, VarRefKind
+    BinOperator, RholangBundleType, CommentKind, Metadata, RholangNode, NodeBase, Position,
+    RelativePosition, RholangSendType, UnaryOperator, RholangVarRefKind
 };
 use rholang_language_server::ir::visitor::Visitor;
 use rholang_language_server::ir::pipeline::{Pipeline, Transform};
@@ -21,17 +21,17 @@ struct SimplifyDoubleUnary;
 impl Visitor for SimplifyDoubleUnary {
     fn visit_unaryop(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
         op: UnaryOperator,
-        operand: &Arc<Node>,
+        operand: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         // Recurse into the tree, first:
         let new_operand = self.visit_node(&operand);
 
         // Simplify double unary operations (e.g., --x, not not x)
-        if let Node::UnaryOp { op: inner_op, operand: inner_operand, .. } = &*new_operand {
+        if let RholangNode::UnaryOp { op: inner_op, operand: inner_operand, .. } = &*new_operand {
             if *inner_op == op {
                 debug!("Simplifying double unary operation: {:?}", op);
                 let new_base = NodeBase::new(
@@ -47,7 +47,7 @@ impl Visitor for SimplifyDoubleUnary {
         // Simplify unary operation on literals only if explicitly required
         match op {
             UnaryOperator::Neg => {
-                if let Node::LongLiteral { value, .. } = &*new_operand {
+                if let RholangNode::LongLiteral { value, .. } = &*new_operand {
                     let new_value = -value;
                     let new_text = new_value.to_string();
                     let new_length = new_text.len();
@@ -58,7 +58,7 @@ impl Visitor for SimplifyDoubleUnary {
                         0,
                         new_length,
                     );
-                    return Arc::new(Node::LongLiteral {
+                    return Arc::new(RholangNode::LongLiteral {
                         base: new_base,
                         value: new_value,
                         metadata: metadata.clone(),
@@ -66,7 +66,7 @@ impl Visitor for SimplifyDoubleUnary {
                 }
             }
             UnaryOperator::Not => {
-                if let Node::BoolLiteral { value, .. } = &*new_operand {
+                if let RholangNode::BoolLiteral { value, .. } = &*new_operand {
                     let new_value = !value;
                     let new_text = if new_value { "true" } else { "false" }.to_string();
                     let new_length = new_text.len();
@@ -77,7 +77,7 @@ impl Visitor for SimplifyDoubleUnary {
                         0,
                         new_length,
                     );
-                    return Arc::new(Node::BoolLiteral {
+                    return Arc::new(RholangNode::BoolLiteral {
                         base: new_base,
                         value: new_value,
                         metadata: metadata.clone(),
@@ -88,7 +88,7 @@ impl Visitor for SimplifyDoubleUnary {
         }
 
         // Default: visit operand and reconstruct without simplification
-        Arc::new(Node::UnaryOp {
+        Arc::new(RholangNode::UnaryOp {
             base: base.clone(),
             op,
             operand: new_operand,
@@ -103,19 +103,19 @@ struct IncrementVersion;
 impl Visitor for IncrementVersion {
     fn visit_par(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        left: &Arc<Node>,
-        right: &Arc<Node>,
+        left: &Arc<RholangNode>,
+        right: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_left = self.visit_node(left);
         let new_right = self.visit_node(right);
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::Par {
+        Arc::new(RholangNode::Par {
             base: base.clone(),
             left: new_left,
             right: new_right,
@@ -125,13 +125,13 @@ impl Visitor for IncrementVersion {
 
     fn visit_send_sync(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        channel: &Arc<Node>,
-        inputs: &Vector<Arc<Node>, ArcK>,
-        cont: &Arc<Node>,
+        channel: &Arc<RholangNode>,
+        inputs: &Vector<Arc<RholangNode>, ArcK>,
+        cont: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_channel = self.visit_node(channel);
         let new_inputs = inputs.iter().map(|i| self.visit_node(i)).collect::<Vector<_, ArcK>>();
         let new_cont = self.visit_node(cont);
@@ -139,7 +139,7 @@ impl Visitor for IncrementVersion {
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::SendSync {
+        Arc::new(RholangNode::SendSync {
             base: base.clone(),
             channel: new_channel,
             inputs: new_inputs,
@@ -150,21 +150,21 @@ impl Visitor for IncrementVersion {
 
     fn visit_send(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        channel: &Arc<Node>,
-        send_type: &SendType,
+        channel: &Arc<RholangNode>,
+        send_type: &RholangSendType,
         send_type_delta: &RelativePosition,
-        inputs: &Vector<Arc<Node>, ArcK>,
+        inputs: &Vector<Arc<RholangNode>, ArcK>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_channel = self.visit_node(channel);
         let new_inputs = inputs.iter().map(|i| self.visit_node(i)).collect::<Vector<_, ArcK>>();
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::Send {
+        Arc::new(RholangNode::Send {
             base: base.clone(),
             channel: new_channel,
             send_type: send_type.clone(),
@@ -176,19 +176,19 @@ impl Visitor for IncrementVersion {
 
     fn visit_new(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        decls: &Vector<Arc<Node>, ArcK>,
-        proc: &Arc<Node>,
+        decls: &Vector<Arc<RholangNode>, ArcK>,
+        proc: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_decls = decls.iter().map(|d| self.visit_node(d)).collect::<Vector<_, ArcK>>();
         let new_proc = self.visit_node(proc);
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::New {
+        Arc::new(RholangNode::New {
             base: base.clone(),
             decls: new_decls,
             proc: new_proc,
@@ -198,13 +198,13 @@ impl Visitor for IncrementVersion {
 
     fn visit_ifelse(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        condition: &Arc<Node>,
-        consequence: &Arc<Node>,
-        alternative: &Option<Arc<Node>>,
+        condition: &Arc<RholangNode>,
+        consequence: &Arc<RholangNode>,
+        alternative: &Option<Arc<RholangNode>>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_condition = self.visit_node(condition);
         let new_consequence = self.visit_node(consequence);
         let new_alternative = alternative.as_ref().map(|a| self.visit_node(a));
@@ -212,7 +212,7 @@ impl Visitor for IncrementVersion {
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::IfElse {
+        Arc::new(RholangNode::IfElse {
             base: base.clone(),
             condition: new_condition,
             consequence: new_consequence,
@@ -223,19 +223,19 @@ impl Visitor for IncrementVersion {
 
     fn visit_let(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        decls: &Vector<Arc<Node>, ArcK>,
-        proc: &Arc<Node>,
+        decls: &Vector<Arc<RholangNode>, ArcK>,
+        proc: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_decls = decls.iter().map(|d| self.visit_node(d)).collect::<Vector<_, ArcK>>();
         let new_proc = self.visit_node(proc);
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::Let {
+        Arc::new(RholangNode::Let {
             base: base.clone(),
             decls: new_decls,
             proc: new_proc,
@@ -245,18 +245,18 @@ impl Visitor for IncrementVersion {
 
     fn visit_bundle(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        bundle_type: &BundleType,
-        proc: &Arc<Node>,
+        bundle_type: &RholangBundleType,
+        proc: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_proc = self.visit_node(proc);
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::Bundle {
+        Arc::new(RholangNode::Bundle {
             base: base.clone(),
             bundle_type: bundle_type.clone(),
             proc: new_proc,
@@ -266,19 +266,19 @@ impl Visitor for IncrementVersion {
 
     fn visit_match(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        expression: &Arc<Node>,
-        cases: &Vector<(Arc<Node>, Arc<Node>), ArcK>,
+        expression: &Arc<RholangNode>,
+        cases: &Vector<(Arc<RholangNode>, Arc<RholangNode>), ArcK>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_expression = self.visit_node(expression);
         let new_cases = cases.iter().map(|(pat, proc)| (self.visit_node(pat), self.visit_node(proc))).collect::<Vector<_, ArcK>>();
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::Match {
+        Arc::new(RholangNode::Match {
             base: base.clone(),
             expression: new_expression,
             cases: new_cases,
@@ -288,11 +288,11 @@ impl Visitor for IncrementVersion {
 
     fn visit_choice(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        branches: &Vector<(Vector<Arc<Node>, ArcK>, Arc<Node>), ArcK>,
+        branches: &Vector<(Vector<Arc<RholangNode>, ArcK>, Arc<RholangNode>), ArcK>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_branches = branches.iter().map(|(inputs, proc)| {
             let new_inputs = inputs.iter().map(|i| self.visit_node(i)).collect::<Vector<_, ArcK>>();
             let new_proc = self.visit_node(proc);
@@ -302,7 +302,7 @@ impl Visitor for IncrementVersion {
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::Choice {
+        Arc::new(RholangNode::Choice {
             base: base.clone(),
             branches: new_branches,
             metadata: Some(Arc::new(data)),
@@ -311,14 +311,14 @@ impl Visitor for IncrementVersion {
 
     fn visit_contract(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        name: &Arc<Node>,
-        formals: &Vector<Arc<Node>, ArcK>,
-        formals_remainder: &Option<Arc<Node>>,
-        proc: &Arc<Node>,
+        name: &Arc<RholangNode>,
+        formals: &Vector<Arc<RholangNode>, ArcK>,
+        formals_remainder: &Option<Arc<RholangNode>>,
+        proc: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_name = self.visit_node(name);
         let new_formals = formals.iter().map(|f| self.visit_node(f)).collect::<Vector<_, ArcK>>();
         let new_formals_remainder = formals_remainder.as_ref().map(|r| self.visit_node(r));
@@ -327,7 +327,7 @@ impl Visitor for IncrementVersion {
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::Contract {
+        Arc::new(RholangNode::Contract {
             base: base.clone(),
             name: new_name,
             formals: new_formals,
@@ -339,19 +339,19 @@ impl Visitor for IncrementVersion {
 
     fn visit_input(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        receipts: &Vector<Vector<Arc<Node>, ArcK>, ArcK>,
-        proc: &Arc<Node>,
+        receipts: &Vector<Vector<Arc<RholangNode>, ArcK>, ArcK>,
+        proc: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_receipts = receipts.iter().map(|r| r.iter().map(|n| self.visit_node(n)).collect::<Vector<_, ArcK>>()).collect::<Vector<_, ArcK>>();
         let new_proc = self.visit_node(proc);
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::Input {
+        Arc::new(RholangNode::Input {
             base: base.clone(),
             receipts: new_receipts,
             proc: new_proc,
@@ -361,17 +361,17 @@ impl Visitor for IncrementVersion {
 
     fn visit_block(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        proc: &Arc<Node>,
+        proc: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_proc = self.visit_node(proc);
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::Block {
+        Arc::new(RholangNode::Block {
             base: base.clone(),
             proc: new_proc,
             metadata: Some(Arc::new(data)),
@@ -380,20 +380,20 @@ impl Visitor for IncrementVersion {
 
     fn visit_binop(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
         op: BinOperator,
-        left: &Arc<Node>,
-        right: &Arc<Node>,
+        left: &Arc<RholangNode>,
+        right: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_left = self.visit_node(left);
         let new_right = self.visit_node(right);
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::BinOp {
+        Arc::new(RholangNode::BinOp {
             base: base.clone(),
             op,
             left: new_left,
@@ -404,18 +404,18 @@ impl Visitor for IncrementVersion {
 
     fn visit_unaryop(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
         op: UnaryOperator,
-        operand: &Arc<Node>,
+        operand: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_operand = self.visit_node(operand);
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::UnaryOp {
+        Arc::new(RholangNode::UnaryOp {
             base: base.clone(),
             op,
             operand: new_operand,
@@ -425,20 +425,20 @@ impl Visitor for IncrementVersion {
 
     fn visit_method(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        receiver: &Arc<Node>,
+        receiver: &Arc<RholangNode>,
         name: &String,
-        args: &Vector<Arc<Node>, ArcK>,
+        args: &Vector<Arc<RholangNode>, ArcK>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_receiver = self.visit_node(receiver);
         let new_args = args.iter().map(|a| self.visit_node(a)).collect::<Vector<_, ArcK>>();
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::Method {
+        Arc::new(RholangNode::Method {
             base: base.clone(),
             receiver: new_receiver,
             name: name.clone(),
@@ -449,17 +449,17 @@ impl Visitor for IncrementVersion {
 
     fn visit_eval(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        name: &Arc<Node>,
+        name: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_name = self.visit_node(name);
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::Eval {
+        Arc::new(RholangNode::Eval {
             base: base.clone(),
             name: new_name,
             metadata: Some(Arc::new(data)),
@@ -468,17 +468,17 @@ impl Visitor for IncrementVersion {
 
     fn visit_quote(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        quotable: &Arc<Node>,
+        quotable: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_quotable = self.visit_node(quotable);
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::Quote {
+        Arc::new(RholangNode::Quote {
             base: base.clone(),
             quotable: new_quotable,
             metadata: Some(Arc::new(data)),
@@ -487,18 +487,18 @@ impl Visitor for IncrementVersion {
 
     fn visit_varref(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        kind: VarRefKind,
-        var: &Arc<Node>,
+        kind: RholangVarRefKind,
+        var: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_var = self.visit_node(var);
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::VarRef {
+        Arc::new(RholangNode::VarRef {
             base: base.clone(),
             kind,
             var: new_var,
@@ -508,16 +508,16 @@ impl Visitor for IncrementVersion {
 
     fn visit_bool_literal(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
         value: bool,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::BoolLiteral {
+        Arc::new(RholangNode::BoolLiteral {
             base: base.clone(),
             value,
             metadata: Some(Arc::new(data)),
@@ -526,16 +526,16 @@ impl Visitor for IncrementVersion {
 
     fn visit_long_literal(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
         value: i64,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::LongLiteral {
+        Arc::new(RholangNode::LongLiteral {
             base: base.clone(),
             value,
             metadata: Some(Arc::new(data)),
@@ -544,16 +544,16 @@ impl Visitor for IncrementVersion {
 
     fn visit_string_literal(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
         value: &String,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::StringLiteral {
+        Arc::new(RholangNode::StringLiteral {
             base: base.clone(),
             value: value.clone(),
             metadata: Some(Arc::new(data)),
@@ -562,16 +562,16 @@ impl Visitor for IncrementVersion {
 
     fn visit_uri_literal(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
         value: &String,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::UriLiteral {
+        Arc::new(RholangNode::UriLiteral {
             base: base.clone(),
             value: value.clone(),
             metadata: Some(Arc::new(data)),
@@ -580,15 +580,15 @@ impl Visitor for IncrementVersion {
 
     fn visit_nil(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::Nil {
+        Arc::new(RholangNode::Nil {
             base: base.clone(),
             metadata: Some(Arc::new(data)),
         })
@@ -596,19 +596,19 @@ impl Visitor for IncrementVersion {
 
     fn visit_list(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        elements: &Vector<Arc<Node>, ArcK>,
-        remainder: &Option<Arc<Node>>,
+        elements: &Vector<Arc<RholangNode>, ArcK>,
+        remainder: &Option<Arc<RholangNode>>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_elements = elements.iter().map(|e| self.visit_node(e)).collect::<Vector<_, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::List {
+        Arc::new(RholangNode::List {
             base: base.clone(),
             elements: new_elements,
             remainder: new_remainder,
@@ -618,19 +618,19 @@ impl Visitor for IncrementVersion {
 
     fn visit_set(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        elements: &Vector<Arc<Node>, ArcK>,
-        remainder: &Option<Arc<Node>>,
+        elements: &Vector<Arc<RholangNode>, ArcK>,
+        remainder: &Option<Arc<RholangNode>>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_elements = elements.iter().map(|e| self.visit_node(e)).collect::<Vector<_, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::Set {
+        Arc::new(RholangNode::Set {
             base: base.clone(),
             elements: new_elements,
             remainder: new_remainder,
@@ -640,19 +640,19 @@ impl Visitor for IncrementVersion {
 
     fn visit_map(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        pairs: &Vector<(Arc<Node>, Arc<Node>), ArcK>,
-        remainder: &Option<Arc<Node>>,
+        pairs: &Vector<(Arc<RholangNode>, Arc<RholangNode>), ArcK>,
+        remainder: &Option<Arc<RholangNode>>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_pairs = pairs.iter().map(|(k, v)| (self.visit_node(k), self.visit_node(v))).collect::<Vector<_, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::Map {
+        Arc::new(RholangNode::Map {
             base: base.clone(),
             pairs: new_pairs,
             remainder: new_remainder,
@@ -662,17 +662,17 @@ impl Visitor for IncrementVersion {
 
     fn visit_tuple(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        elements: &Vector<Arc<Node>, ArcK>,
+        elements: &Vector<Arc<RholangNode>, ArcK>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_elements = elements.iter().map(|e| self.visit_node(e)).collect::<Vector<_, ArcK>>();
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::Tuple {
+        Arc::new(RholangNode::Tuple {
             base: base.clone(),
             elements: new_elements,
             metadata: Some(Arc::new(data)),
@@ -681,16 +681,16 @@ impl Visitor for IncrementVersion {
 
     fn visit_var(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
         name: &String,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::Var {
+        Arc::new(RholangNode::Var {
             base: base.clone(),
             name: name.clone(),
             metadata: Some(Arc::new(data)),
@@ -699,19 +699,19 @@ impl Visitor for IncrementVersion {
 
     fn visit_name_decl(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        var: &Arc<Node>,
-        uri: &Option<Arc<Node>>,
+        var: &Arc<RholangNode>,
+        uri: &Option<Arc<RholangNode>>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_var = self.visit_node(var);
         let new_uri = uri.as_ref().map(|u| self.visit_node(u));
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::NameDecl {
+        Arc::new(RholangNode::NameDecl {
             base: base.clone(),
             var: new_var,
             uri: new_uri,
@@ -721,13 +721,13 @@ impl Visitor for IncrementVersion {
 
     fn visit_decl(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        names: &Vector<Arc<Node>, ArcK>,
-        names_remainder: &Option<Arc<Node>>,
-        procs: &Vector<Arc<Node>, ArcK>,
+        names: &Vector<Arc<RholangNode>, ArcK>,
+        names_remainder: &Option<Arc<RholangNode>>,
+        procs: &Vector<Arc<RholangNode>, ArcK>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<_, ArcK>>();
         let new_names_remainder = names_remainder.as_ref().map(|r| self.visit_node(r));
         let new_procs = procs.iter().map(|p| self.visit_node(p)).collect::<Vector<_, ArcK>>();
@@ -735,7 +735,7 @@ impl Visitor for IncrementVersion {
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::Decl {
+        Arc::new(RholangNode::Decl {
             base: base.clone(),
             names: new_names,
             names_remainder: new_names_remainder,
@@ -746,13 +746,13 @@ impl Visitor for IncrementVersion {
 
     fn visit_linear_bind(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        names: &Vector<Arc<Node>, ArcK>,
-        remainder: &Option<Arc<Node>>,
-        source: &Arc<Node>,
+        names: &Vector<Arc<RholangNode>, ArcK>,
+        remainder: &Option<Arc<RholangNode>>,
+        source: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<_, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         let new_source = self.visit_node(source);
@@ -760,7 +760,7 @@ impl Visitor for IncrementVersion {
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::LinearBind {
+        Arc::new(RholangNode::LinearBind {
             base: base.clone(),
             names: new_names,
             remainder: new_remainder,
@@ -771,13 +771,13 @@ impl Visitor for IncrementVersion {
 
     fn visit_repeated_bind(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        names: &Vector<Arc<Node>, ArcK>,
-        remainder: &Option<Arc<Node>>,
-        source: &Arc<Node>,
+        names: &Vector<Arc<RholangNode>, ArcK>,
+        remainder: &Option<Arc<RholangNode>>,
+        source: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<_, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         let new_source = self.visit_node(source);
@@ -785,7 +785,7 @@ impl Visitor for IncrementVersion {
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::RepeatedBind {
+        Arc::new(RholangNode::RepeatedBind {
             base: base.clone(),
             names: new_names,
             remainder: new_remainder,
@@ -796,13 +796,13 @@ impl Visitor for IncrementVersion {
 
     fn visit_peek_bind(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        names: &Vector<Arc<Node>, ArcK>,
-        remainder: &Option<Arc<Node>>,
-        source: &Arc<Node>,
+        names: &Vector<Arc<RholangNode>, ArcK>,
+        remainder: &Option<Arc<RholangNode>>,
+        source: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<_, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         let new_source = self.visit_node(source);
@@ -810,7 +810,7 @@ impl Visitor for IncrementVersion {
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::PeekBind {
+        Arc::new(RholangNode::PeekBind {
             base: base.clone(),
             names: new_names,
             remainder: new_remainder,
@@ -821,16 +821,16 @@ impl Visitor for IncrementVersion {
 
     fn visit_comment(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
         kind: &CommentKind,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::Comment {
+        Arc::new(RholangNode::Comment {
             base: base.clone(),
             kind: kind.clone(),
             metadata: Some(Arc::new(data)),
@@ -839,17 +839,17 @@ impl Visitor for IncrementVersion {
 
     fn visit_receive_send_source(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        name: &Arc<Node>,
+        name: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_name = self.visit_node(name);
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::ReceiveSendSource {
+        Arc::new(RholangNode::ReceiveSendSource {
             base: base.clone(),
             name: new_name,
             metadata: Some(Arc::new(data)),
@@ -858,19 +858,19 @@ impl Visitor for IncrementVersion {
 
     fn visit_send_receive_source(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
-        name: &Arc<Node>,
-        inputs: &Vector<Arc<Node>, ArcK>,
+        name: &Arc<RholangNode>,
+        inputs: &Vector<Arc<RholangNode>, ArcK>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_name = self.visit_node(name);
         let new_inputs = inputs.iter().map(|i| self.visit_node(i)).collect::<Vector<_, ArcK>>();
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::SendReceiveSource {
+        Arc::new(RholangNode::SendReceiveSource {
             base: base.clone(),
             name: new_name,
             inputs: new_inputs,
@@ -880,15 +880,15 @@ impl Visitor for IncrementVersion {
 
     fn visit_wildcard(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::Wildcard {
+        Arc::new(RholangNode::Wildcard {
             base: base.clone(),
             metadata: Some(Arc::new(data)),
         })
@@ -896,16 +896,16 @@ impl Visitor for IncrementVersion {
 
     fn visit_simple_type(
         &self,
-        _node: &Arc<Node>,
+        _node: &Arc<RholangNode>,
         base: &NodeBase,
         value: &String,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_metadata = metadata.clone().unwrap_or_else(|| Arc::new(HashMap::new()));
         let mut data = new_metadata.as_ref().clone();
         let version = data.get("version").and_then(|v| v.downcast_ref::<usize>()).unwrap_or(&0) + 1;
         data.insert("version".to_string(), Arc::new(version) as Arc<dyn Any + Send + Sync>);
-        Arc::new(Node::SimpleType {
+        Arc::new(RholangNode::SimpleType {
             base: base.clone(),
             value: value.clone(),
             metadata: Some(Arc::new(data)),
@@ -925,7 +925,7 @@ mod tests {
         let ir = parse_to_ir(&tree, &rope);
         let simplifier = SimplifyDoubleUnary;
         let transformed = simplifier.visit_node(&ir);
-        assert!(matches!(*transformed, Node::Var { ref name, .. } if name == "x"));
+        assert!(matches!(*transformed, RholangNode::Var { ref name, .. } if name == "x"));
         assert!(!transformed.metadata().is_none(), "Transformed node should have metadata");
     }
 
@@ -937,7 +937,7 @@ mod tests {
         let ir = parse_to_ir(&tree, &rope);
         let simplifier = SimplifyDoubleUnary;
         let transformed = simplifier.visit_node(&ir);
-        assert!(matches!(*transformed, Node::UnaryOp { op: UnaryOperator::Neg, ref operand, .. } if matches!(**operand, Node::Var { ref name, .. } if name == "x")));
+        assert!(matches!(*transformed, RholangNode::UnaryOp { op: UnaryOperator::Neg, ref operand, .. } if matches!(**operand, RholangNode::Var { ref name, .. } if name == "x")));
         assert!(!transformed.metadata().is_none(), "Transformed node should have metadata");
     }
 
@@ -950,7 +950,7 @@ mod tests {
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree_single, &rope);
         let transformed_single = simplifier.visit_node(&ir);
-        assert!(matches!(*transformed_single, Node::BoolLiteral { value: true, .. }), "Non-negated should remain unchanged");
+        assert!(matches!(*transformed_single, RholangNode::BoolLiteral { value: true, .. }), "Non-negated should remain unchanged");
         assert!(!transformed_single.metadata().is_none(), "Transformed node should have metadata");
 
         let code = "not true";
@@ -958,7 +958,7 @@ mod tests {
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree_single, &rope);
         let transformed_single = simplifier.visit_node(&ir);
-        assert!(matches!(*transformed_single, Node::BoolLiteral { value: false, .. }), "Single not be negated");
+        assert!(matches!(*transformed_single, RholangNode::BoolLiteral { value: false, .. }), "Single not be negated");
         assert!(!transformed_single.metadata().is_none(), "Transformed node should have metadata");
 
         let code = "not false";
@@ -966,7 +966,7 @@ mod tests {
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree_single, &rope);
         let transformed_single = simplifier.visit_node(&ir);
-        assert!(matches!(*transformed_single, Node::BoolLiteral { value: true, .. }), "Single not be negated");
+        assert!(matches!(*transformed_single, RholangNode::BoolLiteral { value: true, .. }), "Single not be negated");
         assert!(!transformed_single.metadata().is_none(), "Transformed node should have metadata");
 
         let code = "not not true";
@@ -974,7 +974,7 @@ mod tests {
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree, &rope);
         let transformed = simplifier.visit_node(&ir);
-        assert!(matches!(*transformed, Node::BoolLiteral { value: true, .. }), "Double not should simplify to original value");
+        assert!(matches!(*transformed, RholangNode::BoolLiteral { value: true, .. }), "Double not should simplify to original value");
         assert!(!transformed.metadata().is_none(), "Transformed node should have metadata");
 
         let code = "not not not true";
@@ -982,7 +982,7 @@ mod tests {
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree, &rope);
         let transformed = simplifier.visit_node(&ir);
-        assert!(matches!(*transformed, Node::BoolLiteral { value: false, .. }), "Triple not should simplify to the negation of the original value");
+        assert!(matches!(*transformed, RholangNode::BoolLiteral { value: false, .. }), "Triple not should simplify to the negation of the original value");
         assert!(!transformed.metadata().is_none(), "Transformed node should have metadata");
     }
 
@@ -994,9 +994,9 @@ mod tests {
         let ir = parse_to_ir(&tree, &rope);
         let simplifier = SimplifyDoubleUnary;
         let transformed = simplifier.visit_node(&ir);
-        if let Node::Par { ref left, ref right, .. } = *transformed {
-            assert!(matches!(**left, Node::LongLiteral { value: 42, .. }), "Double negation in par should simplify");
-            assert!(matches!(**right, Node::Var { ref name, .. } if name == "x"));
+        if let RholangNode::Par { ref left, ref right, .. } = *transformed {
+            assert!(matches!(**left, RholangNode::LongLiteral { value: 42, .. }), "Double negation in par should simplify");
+            assert!(matches!(**right, RholangNode::Var { ref name, .. } if name == "x"));
         } else {
             panic!("Expected Par node");
         }
@@ -1022,7 +1022,7 @@ mod tests {
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree, &rope);
         let transformed = pipeline.apply(&ir);
-        assert!(matches!(*transformed, Node::LongLiteral { value: 42, .. }), "Pipeline should simplify double negation");
+        assert!(matches!(*transformed, RholangNode::LongLiteral { value: 42, .. }), "Pipeline should simplify double negation");
         if let Some(metadata) = transformed.metadata() {
             let version = metadata.get("version")
                 .and_then(|v| v.downcast_ref::<usize>())
@@ -1070,7 +1070,7 @@ mod tests {
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree, &rope);
 
-        if let Node::Par { left, right, .. } = &*ir {
+        if let RholangNode::Par { left, right, .. } = &*ir {
             let nil_start = left.absolute_start(&ir);
             assert_eq!(nil_start, Position { row: 0, column: 0, byte: 0 });
             let nil_end = left.absolute_end(&ir);

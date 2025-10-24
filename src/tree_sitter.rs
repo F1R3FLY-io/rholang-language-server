@@ -13,7 +13,7 @@ use archery::ArcK;
 use ropey::Rope;
 
 use crate::ir::rholang_node::{
-    BinOperator, BundleType, CommentKind, Node, NodeBase, SendType, UnaryOperator, VarRefKind,
+    BinOperator, RholangBundleType, CommentKind, RholangNode, NodeBase, RholangSendType, UnaryOperator, RholangVarRefKind,
     Metadata, Position, RelativePosition
 };
 
@@ -32,7 +32,7 @@ pub fn parse_code(code: &str) -> Tree {
     parser.parse(code, None).expect("Failed to parse Rholang code")
 }
 
-pub fn parse_to_ir(tree: &Tree, rope: &Rope) -> Arc<Node> {
+pub fn parse_to_ir(tree: &Tree, rope: &Rope) -> Arc<RholangNode> {
     debug!("Parsing Tree-Sitter tree into IR");
     if tree.root_node().has_error() {
         debug!("Parse tree contains errors");
@@ -63,8 +63,8 @@ pub fn update_tree(tree: &Tree, new_text: &str, start_byte: usize, old_end_byte:
 }
 
 /// Collects named descendant nodes, updating prev_end sequentially.
-fn collect_named_descendants(node: TSNode, rope: &Rope, prev_end: Position) -> (Vector<Arc<Node>, ArcK>, Position) {
-    let mut nodes: Vector<Arc<Node>, ArcK> = Vector::<Arc<Node>, ArcK>::new_with_ptr_kind();
+fn collect_named_descendants(node: TSNode, rope: &Rope, prev_end: Position) -> (Vector<Arc<RholangNode>, ArcK>, Position) {
+    let mut nodes: Vector<Arc<RholangNode>, ArcK> = Vector::<Arc<RholangNode>, ArcK>::new_with_ptr_kind();
     let mut current_prev_end = prev_end;
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -76,9 +76,9 @@ fn collect_named_descendants(node: TSNode, rope: &Rope, prev_end: Position) -> (
 }
 
 /// Collects patterns from a names node, separating elements and optional remainder.
-fn collect_patterns(node: TSNode, rope: &Rope, prev_end: Position) -> (Vector<Arc<Node>, ArcK>, Option<Arc<Node>>, Position) {
-    let mut elements: Vector<Arc<Node>, ArcK> = Vector::<Arc<Node>, ArcK>::new_with_ptr_kind();
-    let mut remainder: Option<Arc<Node>> = None;
+fn collect_patterns(node: TSNode, rope: &Rope, prev_end: Position) -> (Vector<Arc<RholangNode>, ArcK>, Option<Arc<RholangNode>>, Position) {
+    let mut elements: Vector<Arc<RholangNode>, ArcK> = Vector::<Arc<RholangNode>, ArcK>::new_with_ptr_kind();
+    let mut remainder: Option<Arc<RholangNode>> = None;
     let mut current_prev_end = prev_end;
     let mut cursor = node.walk();
     let mut is_remainder = false;
@@ -121,7 +121,7 @@ fn collect_patterns(node: TSNode, rope: &Rope, prev_end: Position) -> (Vector<Ar
             continue;
         } else if child.is_named() {
             let (mut child_node, child_end) = convert_ts_node_to_ir(child, rope, current_prev_end);
-            if let Node::Var { ref name, .. } = *child_node && name.is_empty() {
+            if let RholangNode::Var { ref name, .. } = *child_node && name.is_empty() {
                 trace!("Skipped empty variable name at {:?}", current_prev_end);
                 continue;
             }
@@ -141,7 +141,7 @@ fn collect_patterns(node: TSNode, rope: &Rope, prev_end: Position) -> (Vector<Ar
                     span_lines,
                     span_columns,
                 );
-                child_node = Arc::new(Node::Quote {
+                child_node = Arc::new(RholangNode::Quote {
                     base: quote_base,
                     quotable: child_node,
                     metadata: None,
@@ -168,8 +168,8 @@ fn collect_patterns(node: TSNode, rope: &Rope, prev_end: Position) -> (Vector<Ar
 }
 
 /// Collects linear binds for Choice nodes, maintaining position continuity.
-fn collect_linear_binds(branch_node: TSNode, rope: &Rope, prev_end: Position) -> (Vector<Arc<Node>, ArcK>, Position) {
-    let mut linear_binds: Vector<Arc<Node>, ArcK> = Vector::<Arc<Node>, ArcK>::new_with_ptr_kind();
+fn collect_linear_binds(branch_node: TSNode, rope: &Rope, prev_end: Position) -> (Vector<Arc<RholangNode>, ArcK>, Position) {
+    let mut linear_binds: Vector<Arc<RholangNode>, ArcK> = Vector::<Arc<RholangNode>, ArcK>::new_with_ptr_kind();
     let mut current_prev_end = prev_end;
     let mut cursor = branch_node.walk();
     for child in branch_node.children(&mut cursor) {
@@ -204,7 +204,7 @@ fn is_comment(kind_id: u16) -> bool {
 }
 
 /// Converts Tree-Sitter nodes to IR nodes with accurate relative positions.
-fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (Arc<Node>, Position) {
+fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (Arc<RholangNode>, Position) {
     let absolute_start = Position {
         row: ts_node.start_position().row,
         column: ts_node.start_position().column,
@@ -232,7 +232,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
         delta_bytes,
     };
     trace!(
-        "Node '{}': prev_end={:?}, start={:?}, end={:?}, delta=({}, {}, {})",
+        "RholangNode '{}': prev_end={:?}, start={:?}, end={:?}, delta=({}, {}, {})",
         ts_node.kind(), prev_end, absolute_start, absolute_end, delta_lines, delta_columns, delta_bytes
     );
     let length = absolute_end.byte - absolute_start.byte;
@@ -274,7 +274,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
             let result = if all_nodes.len() == 1 {
                 all_nodes[0].clone()
             } else if all_nodes.is_empty() {
-                Arc::new(Node::Nil { base: base.clone(), metadata: metadata.clone() })
+                Arc::new(RholangNode::Nil { base: base.clone(), metadata: metadata.clone() })
             } else {
                 // When reducing multiple top-level nodes into nested Par, each Par should have
                 // zero relative position (starts where parent starts) and zero span.
@@ -291,7 +291,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                 );
 
                 all_nodes.into_iter().reduce(|left, right| {
-                    Arc::new(Node::Par {
+                    Arc::new(RholangNode::Par {
                         base: par_base.clone(),
                         left,
                         right,
@@ -310,7 +310,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
             let (left, left_end) = convert_ts_node_to_ir(left_ts, rope, absolute_start);
             let right_ts = ts_node.child(2).expect("Par node must have a right child"); // After '|'
             let (right, right_end) = convert_ts_node_to_ir(right_ts, rope, left_end);
-            let node = Arc::new(Node::Par { base, left, right, metadata });
+            let node = Arc::new(RholangNode::Par { base, left, right, metadata });
             (node, right_end)
         }
         "send_sync" => {
@@ -327,7 +327,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                 .collect::<Vector<_, ArcK>>();
             let cont_ts = ts_node.child_by_field_name("cont").expect("SendSync node must have a continuation");
             let (cont, cont_end) = convert_ts_node_to_ir(cont_ts, rope, current_prev_end);
-            let node = Arc::new(Node::SendSync { base, channel, inputs, cont, metadata });
+            let node = Arc::new(RholangNode::SendSync { base, channel, inputs, cont, metadata });
             (node, cont_end)
         }
         "non_empty_cont" => {
@@ -335,12 +335,12 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
             convert_ts_node_to_ir(proc_ts, rope, prev_end)
         }
         "empty_cont" => {
-            let node = Arc::new(Node::Nil { base, metadata });
+            let node = Arc::new(RholangNode::Nil { base, metadata });
             (node, absolute_end)
         }
         "sync_send_cont" => {
             if ts_node.named_child_count() == 0 {
-                let node = Arc::new(Node::Nil { base, metadata });
+                let node = Arc::new(RholangNode::Nil { base, metadata });
                 (node, absolute_end)
             } else {
                 let proc_ts = ts_node.named_child(0).expect("SyncSendCont node must have a process");
@@ -378,14 +378,14 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                 })
                 .collect::<Vector<_, ArcK>>();
             let send_type = match send_type_ts.kind() {
-                "send_single" => SendType::Single,
-                "send_multiple" => SendType::Multiple,
+                "send_single" => RholangSendType::Single,
+                "send_multiple" => RholangSendType::Multiple,
                 kind => {
                     warn!("Unknown send_type: {}", kind);
-                    SendType::Single
+                    RholangSendType::Single
                 }
             };
-            let node = Arc::new(Node::Send {
+            let node = Arc::new(RholangNode::Send {
                 base,
                 channel,
                 send_type,
@@ -400,7 +400,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
             let (decls, decls_end) = collect_named_descendants(decls_ts, rope, absolute_start);
             let proc_ts = ts_node.child_by_field_name("proc").expect("New node must have a process");
             let (proc, proc_end) = convert_ts_node_to_ir(proc_ts, rope, decls_end);
-            let node = Arc::new(Node::New { base, decls, proc, metadata });
+            let node = Arc::new(RholangNode::New { base, decls, proc, metadata });
             (node, proc_end)
         }
         "ifElse" => {
@@ -415,7 +415,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
             } else {
                 None
             };
-            let node = Arc::new(Node::IfElse {
+            let node = Arc::new(RholangNode::IfElse {
                 base,
                 condition,
                 consequence,
@@ -429,7 +429,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
             let (decls, decls_end) = collect_named_descendants(decls_ts, rope, absolute_start);
             let proc_ts = ts_node.child_by_field_name("proc").expect("Let node must have a process");
             let (proc, proc_end) = convert_ts_node_to_ir(proc_ts, rope, decls_end);
-            let node = Arc::new(Node::Let { base, decls, proc, metadata });
+            let node = Arc::new(RholangNode::Let { base, decls, proc, metadata });
             (node, proc_end)
         }
         "bundle" => {
@@ -440,18 +440,18 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                 byte: bundle_type_ts.end_byte(),
             };
             let bundle_type = match bundle_type_ts.kind() {
-                "bundle_read" => BundleType::Read,
-                "bundle_write" => BundleType::Write,
-                "bundle_equiv" => BundleType::Equiv,
-                "bundle_read_write" => BundleType::ReadWrite,
+                "bundle_read" => RholangBundleType::Read,
+                "bundle_write" => RholangBundleType::Write,
+                "bundle_equiv" => RholangBundleType::Equiv,
+                "bundle_read_write" => RholangBundleType::ReadWrite,
                 kind => {
                     warn!("Unknown bundle type: {}", kind);
-                    BundleType::ReadWrite
+                    RholangBundleType::ReadWrite
                 }
             };
             let proc_ts = ts_node.child_by_field_name("proc").expect("Bundle node must have a process");
             let (proc, proc_end) = convert_ts_node_to_ir(proc_ts, rope, bundle_type_end);
-            let node = Arc::new(Node::Bundle { base, bundle_type, proc, metadata });
+            let node = Arc::new(RholangNode::Bundle { base, bundle_type, proc, metadata });
             (node, proc_end)
         }
         "match" => {
@@ -470,7 +470,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                     (pattern, proc)
                 })
                 .collect::<Vector<_, ArcK>>();
-            let node = Arc::new(Node::Match { base, expression, cases, metadata });
+            let node = Arc::new(RholangNode::Match { base, expression, cases, metadata });
             (node, current_prev_end)
         }
         "choice" => {
@@ -486,7 +486,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                     (inputs, proc)
                 })
                 .collect::<Vector<_, ArcK>>();
-            let node = Arc::new(Node::Choice { base, branches, metadata });
+            let node = Arc::new(RholangNode::Choice { base, branches, metadata });
             (node, current_prev_end)
         }
         "contract" => {
@@ -500,7 +500,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
             };
             let proc_ts = ts_node.child_by_field_name("proc").expect("Contract node must have a process");
             let (proc, proc_end) = convert_ts_node_to_ir(proc_ts, rope, formals_end);
-            let node = Arc::new(Node::Contract { base, name, formals, formals_remainder, proc, metadata });
+            let node = Arc::new(RholangNode::Contract { base, name, formals, formals_remainder, proc, metadata });
             (node, proc_end)
         }
         "input" => {
@@ -515,25 +515,25 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                 .collect::<Vector<_, ArcK>>();
             let proc_ts = ts_node.child_by_field_name("proc").expect("Input node must have a process");
             let (proc, proc_end) = convert_ts_node_to_ir(proc_ts, rope, current_prev_end);
-            let node = Arc::new(Node::Input { base, receipts, proc, metadata });
+            let node = Arc::new(RholangNode::Input { base, receipts, proc, metadata });
             (node, proc_end)
         }
         "block" => {
             let proc_ts = ts_node.child(1).expect("Block node must have a process"); // After '{'
             let (proc, _proc_end) = convert_ts_node_to_ir(proc_ts, rope, absolute_start);
-            let node = Arc::new(Node::Block { base, proc, metadata });
+            let node = Arc::new(RholangNode::Block { base, proc, metadata });
             (node, absolute_end)  // Block includes '{' and '}', so use absolute_end
         }
         "_parenthesized" => {
             let expr_ts = ts_node.named_child(0).expect("Parenthesized node must have an expression");
             let (expr, _expr_end) = convert_ts_node_to_ir(expr_ts, rope, absolute_start);
-            let node = Arc::new(Node::Parenthesized { base, expr, metadata });
+            let node = Arc::new(RholangNode::Parenthesized { base, expr, metadata });
             (node, absolute_end)  // Parenthesized includes '(' and ')', so use absolute_end
         }
         "_name_remainder" => {
             let cont_ts = ts_node.child_by_field_name("cont").expect("NameRemainder node must have a continuation");
             let (cont, cont_end) = convert_ts_node_to_ir(cont_ts, rope, absolute_start);
-            let node = Arc::new(Node::Quote { base, quotable: cont, metadata });
+            let node = Arc::new(RholangNode::Quote { base, quotable: cont, metadata });
             (node, cont_end)
         }
         "or" => binary_op(ts_node, rope, base, BinOperator::Or, absolute_start),
@@ -574,35 +574,35 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                     node
                 })
                 .collect::<Vector<_, ArcK>>();
-            let node = Arc::new(Node::Method { base, receiver, name, args, metadata });
+            let node = Arc::new(RholangNode::Method { base, receiver, name, args, metadata });
             (node, absolute_end)
         }
         "eval" => {
             let name_ts = ts_node.child(1).expect("Eval node must have a name");
             let (name, name_end) = convert_ts_node_to_ir(name_ts, rope, absolute_start);
-            let node = Arc::new(Node::Eval { base, name, metadata });
+            let node = Arc::new(RholangNode::Eval { base, name, metadata });
             (node, name_end)
         }
         "quote" => {
             let quotable_ts = ts_node.child(1).expect("Quote node must have a quotable");
             let (quotable, quotable_end) = convert_ts_node_to_ir(quotable_ts, rope, absolute_start);
-            let node = Arc::new(Node::Quote { base, quotable, metadata });
+            let node = Arc::new(RholangNode::Quote { base, quotable, metadata });
             (node, quotable_end)
         }
         "var_ref" => {
             let kind_ts = ts_node.child_by_field_name("kind").expect("VarRef node must have a kind");
             let kind_text = safe_byte_slice(rope, kind_ts.start_byte(), kind_ts.end_byte());
             let kind = match kind_text.as_str() {
-                "=" => VarRefKind::Bind,
-                "=*" => VarRefKind::Unforgeable,
+                "=" => RholangVarRefKind::Bind,
+                "=*" => RholangVarRefKind::Unforgeable,
                 kind => {
                     warn!("Unknown var_ref kind text: {:?}", kind);
-                    VarRefKind::Bind
+                    RholangVarRefKind::Bind
                 },
             };
             let var_ts = ts_node.child_by_field_name("var").expect("VarRef node must have a var");
             let (var, var_end) = convert_ts_node_to_ir(var_ts, rope, absolute_start);
-            let node = Arc::new(Node::VarRef { base, kind, var, metadata });
+            let node = Arc::new(RholangNode::VarRef { base, kind, var, metadata });
             (node, var_end)
         }
         "disjunction" => binary_op(ts_node, rope, base, BinOperator::Disjunction, absolute_start),
@@ -615,7 +615,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
         "bool_literal" => {
             let slice_str = safe_byte_slice(rope, ts_node.start_byte(), ts_node.end_byte());
             let value = slice_str == "true";
-            let node = Arc::new(Node::BoolLiteral { base, value, metadata });
+            let node = Arc::new(RholangNode::BoolLiteral { base, value, metadata });
             (node, absolute_end)
         }
         "long_literal" => {
@@ -624,7 +624,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
             let end_byte = ts_node.end_byte();
             if end_byte > rope.len_bytes() || start_byte > end_byte {
                 warn!("Invalid byte range for long_literal at {}-{} (rope len={})", start_byte, end_byte, rope.len_bytes());
-                let node = Arc::new(Node::Error {
+                let node = Arc::new(RholangNode::Error {
                     base,
                     children: Vector::new_with_ptr_kind(),
                     metadata,
@@ -637,7 +637,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
             let is_valid = slice_str.chars().all(|c| c.is_ascii_digit() || c == '-');
             if !is_valid {
                 warn!("Invalid long literal '{}' at byte {}: contains non-numeric characters", slice_str, absolute_start.byte);
-                let node = Arc::new(Node::Error {
+                let node = Arc::new(RholangNode::Error {
                     base,
                     children: Vector::new_with_ptr_kind(),
                     metadata,
@@ -648,7 +648,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                 warn!("Failed to parse long literal '{}' at byte {}", slice_str, absolute_start.byte);
                 0 // Return 0 instead of panicking
             });
-            let node = Arc::new(Node::LongLiteral { base, value, metadata });
+            let node = Arc::new(RholangNode::LongLiteral { base, value, metadata });
             (node, absolute_end)
         }
         "string_literal" => {
@@ -662,7 +662,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                 debug!("Invalid string literal at byte {}", absolute_start.byte);
                 String::new()
             };
-            let node = Arc::new(Node::StringLiteral { base, value, metadata });
+            let node = Arc::new(RholangNode::StringLiteral { base, value, metadata });
             (node, absolute_end)
         }
         "uri_literal" => {
@@ -675,11 +675,11 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                 warn!("Invalid URI literal at byte {}", absolute_start.byte);
                 String::new()
             };
-            let node = Arc::new(Node::UriLiteral { base, value, metadata });
+            let node = Arc::new(RholangNode::UriLiteral { base, value, metadata });
             (node, absolute_end)
         }
         "nil" => {
-            let node = Arc::new(Node::Nil { base, metadata });
+            let node = Arc::new(RholangNode::Nil { base, metadata });
             (node, absolute_end)
         }
         "list" => {
@@ -701,7 +701,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                     current_prev_end = rem_end;
                     rem_node
                 });
-            let node = Arc::new(Node::List { base, elements, remainder, metadata });
+            let node = Arc::new(RholangNode::List { base, elements, remainder, metadata });
             (node, absolute_end)
         }
         "set" => {
@@ -722,7 +722,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                     current_prev_end = rem_end;
                     rem_node
                 });
-            let node = Arc::new(Node::Set { base, elements, remainder, metadata });
+            let node = Arc::new(RholangNode::Set { base, elements, remainder, metadata });
             (node, absolute_end)
         }
         "map" => {
@@ -746,7 +746,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                     current_prev_end = rem_end;
                     rem_node
                 });
-            let node = Arc::new(Node::Map { base, pairs, remainder, metadata });
+            let node = Arc::new(RholangNode::Map { base, pairs, remainder, metadata });
             (node, absolute_end)
         }
         "tuple" => {
@@ -758,12 +758,12 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                     node
                 })
                 .collect::<Vector<_, ArcK>>();
-            let node = Arc::new(Node::Tuple { base, elements, metadata });
+            let node = Arc::new(RholangNode::Tuple { base, elements, metadata });
             (node, absolute_end)
         }
         "var" => {
             let name = safe_byte_slice(rope, ts_node.start_byte(), ts_node.end_byte());
-            let node = Arc::new(Node::Var { base, name, metadata });
+            let node = Arc::new(RholangNode::Var { base, name, metadata });
             (node, absolute_end)
         }
         "name_decl" => {
@@ -774,7 +774,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                     let (uri_node, uri_end) = convert_ts_node_to_ir(uri_ts, rope, var_end);
                     (uri_node, uri_end)
                 });
-            let node = Arc::new(Node::NameDecl { base, var, uri: uri.as_ref().map(|(u, _)| u.clone()), metadata });
+            let node = Arc::new(RholangNode::NameDecl { base, var, uri: uri.as_ref().map(|(u, _)| u.clone()), metadata });
             (node, uri.map_or(var_end, |(_, end)| end))
         }
         "decl" => {
@@ -782,7 +782,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
             let (names, names_remainder, names_end) = collect_patterns(names_ts, rope, absolute_start);
             let procs_ts = ts_node.child_by_field_name("procs").expect("Decl node must have procs");
             let (procs, procs_end) = collect_named_descendants(procs_ts, rope, names_end);
-            let node = Arc::new(Node::Decl { base, names, names_remainder, procs, metadata });
+            let node = Arc::new(RholangNode::Decl { base, names, names_remainder, procs, metadata });
             (node, procs_end)
         }
         "linear_bind" => {
@@ -799,11 +799,11 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                     0,
                     1,
                 );
-                names = names.push_back(Arc::new(Node::Wildcard { base: wildcard_base, metadata: None }));
+                names = names.push_back(Arc::new(RholangNode::Wildcard { base: wildcard_base, metadata: None }));
             }
             let input_ts = ts_node.child_by_field_name("input").expect("LinearBind node must have an input");
             let (source, source_end) = convert_ts_node_to_ir(input_ts, rope, names_end);
-            let node = Arc::new(Node::LinearBind { base, names, remainder, source, metadata });
+            let node = Arc::new(RholangNode::LinearBind { base, names, remainder, source, metadata });
             (node, source_end)
         }
         "repeated_bind" => {
@@ -820,11 +820,11 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                     0,
                     1,
                 );
-                names = names.push_back(Arc::new(Node::Wildcard { base: wildcard_base, metadata: None }));
+                names = names.push_back(Arc::new(RholangNode::Wildcard { base: wildcard_base, metadata: None }));
             }
             let input_ts = ts_node.child_by_field_name("input").expect("RepeatedBind node must have an input");
             let (source, source_end) = convert_ts_node_to_ir(input_ts, rope, names_end);
-            let node = Arc::new(Node::RepeatedBind { base, names, remainder, source, metadata });
+            let node = Arc::new(RholangNode::RepeatedBind { base, names, remainder, source, metadata });
             (node, source_end)
         }
         "peek_bind" => {
@@ -841,11 +841,11 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                     0,
                     1,
                 );
-                names = names.push_back(Arc::new(Node::Wildcard { base: wildcard_base, metadata: None }));
+                names = names.push_back(Arc::new(RholangNode::Wildcard { base: wildcard_base, metadata: None }));
             }
             let input_ts = ts_node.child_by_field_name("input").expect("PeekBind node must have an input");
             let (source, source_end) = convert_ts_node_to_ir(input_ts, rope, names_end);
-            let node = Arc::new(Node::PeekBind { base, names, remainder, source, metadata });
+            let node = Arc::new(RholangNode::PeekBind { base, names, remainder, source, metadata });
             (node, source_end)
         }
         "simple_source" => {
@@ -855,7 +855,7 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
         "receive_send_source" => {
             let name_ts = ts_node.named_child(0).expect("ReceiveSendSource node must have a name");
             let (name, name_end) = convert_ts_node_to_ir(name_ts, rope, absolute_start);
-            let node = Arc::new(Node::ReceiveSendSource { base, name, metadata });
+            let node = Arc::new(RholangNode::ReceiveSendSource { base, name, metadata });
             (node, name_end)
         }
         "send_receive_source" => {
@@ -870,54 +870,54 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                     node
                 })
                 .collect::<Vector<_, ArcK>>();
-            let node = Arc::new(Node::SendReceiveSource { base, name, inputs, metadata });
+            let node = Arc::new(RholangNode::SendReceiveSource { base, name, inputs, metadata });
             (node, absolute_end)
         }
         "wildcard" => {
-            let node = Arc::new(Node::Wildcard { base, metadata });
+            let node = Arc::new(RholangNode::Wildcard { base, metadata });
             (node, absolute_end)
         }
         "simple_type" => {
             let value = safe_byte_slice(rope, ts_node.start_byte(), ts_node.end_byte());
-            let node = Arc::new(Node::SimpleType { base, value, metadata });
+            let node = Arc::new(RholangNode::SimpleType { base, value, metadata });
             (node, absolute_end)
         }
         "line_comment" => {
-            let node = Arc::new(Node::Comment { base, kind: CommentKind::Line, metadata });
+            let node = Arc::new(RholangNode::Comment { base, kind: CommentKind::Line, metadata });
             (node, absolute_end)
         }
         "block_comment" => {
-            let node = Arc::new(Node::Comment { base, kind: CommentKind::Block, metadata });
+            let node = Arc::new(RholangNode::Comment { base, kind: CommentKind::Block, metadata });
             (node, absolute_end)
         }
         "unit" => {
-            let node = Arc::new(Node::Unit { base, metadata });
+            let node = Arc::new(RholangNode::Unit { base, metadata });
             (node, absolute_end)
         }
         "ERROR" => {
             debug!("Encountered ERROR node at {}:{}", absolute_start.row, absolute_start.column);
             let (children, _) = collect_named_descendants(ts_node, rope, absolute_start);
-            let node = Arc::new(Node::Error { base, children, metadata });
+            let node = Arc::new(RholangNode::Error { base, children, metadata });
             (node, absolute_end)
         }
         _ => {
             if ts_node.is_named() {
                 warn!("Unhandled node type '{}' at byte {}", ts_node.kind(), absolute_start.byte);
-                let node = Arc::new(Node::Error {
+                let node = Arc::new(RholangNode::Error {
                     base,
-                    children: Vector::<Arc<Node>, ArcK>::new_with_ptr_kind(),
+                    children: Vector::<Arc<RholangNode>, ArcK>::new_with_ptr_kind(),
                     metadata,
                 });
                 (node, absolute_end)
             } else {
-                let node = Arc::new(Node::Nil { base, metadata });
+                let node = Arc::new(RholangNode::Nil { base, metadata });
                 (node, absolute_end)
             }
         }
     }
 }
 
-fn binary_op(ts_node: TSNode, rope: &Rope, base: NodeBase, op: BinOperator, prev_end: Position) -> (Arc<Node>, Position) {
+fn binary_op(ts_node: TSNode, rope: &Rope, base: NodeBase, op: BinOperator, prev_end: Position) -> (Arc<RholangNode>, Position) {
     let left_ts = ts_node.child(0).expect("BinaryOp node must have a left operand");
     let (left, left_end) = convert_ts_node_to_ir(left_ts, rope, prev_end);
     let right_ts = ts_node.child(2).expect("BinaryOp node must have a right operand");
@@ -925,17 +925,17 @@ fn binary_op(ts_node: TSNode, rope: &Rope, base: NodeBase, op: BinOperator, prev
     let mut data = HashMap::new();
     data.insert("version".to_string(), Arc::new(0usize) as Arc<dyn Any + Send + Sync>);
     let metadata = Some(Arc::new(data));
-    let node = Arc::new(Node::BinOp { base, op, left, right, metadata });
+    let node = Arc::new(RholangNode::BinOp { base, op, left, right, metadata });
     (node, right_end)
 }
 
-fn unary_op(ts_node: TSNode, rope: &Rope, base: NodeBase, op: UnaryOperator, prev_end: Position) -> (Arc<Node>, Position) {
+fn unary_op(ts_node: TSNode, rope: &Rope, base: NodeBase, op: UnaryOperator, prev_end: Position) -> (Arc<RholangNode>, Position) {
     let operand_ts = ts_node.child(1).expect("UnaryOp node must have an operand");
     let (operand, operand_end) = convert_ts_node_to_ir(operand_ts, rope, prev_end);
     let mut data = HashMap::new();
     data.insert("version".to_string(), Arc::new(0usize) as Arc<dyn Any + Send + Sync>);
     let metadata = Some(Arc::new(data));
-    let node = Arc::new(Node::UnaryOp { base, op, operand, metadata });
+    let node = Arc::new(RholangNode::UnaryOp { base, op, operand, metadata });
     (node, operand_end)
 }
 
@@ -953,9 +953,9 @@ mod tests {
         let ir = parse_to_ir(&tree, &rope);
         let root = ir.clone();
         match &*ir {
-            Node::Send { channel, send_type, inputs, .. } => {
+            RholangNode::Send { channel, send_type, inputs, .. } => {
                 assert_eq!(channel.text(&rope, &root).to_string(), "ch");
-                assert_eq!(*send_type, SendType::Single);
+                assert_eq!(*send_type, RholangSendType::Single);
                 assert_eq!(inputs.len(), 1);
                 assert_eq!(inputs[0].text(&rope, &root).to_string(), r#""msg""#);
                 let start = ir.absolute_start(&root);
@@ -975,7 +975,7 @@ mod tests {
         let ir = parse_to_ir(&tree, &rope);
         let root = ir.clone();
         match &*ir {
-            Node::Par { left, right, .. } => {
+            RholangNode::Par { left, right, .. } => {
                 let left_start = left.absolute_start(&root);
                 assert_eq!(left_start.row, 0);
                 assert_eq!(left_start.column, 0);
@@ -996,14 +996,14 @@ mod tests {
         let ir = parse_to_ir(&tree, &rope);
         let root = ir.clone();
         match &*ir {
-            Node::New { decls, proc, .. } => {
+            RholangNode::New { decls, proc, .. } => {
                 let decl_start = decls[0].absolute_start(&root);
                 assert_eq!(decl_start.row, 0);
                 assert_eq!(decl_start.column, 4);
                 match &**proc {
-                    Node::Block { proc: inner, .. } => {
+                    RholangNode::Block { proc: inner, .. } => {
                         match &**inner {
-                            Node::Send { channel, .. } => {
+                            RholangNode::Send { channel, .. } => {
                                 let chan_start = channel.absolute_start(&root);
                                 assert_eq!(chan_start.row, 0);
                                 assert_eq!(chan_start.column, 11);
@@ -1054,7 +1054,7 @@ mod tests {
 
         // Tree-Sitter gives us the Nil directly, not a _parenthesized wrapper
         match &*ir {
-            Node::Nil { .. } => {
+            RholangNode::Nil { .. } => {
                 // Verify position is correct (should skip the opening paren)
                 let root = std::sync::Arc::new(ir.clone());
                 let start = ir.absolute_start(&root);
@@ -1072,16 +1072,16 @@ mod tests {
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree, &rope);
         match &*ir {
-            Node::Input { receipts, .. } => {
+            RholangNode::Input { receipts, .. } => {
                 let bind = &receipts[0][0];
                 match &**bind {
-                    Node::LinearBind { names, remainder, source, .. } => {
+                    RholangNode::LinearBind { names, remainder, source, .. } => {
                         assert_eq!(names.len(), 1);
                         assert_eq!(names[0].text(&rope, &ir).to_string(), "x");
                         assert!(remainder.is_some());
                         let rem = remainder.as_ref().unwrap();
                         match &**rem {
-                            Node::Quote { quotable, .. } => {
+                            RholangNode::Quote { quotable, .. } => {
                                 assert_eq!(quotable.text(&rope, &ir).to_string(), "y");
                             }
                             _ => panic!("Expected Quote for remainder"),
@@ -1103,9 +1103,9 @@ mod tests {
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree, &rope);
         match &*ir {
-            Node::SendSync { cont, .. } => {
+            RholangNode::SendSync { cont, .. } => {
                 match &**cont {
-                    Node::Nil { .. } => {}
+                    RholangNode::Nil { .. } => {}
                     _ => panic!("Expected Nil for empty continuation"),
                 }
             }
@@ -1121,9 +1121,9 @@ mod tests {
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree, &rope);
         match &*ir {
-            Node::SendSync { cont, .. } => {
+            RholangNode::SendSync { cont, .. } => {
                 match &**cont {
-                    Node::Nil { .. } => {}
+                    RholangNode::Nil { .. } => {}
                     _ => panic!("Expected Nil for continuation"),
                 }
             }
@@ -1156,7 +1156,7 @@ mod tests {
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree, &rope);
         match &*ir {
-            Node::LongLiteral { value, .. } => {
+            RholangNode::LongLiteral { value, .. } => {
                 assert_eq!(*value, 123);
             }
             _ => panic!("Expected LongLiteral node"),
@@ -1171,7 +1171,7 @@ mod tests {
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree, &rope);
         match &*ir {
-            Node::StringLiteral { value, .. } => {
+            RholangNode::StringLiteral { value, .. } => {
                 assert_eq!(value, "hello \"world\"");
             }
             _ => panic!("Expected StringLiteral node"),
@@ -1186,7 +1186,7 @@ mod tests {
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree, &rope);
         match &*ir {
-            Node::StringLiteral { value, .. } => {
+            RholangNode::StringLiteral { value, .. } => {
                 assert_eq!(value, "");
             }
             _ => panic!("Expected StringLiteral node"),
@@ -1201,7 +1201,7 @@ mod tests {
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree, &rope);
         match &*ir {
-            Node::UriLiteral { value, .. } => {
+            RholangNode::UriLiteral { value, .. } => {
                 assert_eq!(value, "http://example.com");
             }
             _ => panic!("Expected UriLiteral node"),
@@ -1217,7 +1217,7 @@ mod tests {
 
         // First, let's see what Tree-Sitter reports
         let root_node = tree.root_node();
-        println!("\n=== Tree-Sitter Raw Node Positions ===");
+        println!("\n=== Tree-Sitter Raw RholangNode Positions ===");
         let ifelse_node = root_node.named_child(0).unwrap();
         println!("ifElse node: kind='{}' start={} end={}", ifelse_node.kind(), ifelse_node.start_byte(), ifelse_node.end_byte());
 
@@ -1240,12 +1240,12 @@ mod tests {
         let ir = parse_to_ir(&tree, &rope);
         let root = Arc::new(ir.clone());
 
-        println!("\n=== IR Node Positions ===");
+        println!("\n=== IR RholangNode Positions ===");
         match &*ir {
-            Node::IfElse { alternative, .. } => {
+            RholangNode::IfElse { alternative, .. } => {
                 if let Some(alt) = alternative {
                     match &**alt {
-                        Node::Block { base, proc, .. } => {
+                        RholangNode::Block { base, proc, .. } => {
                             println!("Block IR base: delta_bytes={}, length={}", base.relative_start().delta_bytes, base.length());
 
                             let alt_start = alt.absolute_start(&root);
@@ -1254,7 +1254,7 @@ mod tests {
                             println!("Alternative block: start_col={}, end_col={}", alt_start.column, alt_end.column);
 
                             match &**proc {
-                                Node::Nil { base: proc_base, .. } => {
+                                RholangNode::Nil { base: proc_base, .. } => {
                                     println!("Proc IR base: delta_bytes={}, length={}", proc_base.relative_start().delta_bytes, proc_base.length());
 
                                     let proc_start = proc.absolute_start(&root);

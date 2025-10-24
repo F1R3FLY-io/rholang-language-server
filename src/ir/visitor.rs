@@ -2,7 +2,7 @@ use std::sync::Arc;
 use rpds::Vector;
 use archery::ArcK;
 
-use super::rholang_node::{Node, NodeBase, Metadata, CommentKind, SendType, BundleType, BinOperator, UnaryOperator, VarRefKind, RelativePosition};
+use super::rholang_node::{RholangNode, NodeBase, Metadata, CommentKind, RholangSendType, RholangBundleType, BinOperator, UnaryOperator, RholangVarRefKind, RelativePosition};
 
 /// Provides a visitor pattern for traversing and transforming the Rholang Intermediate Representation (IR) tree.
 /// This module enables implementors to define custom logic for processing each node type, facilitating operations
@@ -17,52 +17,52 @@ pub trait Visitor {
     ///
     /// # Returns
     /// The transformed node, or the original if unchanged.
-    fn visit_node(&self, node: &Arc<Node>) -> Arc<Node> {
+    fn visit_node(&self, node: &Arc<RholangNode>) -> Arc<RholangNode> {
         match &**node {
-            Node::Par { base, left, right, metadata } => self.visit_par(node, base, left, right, metadata),
-            Node::SendSync { base, channel, inputs, cont, metadata } => self.visit_send_sync(node, base, channel, inputs, cont, metadata),
-            Node::Send { base, channel, send_type, send_type_delta, inputs, metadata } => self.visit_send(node, base, channel, send_type, send_type_delta, inputs, metadata),
-            Node::New { base, decls, proc, metadata } => self.visit_new(node, base, decls, proc, metadata),
-            Node::IfElse { base, condition, consequence, alternative, metadata } => self.visit_ifelse(node, base, condition, consequence, alternative, metadata),
-            Node::Let { base, decls, proc, metadata } => self.visit_let(node, base, decls, proc, metadata),
-            Node::Bundle { base, bundle_type, proc, metadata } => self.visit_bundle(node, base, bundle_type, proc, metadata),
-            Node::Match { base, expression, cases, metadata } => self.visit_match(node, base, expression, cases, metadata),
-            Node::Choice { base, branches, metadata } => self.visit_choice(node, base, branches, metadata),
-            Node::Contract { base, name, formals, formals_remainder, proc, metadata } => self.visit_contract(node, base, name, formals, formals_remainder, proc, metadata),
-            Node::Input { base, receipts, proc, metadata } => self.visit_input(node, base, receipts, proc, metadata),
-            Node::Block { base, proc, metadata } => self.visit_block(node, base, proc, metadata),
-            Node::Parenthesized { base, expr, metadata } => self.visit_parenthesized(node, base, expr, metadata),
-            Node::BinOp { base, op, left, right, metadata } => self.visit_binop(node, base, op.clone(), left, right, metadata),
-            Node::UnaryOp { base, op, operand, metadata } => self.visit_unaryop(node, base, op.clone(), operand, metadata),
-            Node::Method { base, receiver, name, args, metadata } => self.visit_method(node, base, receiver, name, args, metadata),
-            Node::Eval { base, name, metadata } => self.visit_eval(node, base, name, metadata),
-            Node::Quote { base, quotable, metadata } => self.visit_quote(node, base, quotable, metadata),
-            Node::VarRef { base, kind, var, metadata } => self.visit_varref(node, base, kind.clone(), var, metadata),
-            Node::BoolLiteral { base, value, metadata } => self.visit_bool_literal(node, base, *value, metadata),
-            Node::LongLiteral { base, value, metadata } => self.visit_long_literal(node, base, *value, metadata),
-            Node::StringLiteral { base, value, metadata } => self.visit_string_literal(node, base, value, metadata),
-            Node::UriLiteral { base, value, metadata } => self.visit_uri_literal(node, base, value, metadata),
-            Node::Nil { base, metadata } => self.visit_nil(node, base, metadata),
-            Node::List { base, elements, remainder, metadata } => self.visit_list(node, base, elements, remainder, metadata),
-            Node::Set { base, elements, remainder, metadata } => self.visit_set(node, base, elements, remainder, metadata),
-            Node::Map { base, pairs, remainder, metadata } => self.visit_map(node, base, pairs, remainder, metadata),
-            Node::Tuple { base, elements, metadata } => self.visit_tuple(node, base, elements, metadata),
-            Node::Var { base, name, metadata } => self.visit_var(node, base, name, metadata),
-            Node::NameDecl { base, var, uri, metadata } => self.visit_name_decl(node, base, var, uri, metadata),
-            Node::Decl { base, names, names_remainder, procs, metadata } => self.visit_decl(node, base, names, names_remainder, procs, metadata),
-            Node::LinearBind { base, names, remainder, source, metadata } => self.visit_linear_bind(node, base, names, remainder, source, metadata),
-            Node::RepeatedBind { base, names, remainder, source, metadata } => self.visit_repeated_bind(node, base, names, remainder, source, metadata),
-            Node::PeekBind { base, names, remainder, source, metadata } => self.visit_peek_bind(node, base, names, remainder, source, metadata),
-            Node::Comment { base, kind, metadata } => self.visit_comment(node, base, kind, metadata),
-            Node::Wildcard { base, metadata } => self.visit_wildcard(node, base, metadata),
-            Node::SimpleType { base, value, metadata } => self.visit_simple_type(node, base, value, metadata),
-            Node::ReceiveSendSource { base, name, metadata } => self.visit_receive_send_source(node, base, name, metadata),
-            Node::SendReceiveSource { base, name, inputs, metadata } => self.visit_send_receive_source(node, base, name, inputs, metadata),
-            Node::Error { base, children, metadata } => self.visit_error(node, base, children, metadata),
-            Node::Disjunction { base, left, right, metadata } => self.visit_disjunction(node, base, left, right, metadata),
-            Node::Conjunction { base, left, right, metadata } => self.visit_conjunction(node, base, left, right, metadata),
-            Node::Negation { base, operand, metadata } => self.visit_negation(node, base, operand, metadata),
-            Node::Unit { base, metadata } => self.visit_unit(node, base, metadata),
+            RholangNode::Par { base, left, right, metadata } => self.visit_par(node, base, left, right, metadata),
+            RholangNode::SendSync { base, channel, inputs, cont, metadata } => self.visit_send_sync(node, base, channel, inputs, cont, metadata),
+            RholangNode::Send { base, channel, send_type, send_type_delta, inputs, metadata } => self.visit_send(node, base, channel, send_type, send_type_delta, inputs, metadata),
+            RholangNode::New { base, decls, proc, metadata } => self.visit_new(node, base, decls, proc, metadata),
+            RholangNode::IfElse { base, condition, consequence, alternative, metadata } => self.visit_ifelse(node, base, condition, consequence, alternative, metadata),
+            RholangNode::Let { base, decls, proc, metadata } => self.visit_let(node, base, decls, proc, metadata),
+            RholangNode::Bundle { base, bundle_type, proc, metadata } => self.visit_bundle(node, base, bundle_type, proc, metadata),
+            RholangNode::Match { base, expression, cases, metadata } => self.visit_match(node, base, expression, cases, metadata),
+            RholangNode::Choice { base, branches, metadata } => self.visit_choice(node, base, branches, metadata),
+            RholangNode::Contract { base, name, formals, formals_remainder, proc, metadata } => self.visit_contract(node, base, name, formals, formals_remainder, proc, metadata),
+            RholangNode::Input { base, receipts, proc, metadata } => self.visit_input(node, base, receipts, proc, metadata),
+            RholangNode::Block { base, proc, metadata } => self.visit_block(node, base, proc, metadata),
+            RholangNode::Parenthesized { base, expr, metadata } => self.visit_parenthesized(node, base, expr, metadata),
+            RholangNode::BinOp { base, op, left, right, metadata } => self.visit_binop(node, base, op.clone(), left, right, metadata),
+            RholangNode::UnaryOp { base, op, operand, metadata } => self.visit_unaryop(node, base, op.clone(), operand, metadata),
+            RholangNode::Method { base, receiver, name, args, metadata } => self.visit_method(node, base, receiver, name, args, metadata),
+            RholangNode::Eval { base, name, metadata } => self.visit_eval(node, base, name, metadata),
+            RholangNode::Quote { base, quotable, metadata } => self.visit_quote(node, base, quotable, metadata),
+            RholangNode::VarRef { base, kind, var, metadata } => self.visit_varref(node, base, kind.clone(), var, metadata),
+            RholangNode::BoolLiteral { base, value, metadata } => self.visit_bool_literal(node, base, *value, metadata),
+            RholangNode::LongLiteral { base, value, metadata } => self.visit_long_literal(node, base, *value, metadata),
+            RholangNode::StringLiteral { base, value, metadata } => self.visit_string_literal(node, base, value, metadata),
+            RholangNode::UriLiteral { base, value, metadata } => self.visit_uri_literal(node, base, value, metadata),
+            RholangNode::Nil { base, metadata } => self.visit_nil(node, base, metadata),
+            RholangNode::List { base, elements, remainder, metadata } => self.visit_list(node, base, elements, remainder, metadata),
+            RholangNode::Set { base, elements, remainder, metadata } => self.visit_set(node, base, elements, remainder, metadata),
+            RholangNode::Map { base, pairs, remainder, metadata } => self.visit_map(node, base, pairs, remainder, metadata),
+            RholangNode::Tuple { base, elements, metadata } => self.visit_tuple(node, base, elements, metadata),
+            RholangNode::Var { base, name, metadata } => self.visit_var(node, base, name, metadata),
+            RholangNode::NameDecl { base, var, uri, metadata } => self.visit_name_decl(node, base, var, uri, metadata),
+            RholangNode::Decl { base, names, names_remainder, procs, metadata } => self.visit_decl(node, base, names, names_remainder, procs, metadata),
+            RholangNode::LinearBind { base, names, remainder, source, metadata } => self.visit_linear_bind(node, base, names, remainder, source, metadata),
+            RholangNode::RepeatedBind { base, names, remainder, source, metadata } => self.visit_repeated_bind(node, base, names, remainder, source, metadata),
+            RholangNode::PeekBind { base, names, remainder, source, metadata } => self.visit_peek_bind(node, base, names, remainder, source, metadata),
+            RholangNode::Comment { base, kind, metadata } => self.visit_comment(node, base, kind, metadata),
+            RholangNode::Wildcard { base, metadata } => self.visit_wildcard(node, base, metadata),
+            RholangNode::SimpleType { base, value, metadata } => self.visit_simple_type(node, base, value, metadata),
+            RholangNode::ReceiveSendSource { base, name, metadata } => self.visit_receive_send_source(node, base, name, metadata),
+            RholangNode::SendReceiveSource { base, name, inputs, metadata } => self.visit_send_receive_source(node, base, name, inputs, metadata),
+            RholangNode::Error { base, children, metadata } => self.visit_error(node, base, children, metadata),
+            RholangNode::Disjunction { base, left, right, metadata } => self.visit_disjunction(node, base, left, right, metadata),
+            RholangNode::Conjunction { base, left, right, metadata } => self.visit_conjunction(node, base, left, right, metadata),
+            RholangNode::Negation { base, operand, metadata } => self.visit_negation(node, base, operand, metadata),
+            RholangNode::Unit { base, metadata } => self.visit_unit(node, base, metadata),
         }
     }
 
@@ -82,18 +82,18 @@ pub trait Visitor {
     /// For P | Q, visits P and Q, reconstructing the node if either changes.
     fn visit_par(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        left: &Arc<Node>,
-        right: &Arc<Node>,
+        left: &Arc<RholangNode>,
+        right: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_left = self.visit_node(left);
         let new_right = self.visit_node(right);
         if Arc::ptr_eq(left, &new_left) && Arc::ptr_eq(right, &new_right) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Par {
+            Arc::new(RholangNode::Par {
                 base: base.clone(),
                 left: new_left,
                 right: new_right,
@@ -119,22 +119,22 @@ pub trait Visitor {
     /// For ch!?("msg"; Nil), processes ch, "msg", and Nil.
     fn visit_send_sync(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        channel: &Arc<Node>,
-        inputs: &Vector<Arc<Node>, ArcK>,
-        cont: &Arc<Node>,
+        channel: &Arc<RholangNode>,
+        inputs: &Vector<Arc<RholangNode>, ArcK>,
+        cont: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_channel = self.visit_node(channel);
-        let new_inputs = inputs.iter().map(|i| self.visit_node(i)).collect::<Vector<Arc<Node>, ArcK>>();
+        let new_inputs = inputs.iter().map(|i| self.visit_node(i)).collect::<Vector<Arc<RholangNode>, ArcK>>();
         let new_cont = self.visit_node(cont);
         if Arc::ptr_eq(channel, &new_channel) &&
             inputs.iter().zip(new_inputs.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) &&
             Arc::ptr_eq(cont, &new_cont) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::SendSync {
+            Arc::new(RholangNode::SendSync {
                 base: base.clone(),
                 channel: new_channel,
                 inputs: new_inputs,
@@ -162,21 +162,21 @@ pub trait Visitor {
     /// For ch!("msg"), visits ch and "msg".
     fn visit_send(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        channel: &Arc<Node>,
-        send_type: &SendType,
+        channel: &Arc<RholangNode>,
+        send_type: &RholangSendType,
         send_type_delta: &RelativePosition,
-        inputs: &Vector<Arc<Node>, ArcK>,
+        inputs: &Vector<Arc<RholangNode>, ArcK>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_channel = self.visit_node(channel);
-        let new_inputs = inputs.iter().map(|i| self.visit_node(i)).collect::<Vector<Arc<Node>, ArcK>>();
+        let new_inputs = inputs.iter().map(|i| self.visit_node(i)).collect::<Vector<Arc<RholangNode>, ArcK>>();
         if Arc::ptr_eq(channel, &new_channel) &&
             inputs.iter().zip(new_inputs.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Send {
+            Arc::new(RholangNode::Send {
                 base: base.clone(),
                 channel: new_channel,
                 send_type: send_type.clone(),
@@ -203,19 +203,19 @@ pub trait Visitor {
     /// For new x in { P }, visits x and P.
     fn visit_new(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        decls: &Vector<Arc<Node>, ArcK>,
-        proc: &Arc<Node>,
+        decls: &Vector<Arc<RholangNode>, ArcK>,
+        proc: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
-        let new_decls = decls.iter().map(|d| self.visit_node(d)).collect::<Vector<Arc<Node>, ArcK>>();
+    ) -> Arc<RholangNode> {
+        let new_decls = decls.iter().map(|d| self.visit_node(d)).collect::<Vector<Arc<RholangNode>, ArcK>>();
         let new_proc = self.visit_node(proc);
         if decls.iter().zip(new_decls.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) &&
             Arc::ptr_eq(proc, &new_proc) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::New {
+            Arc::new(RholangNode::New {
                 base: base.clone(),
                 decls: new_decls,
                 proc: new_proc,
@@ -241,13 +241,13 @@ pub trait Visitor {
     /// For if (cond) { P } else { Q }, visits cond, P, and Q.
     fn visit_ifelse(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        condition: &Arc<Node>,
-        consequence: &Arc<Node>,
-        alternative: &Option<Arc<Node>>,
+        condition: &Arc<RholangNode>,
+        consequence: &Arc<RholangNode>,
+        alternative: &Option<Arc<RholangNode>>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_condition = self.visit_node(condition);
         let new_consequence = self.visit_node(consequence);
         let new_alternative = alternative.as_ref().map(|a| self.visit_node(a));
@@ -255,7 +255,7 @@ pub trait Visitor {
             alternative.as_ref().map_or(true, |a| new_alternative.as_ref().map_or(false, |na| Arc::ptr_eq(a, na))) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::IfElse {
+            Arc::new(RholangNode::IfElse {
                 base: base.clone(),
                 condition: new_condition,
                 consequence: new_consequence,
@@ -281,19 +281,19 @@ pub trait Visitor {
     /// For let x = "val" in { P }, visits x = "val" and P.
     fn visit_let(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        decls: &Vector<Arc<Node>, ArcK>,
-        proc: &Arc<Node>,
+        decls: &Vector<Arc<RholangNode>, ArcK>,
+        proc: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
-        let new_decls = decls.iter().map(|d| self.visit_node(d)).collect::<Vector<Arc<Node>, ArcK>>();
+    ) -> Arc<RholangNode> {
+        let new_decls = decls.iter().map(|d| self.visit_node(d)).collect::<Vector<Arc<RholangNode>, ArcK>>();
         let new_proc = self.visit_node(proc);
         if decls.iter().zip(new_decls.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) &&
             Arc::ptr_eq(proc, &new_proc) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Let {
+            Arc::new(RholangNode::Let {
                 base: base.clone(),
                 decls: new_decls,
                 proc: new_proc,
@@ -318,17 +318,17 @@ pub trait Visitor {
     /// For bundle+ { P }, visits P.
     fn visit_bundle(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        bundle_type: &BundleType,
-        proc: &Arc<Node>,
+        bundle_type: &RholangBundleType,
+        proc: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_proc = self.visit_node(proc);
         if Arc::ptr_eq(proc, &new_proc) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Bundle {
+            Arc::new(RholangNode::Bundle {
                 base: base.clone(),
                 bundle_type: bundle_type.clone(),
                 proc: new_proc,
@@ -353,18 +353,18 @@ pub trait Visitor {
     /// For match expr { pat => P }, visits expr, pat, and P.
     fn visit_match(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        expression: &Arc<Node>,
-        cases: &Vector<(Arc<Node>, Arc<Node>), ArcK>,
+        expression: &Arc<RholangNode>,
+        cases: &Vector<(Arc<RholangNode>, Arc<RholangNode>), ArcK>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_expression = self.visit_node(expression);
-        let new_cases = cases.iter().map(|(p, r)| (self.visit_node(p), self.visit_node(r))).collect::<Vector<(Arc<Node>, Arc<Node>), ArcK>>();
+        let new_cases = cases.iter().map(|(p, r)| (self.visit_node(p), self.visit_node(r))).collect::<Vector<(Arc<RholangNode>, Arc<RholangNode>), ArcK>>();
         if Arc::ptr_eq(expression, &new_expression) && cases.iter().zip(new_cases.iter()).all(|((p1, r1), (p2, r2))| Arc::ptr_eq(p1, p2) && Arc::ptr_eq(r1, r2)) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Match {
+            Arc::new(RholangNode::Match {
                 base: base.clone(),
                 expression: new_expression,
                 cases: new_cases,
@@ -388,19 +388,19 @@ pub trait Visitor {
     /// For select { x <- ch => P }, visits x <- ch and P.
     fn visit_choice(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        branches: &Vector<(Vector<Arc<Node>, ArcK>, Arc<Node>), ArcK>,
+        branches: &Vector<(Vector<Arc<RholangNode>, ArcK>, Arc<RholangNode>), ArcK>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_branches = branches.iter().map(|(i, p)| {
-            let new_inputs = i.iter().map(|n| self.visit_node(n)).collect::<Vector<Arc<Node>, ArcK>>();
+            let new_inputs = i.iter().map(|n| self.visit_node(n)).collect::<Vector<Arc<RholangNode>, ArcK>>();
             (new_inputs, self.visit_node(p))
-        }).collect::<Vector<(Vector<Arc<Node>, ArcK>, Arc<Node>), ArcK>>();
+        }).collect::<Vector<(Vector<Arc<RholangNode>, ArcK>, Arc<RholangNode>), ArcK>>();
         if branches.iter().zip(new_branches.iter()).all(|((i1, p1), (i2, p2))| i1.iter().zip(i2.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) && Arc::ptr_eq(p1, p2)) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Choice {
+            Arc::new(RholangNode::Choice {
                 base: base.clone(),
                 branches: new_branches,
                 metadata: metadata.clone(),
@@ -426,16 +426,16 @@ pub trait Visitor {
     /// For contract name(args) = { P }, visits name, args, and P.
     fn visit_contract(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        name: &Arc<Node>,
-        formals: &Vector<Arc<Node>, ArcK>,
-        formals_remainder: &Option<Arc<Node>>,
-        proc: &Arc<Node>,
+        name: &Arc<RholangNode>,
+        formals: &Vector<Arc<RholangNode>, ArcK>,
+        formals_remainder: &Option<Arc<RholangNode>>,
+        proc: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_name = self.visit_node(name);
-        let new_formals = formals.iter().map(|f| self.visit_node(f)).collect::<Vector<Arc<Node>, ArcK>>();
+        let new_formals = formals.iter().map(|f| self.visit_node(f)).collect::<Vector<Arc<RholangNode>, ArcK>>();
         let new_formals_remainder = formals_remainder.as_ref().map(|r| self.visit_node(r));
         let new_proc = self.visit_node(proc);
         if Arc::ptr_eq(name, &new_name) &&
@@ -444,7 +444,7 @@ pub trait Visitor {
             Arc::ptr_eq(proc, &new_proc) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Contract {
+            Arc::new(RholangNode::Contract {
                 base: base.clone(),
                 name: new_name,
                 formals: new_formals,
@@ -471,20 +471,20 @@ pub trait Visitor {
     /// For for (x <- ch) { P }, visits x <- ch and P.
     fn visit_input(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        receipts: &Vector<Vector<Arc<Node>, ArcK>, ArcK>,
-        proc: &Arc<Node>,
+        receipts: &Vector<Vector<Arc<RholangNode>, ArcK>, ArcK>,
+        proc: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_receipts = receipts.iter().map(|r| {
-            r.iter().map(|b| self.visit_node(b)).collect::<Vector<Arc<Node>, ArcK>>()
-        }).collect::<Vector<Vector<Arc<Node>, ArcK>, ArcK>>();
+            r.iter().map(|b| self.visit_node(b)).collect::<Vector<Arc<RholangNode>, ArcK>>()
+        }).collect::<Vector<Vector<Arc<RholangNode>, ArcK>, ArcK>>();
         let new_proc = self.visit_node(proc);
         if receipts.iter().zip(new_receipts.iter()).all(|(r1, r2)| r1.iter().zip(r2.iter()).all(|(a, b)| Arc::ptr_eq(a, b))) && Arc::ptr_eq(proc, &new_proc) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Input {
+            Arc::new(RholangNode::Input {
                 base: base.clone(),
                 receipts: new_receipts,
                 proc: new_proc,
@@ -508,16 +508,16 @@ pub trait Visitor {
     /// For { P }, visits P.
     fn visit_block(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        proc: &Arc<Node>,
+        proc: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_proc = self.visit_node(proc);
         if Arc::ptr_eq(proc, &new_proc) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Block {
+            Arc::new(RholangNode::Block {
                 base: base.clone(),
                 proc: new_proc,
                 metadata: metadata.clone(),
@@ -540,16 +540,16 @@ pub trait Visitor {
     /// For (P), visits P.
     fn visit_parenthesized(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        expr: &Arc<Node>,
+        expr: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_expr = self.visit_node(expr);
         if Arc::ptr_eq(expr, &new_expr) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Parenthesized {
+            Arc::new(RholangNode::Parenthesized {
                 base: base.clone(),
                 expr: new_expr,
                 metadata: metadata.clone(),
@@ -574,19 +574,19 @@ pub trait Visitor {
     /// For a + b, visits a and b.
     fn visit_binop(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
         op: BinOperator,
-        left: &Arc<Node>,
-        right: &Arc<Node>,
+        left: &Arc<RholangNode>,
+        right: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_left = self.visit_node(left);
         let new_right = self.visit_node(right);
         if Arc::ptr_eq(left, &new_left) && Arc::ptr_eq(right, &new_right) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::BinOp {
+            Arc::new(RholangNode::BinOp {
                 base: base.clone(),
                 op,
                 left: new_left,
@@ -612,17 +612,17 @@ pub trait Visitor {
     /// For not P, visits P.
     fn visit_unaryop(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
         op: UnaryOperator,
-        operand: &Arc<Node>,
+        operand: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_operand = self.visit_node(operand);
         if Arc::ptr_eq(operand, &new_operand) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::UnaryOp {
+            Arc::new(RholangNode::UnaryOp {
                 base: base.clone(),
                 op,
                 operand: new_operand,
@@ -648,19 +648,19 @@ pub trait Visitor {
     /// For obj.method(args), visits obj and args.
     fn visit_method(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        receiver: &Arc<Node>,
+        receiver: &Arc<RholangNode>,
         name: &String,
-        args: &Vector<Arc<Node>, ArcK>,
+        args: &Vector<Arc<RholangNode>, ArcK>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_receiver = self.visit_node(receiver);
-        let new_args = args.iter().map(|a| self.visit_node(a)).collect::<Vector<Arc<Node>, ArcK>>();
+        let new_args = args.iter().map(|a| self.visit_node(a)).collect::<Vector<Arc<RholangNode>, ArcK>>();
         if Arc::ptr_eq(receiver, &new_receiver) && args.iter().zip(new_args.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Method {
+            Arc::new(RholangNode::Method {
                 base: base.clone(),
                 receiver: new_receiver,
                 name: name.clone(),
@@ -685,16 +685,16 @@ pub trait Visitor {
     /// For *name, visits name.
     fn visit_eval(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        name: &Arc<Node>,
+        name: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_name = self.visit_node(name);
         if Arc::ptr_eq(name, &new_name) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Eval {
+            Arc::new(RholangNode::Eval {
                 base: base.clone(),
                 name: new_name,
                 metadata: metadata.clone(),
@@ -717,16 +717,16 @@ pub trait Visitor {
     /// For @P, visits P.
     fn visit_quote(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        quotable: &Arc<Node>,
+        quotable: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_quotable = self.visit_node(quotable);
         if Arc::ptr_eq(quotable, &new_quotable) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Quote {
+            Arc::new(RholangNode::Quote {
                 base: base.clone(),
                 quotable: new_quotable,
                 metadata: metadata.clone(),
@@ -750,17 +750,17 @@ pub trait Visitor {
     /// For =x or =*x, visits x.
     fn visit_varref(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        kind: VarRefKind,
-        var: &Arc<Node>,
+        kind: RholangVarRefKind,
+        var: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_var = self.visit_node(var);
         if Arc::ptr_eq(var, &new_var) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::VarRef {
+            Arc::new(RholangNode::VarRef {
                 base: base.clone(),
                 kind,
                 var: new_var,
@@ -784,11 +784,11 @@ pub trait Visitor {
     /// For true, returns unchanged unless overridden.
     fn visit_bool_literal(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         _base: &NodeBase,
         _value: bool,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         Arc::clone(node)
     }
 
@@ -807,11 +807,11 @@ pub trait Visitor {
     /// For 42, returns unchanged unless overridden.
     fn visit_long_literal(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         _base: &NodeBase,
         _value: i64,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         Arc::clone(node)
     }
 
@@ -830,11 +830,11 @@ pub trait Visitor {
     /// For "hello", returns unchanged unless overridden.
     fn visit_string_literal(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         _base: &NodeBase,
         _value: &String,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         Arc::clone(node)
     }
 
@@ -853,11 +853,11 @@ pub trait Visitor {
     /// For `` http://example.com ``, returns unchanged unless overridden.
     fn visit_uri_literal(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         _base: &NodeBase,
         _value: &String,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         Arc::clone(node)
     }
 
@@ -875,10 +875,10 @@ pub trait Visitor {
     /// For Nil, returns unchanged unless overridden.
     fn visit_nil(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         _base: &NodeBase,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         Arc::clone(node)
     }
 
@@ -898,19 +898,19 @@ pub trait Visitor {
     /// For [a, b, ...rest], visits a, b, and rest.
     fn visit_list(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        elements: &Vector<Arc<Node>, ArcK>,
-        remainder: &Option<Arc<Node>>,
+        elements: &Vector<Arc<RholangNode>, ArcK>,
+        remainder: &Option<Arc<RholangNode>>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
-        let new_elements = elements.iter().map(|e| self.visit_node(e)).collect::<Vector<Arc<Node>, ArcK>>();
+    ) -> Arc<RholangNode> {
+        let new_elements = elements.iter().map(|e| self.visit_node(e)).collect::<Vector<Arc<RholangNode>, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         if elements.iter().zip(new_elements.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) &&
             remainder.as_ref().map_or(true, |r| new_remainder.as_ref().map_or(false, |nr| Arc::ptr_eq(r, nr))) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::List {
+            Arc::new(RholangNode::List {
                 base: base.clone(),
                 elements: new_elements,
                 remainder: new_remainder,
@@ -935,19 +935,19 @@ pub trait Visitor {
     /// For Set(a, b, ...rest), visits a, b, and rest.
     fn visit_set(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        elements: &Vector<Arc<Node>, ArcK>,
-        remainder: &Option<Arc<Node>>,
+        elements: &Vector<Arc<RholangNode>, ArcK>,
+        remainder: &Option<Arc<RholangNode>>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
-        let new_elements = elements.iter().map(|e| self.visit_node(e)).collect::<Vector<Arc<Node>, ArcK>>();
+    ) -> Arc<RholangNode> {
+        let new_elements = elements.iter().map(|e| self.visit_node(e)).collect::<Vector<Arc<RholangNode>, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         if elements.iter().zip(new_elements.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) &&
             remainder.as_ref().map_or(true, |r| new_remainder.as_ref().map_or(false, |nr| Arc::ptr_eq(r, nr))) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Set {
+            Arc::new(RholangNode::Set {
                 base: base.clone(),
                 elements: new_elements,
                 remainder: new_remainder,
@@ -972,19 +972,19 @@ pub trait Visitor {
     /// For {k: v, ...rest}, visits k, v, and rest.
     fn visit_map(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        pairs: &Vector<(Arc<Node>, Arc<Node>), ArcK>,
-        remainder: &Option<Arc<Node>>,
+        pairs: &Vector<(Arc<RholangNode>, Arc<RholangNode>), ArcK>,
+        remainder: &Option<Arc<RholangNode>>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
-        let new_pairs = pairs.iter().map(|(k, v)| (self.visit_node(k), self.visit_node(v))).collect::<Vector<(Arc<Node>, Arc<Node>), ArcK>>();
+    ) -> Arc<RholangNode> {
+        let new_pairs = pairs.iter().map(|(k, v)| (self.visit_node(k), self.visit_node(v))).collect::<Vector<(Arc<RholangNode>, Arc<RholangNode>), ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         if pairs.iter().zip(new_pairs.iter()).all(|((k1, v1), (k2, v2))| Arc::ptr_eq(k1, k2) && Arc::ptr_eq(v1, v2)) &&
             remainder.as_ref().map_or(true, |r| new_remainder.as_ref().map_or(false, |nr| Arc::ptr_eq(r, nr))) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Map {
+            Arc::new(RholangNode::Map {
                 base: base.clone(),
                 pairs: new_pairs,
                 remainder: new_remainder,
@@ -1008,16 +1008,16 @@ pub trait Visitor {
     /// For (a, b), visits a and b.
     fn visit_tuple(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        elements: &Vector<Arc<Node>, ArcK>,
+        elements: &Vector<Arc<RholangNode>, ArcK>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
-        let new_elements = elements.iter().map(|e| self.visit_node(e)).collect::<Vector<Arc<Node>, ArcK>>();
+    ) -> Arc<RholangNode> {
+        let new_elements = elements.iter().map(|e| self.visit_node(e)).collect::<Vector<Arc<RholangNode>, ArcK>>();
         if elements.iter().zip(new_elements.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Tuple {
+            Arc::new(RholangNode::Tuple {
                 base: base.clone(),
                 elements: new_elements,
                 metadata: metadata.clone(),
@@ -1040,11 +1040,11 @@ pub trait Visitor {
     /// For x, returns unchanged unless overridden.
     fn visit_var(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         _base: &NodeBase,
         _name: &String,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         Arc::clone(node)
     }
 
@@ -1064,12 +1064,12 @@ pub trait Visitor {
     /// For x or x(uri) in new, visits x and uri.
     fn visit_name_decl(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        var: &Arc<Node>,
-        uri: &Option<Arc<Node>>,
+        var: &Arc<RholangNode>,
+        uri: &Option<Arc<RholangNode>>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_var = self.visit_node(var);
         let new_uri = uri.as_ref().map(|u| self.visit_node(u));
         let var_changed = !Arc::ptr_eq(var, &new_var);
@@ -1081,7 +1081,7 @@ pub trait Visitor {
         if !var_changed && !uri_changed {
             Arc::clone(node)
         } else {
-            Arc::new(Node::NameDecl {
+            Arc::new(RholangNode::NameDecl {
                 base: base.clone(),
                 var: new_var,
                 uri: new_uri,
@@ -1107,22 +1107,22 @@ pub trait Visitor {
     /// For x = P in let, visits x and P.
     fn visit_decl(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        names: &Vector<Arc<Node>, ArcK>,
-        names_remainder: &Option<Arc<Node>>,
-        procs: &Vector<Arc<Node>, ArcK>,
+        names: &Vector<Arc<RholangNode>, ArcK>,
+        names_remainder: &Option<Arc<RholangNode>>,
+        procs: &Vector<Arc<RholangNode>, ArcK>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
-        let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<Arc<Node>, ArcK>>();
+    ) -> Arc<RholangNode> {
+        let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<Arc<RholangNode>, ArcK>>();
         let new_names_remainder = names_remainder.as_ref().map(|r| self.visit_node(r));
-        let new_procs = procs.iter().map(|p| self.visit_node(p)).collect::<Vector<Arc<Node>, ArcK>>();
+        let new_procs = procs.iter().map(|p| self.visit_node(p)).collect::<Vector<Arc<RholangNode>, ArcK>>();
         if names.iter().zip(new_names.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) &&
             names_remainder.as_ref().map_or(true, |r| new_names_remainder.as_ref().map_or(false, |nr| Arc::ptr_eq(r, nr))) &&
             procs.iter().zip(new_procs.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Decl {
+            Arc::new(RholangNode::Decl {
                 base: base.clone(),
                 names: new_names,
                 names_remainder: new_names_remainder,
@@ -1149,14 +1149,14 @@ pub trait Visitor {
     /// For x <- ch, visits x and ch.
     fn visit_linear_bind(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        names: &Vector<Arc<Node>, ArcK>,
-        remainder: &Option<Arc<Node>>,
-        source: &Arc<Node>,
+        names: &Vector<Arc<RholangNode>, ArcK>,
+        remainder: &Option<Arc<RholangNode>>,
+        source: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
-        let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<Arc<Node>, ArcK>>();
+    ) -> Arc<RholangNode> {
+        let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<Arc<RholangNode>, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         let new_source = self.visit_node(source);
         if names.iter().zip(new_names.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) &&
@@ -1164,7 +1164,7 @@ pub trait Visitor {
             Arc::ptr_eq(source, &new_source) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::LinearBind {
+            Arc::new(RholangNode::LinearBind {
                 base: base.clone(),
                 names: new_names,
                 remainder: new_remainder,
@@ -1191,14 +1191,14 @@ pub trait Visitor {
     /// For x <= ch, visits x and ch.
     fn visit_repeated_bind(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        names: &Vector<Arc<Node>, ArcK>,
-        remainder: &Option<Arc<Node>>,
-        source: &Arc<Node>,
+        names: &Vector<Arc<RholangNode>, ArcK>,
+        remainder: &Option<Arc<RholangNode>>,
+        source: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
-        let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<Arc<Node>, ArcK>>();
+    ) -> Arc<RholangNode> {
+        let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<Arc<RholangNode>, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         let new_source = self.visit_node(source);
         if names.iter().zip(new_names.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) &&
@@ -1206,7 +1206,7 @@ pub trait Visitor {
             Arc::ptr_eq(source, &new_source) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::RepeatedBind {
+            Arc::new(RholangNode::RepeatedBind {
                 base: base.clone(),
                 names: new_names,
                 remainder: new_remainder,
@@ -1233,14 +1233,14 @@ pub trait Visitor {
     /// For x <<- ch, visits x and ch.
     fn visit_peek_bind(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        names: &Vector<Arc<Node>, ArcK>,
-        remainder: &Option<Arc<Node>>,
-        source: &Arc<Node>,
+        names: &Vector<Arc<RholangNode>, ArcK>,
+        remainder: &Option<Arc<RholangNode>>,
+        source: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
-        let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<Arc<Node>, ArcK>>();
+    ) -> Arc<RholangNode> {
+        let new_names = names.iter().map(|n| self.visit_node(n)).collect::<Vector<Arc<RholangNode>, ArcK>>();
         let new_remainder = remainder.as_ref().map(|r| self.visit_node(r));
         let new_source = self.visit_node(source);
         if names.iter().zip(new_names.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) &&
@@ -1248,7 +1248,7 @@ pub trait Visitor {
             Arc::ptr_eq(source, &new_source) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::PeekBind {
+            Arc::new(RholangNode::PeekBind {
                 base: base.clone(),
                 names: new_names,
                 remainder: new_remainder,
@@ -1273,11 +1273,11 @@ pub trait Visitor {
     /// For // text or /* text */, returns unchanged unless overridden.
     fn visit_comment(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         _base: &NodeBase,
         _kind: &CommentKind,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         Arc::clone(node)
     }
 
@@ -1295,10 +1295,10 @@ pub trait Visitor {
     /// For _, returns unchanged unless overridden.
     fn visit_wildcard(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         _base: &NodeBase,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         Arc::clone(node)
     }
 
@@ -1317,11 +1317,11 @@ pub trait Visitor {
     /// For Bool, returns unchanged unless overridden.
     fn visit_simple_type(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         _base: &NodeBase,
         _value: &String,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         Arc::clone(node)
     }
 
@@ -1340,16 +1340,16 @@ pub trait Visitor {
     /// For ch?!, visits ch.
     fn visit_receive_send_source(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        name: &Arc<Node>,
+        name: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_name = self.visit_node(name);
         if Arc::ptr_eq(name, &new_name) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::ReceiveSendSource {
+            Arc::new(RholangNode::ReceiveSendSource {
                 base: base.clone(),
                 name: new_name,
                 metadata: metadata.clone(),
@@ -1373,18 +1373,18 @@ pub trait Visitor {
     /// For ch!?(args), visits ch and args.
     fn visit_send_receive_source(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        name: &Arc<Node>,
-        inputs: &Vector<Arc<Node>, ArcK>,
+        name: &Arc<RholangNode>,
+        inputs: &Vector<Arc<RholangNode>, ArcK>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_name = self.visit_node(name);
-        let new_inputs = inputs.iter().map(|i| self.visit_node(i)).collect::<Vector<Arc<Node>, ArcK>>();
+        let new_inputs = inputs.iter().map(|i| self.visit_node(i)).collect::<Vector<Arc<RholangNode>, ArcK>>();
         if Arc::ptr_eq(name, &new_name) && inputs.iter().zip(new_inputs.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::SendReceiveSource {
+            Arc::new(RholangNode::SendReceiveSource {
                 base: base.clone(),
                 name: new_name,
                 inputs: new_inputs,
@@ -1408,16 +1408,16 @@ pub trait Visitor {
     /// For an erroneous construct containing send, recurses into its children.
     fn visit_error(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        children: &Vector<Arc<Node>, ArcK>,
+        children: &Vector<Arc<RholangNode>, ArcK>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
-        let new_children = children.iter().map(|c| self.visit_node(c)).collect::<Vector<Arc<Node>, ArcK>>();
+    ) -> Arc<RholangNode> {
+        let new_children = children.iter().map(|c| self.visit_node(c)).collect::<Vector<Arc<RholangNode>, ArcK>>();
         if children.iter().zip(new_children.iter()).all(|(a, b)| Arc::ptr_eq(a, b)) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Error {
+            Arc::new(RholangNode::Error {
                 base: base.clone(),
                 children: new_children,
                 metadata: metadata.clone(),
@@ -1441,18 +1441,18 @@ pub trait Visitor {
     /// For P \/ Q in patterns, visits P and Q.
     fn visit_disjunction(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        left: &Arc<Node>,
-        right: &Arc<Node>,
+        left: &Arc<RholangNode>,
+        right: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_left = self.visit_node(left);
         let new_right = self.visit_node(right);
         if Arc::ptr_eq(left, &new_left) && Arc::ptr_eq(right, &new_right) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Disjunction {
+            Arc::new(RholangNode::Disjunction {
                 base: base.clone(),
                 left: new_left,
                 right: new_right,
@@ -1477,18 +1477,18 @@ pub trait Visitor {
     /// For P /\ Q in patterns, visits P and Q.
     fn visit_conjunction(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        left: &Arc<Node>,
-        right: &Arc<Node>,
+        left: &Arc<RholangNode>,
+        right: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_left = self.visit_node(left);
         let new_right = self.visit_node(right);
         if Arc::ptr_eq(left, &new_left) && Arc::ptr_eq(right, &new_right) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Conjunction {
+            Arc::new(RholangNode::Conjunction {
                 base: base.clone(),
                 left: new_left,
                 right: new_right,
@@ -1512,16 +1512,16 @@ pub trait Visitor {
     /// For ~P in patterns, visits P.
     fn visit_negation(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         base: &NodeBase,
-        operand: &Arc<Node>,
+        operand: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let new_operand = self.visit_node(operand);
         if Arc::ptr_eq(operand, &new_operand) {
             Arc::clone(node)
         } else {
-            Arc::new(Node::Negation {
+            Arc::new(RholangNode::Negation {
                 base: base.clone(),
                 operand: new_operand,
                 metadata: metadata.clone(),
@@ -1543,10 +1543,10 @@ pub trait Visitor {
     /// For (), returns unchanged unless overridden.
     fn visit_unit(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         _base: &NodeBase,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         Arc::clone(node)
     }
 }

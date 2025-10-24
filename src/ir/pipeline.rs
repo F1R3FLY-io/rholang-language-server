@@ -2,7 +2,7 @@ use std::sync::Arc;
 use petgraph::Graph;
 use petgraph::graph::NodeIndex;
 use petgraph::algo::toposort;
-use super::rholang_node::Node;
+use super::rholang_node::RholangNode;
 use super::visitor::Visitor;
 
 /// Manages a pipeline of transformations applied to the Rholang IR tree.
@@ -76,7 +76,7 @@ impl Pipeline {
     ///
     /// # Returns
     /// The transformed IR tree after all transformations.
-    pub fn apply(&self, tree: &Arc<Node>) -> Arc<Node> {
+    pub fn apply(&self, tree: &Arc<RholangNode>) -> Arc<RholangNode> {
         let order = toposort(&self.graph, None).unwrap_or_default();
         let mut current = Arc::clone(tree);
         for node_idx in order {
@@ -93,7 +93,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use super::*;
-    use crate::ir::rholang_node::{Metadata, Node, NodeBase, RelativePosition};
+    use crate::ir::rholang_node::{Metadata, RholangNode, NodeBase, RelativePosition};
     use crate::ir::visitor::Visitor;
 
     // Define an IdentityVisitor that preserves the node
@@ -116,7 +116,7 @@ mod tests {
         let mut data = HashMap::new();
         data.insert("version".to_string(), Arc::new(0_usize) as Arc<dyn Any + Send + Sync>);
         let metadata = Some(Arc::new(data));
-        let node = Arc::new(Node::Nil { base, metadata });
+        let node = Arc::new(RholangNode::Nil { base, metadata });
         let result = pipeline.apply(&node);
         assert!(Arc::ptr_eq(&node, &result));
     }

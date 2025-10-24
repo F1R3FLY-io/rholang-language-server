@@ -32,7 +32,7 @@ pub enum MettaNode {
     Variable {
         base: NodeBase,
         name: String,
-        var_type: VariableType,
+        var_type: MettaVariableType,
         metadata: Option<Arc<Metadata>>,
     },
 
@@ -144,7 +144,7 @@ pub enum MettaNode {
 
 /// Type of MeTTa variable
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VariableType {
+pub enum MettaVariableType {
     /// Regular variable ($x)
     Regular,
     /// Grounded variable (&x) - matches only ground terms
@@ -153,12 +153,12 @@ pub enum VariableType {
     Quoted,
 }
 
-impl fmt::Display for VariableType {
+impl fmt::Display for MettaVariableType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            VariableType::Regular => write!(f, "$"),
-            VariableType::Grounded => write!(f, "&"),
-            VariableType::Quoted => write!(f, "'"),
+            MettaVariableType::Regular => write!(f, "$"),
+            MettaVariableType::Grounded => write!(f, "&"),
+            MettaVariableType::Quoted => write!(f, "'"),
         }
     }
 }
@@ -174,7 +174,7 @@ impl MettaNode {
     }
 
     /// Create a variable node
-    pub fn variable(name: &str, var_type: VariableType, base: NodeBase) -> Arc<Self> {
+    pub fn variable(name: &str, var_type: MettaVariableType, base: NodeBase) -> Arc<Self> {
         Arc::new(MettaNode::Variable {
             base,
             name: name.to_string(),
@@ -334,9 +334,9 @@ mod tests {
 
     #[test]
     fn test_variable_creation() {
-        let var = MettaNode::variable("x", VariableType::Regular, test_base());
+        let var = MettaNode::variable("x", MettaVariableType::Regular, test_base());
         assert!(matches!(&*var, MettaNode::Variable { name, var_type, .. }
-            if name == "x" && *var_type == VariableType::Regular));
+            if name == "x" && *var_type == MettaVariableType::Regular));
         assert!(var.is_variable());
     }
 

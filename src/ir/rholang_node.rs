@@ -12,10 +12,10 @@ use tracing::{debug, warn};
 
 pub use super::semantic_node::Metadata;
 
-pub type NodeVector = Vector<Arc<Node>, ArcK>;
-pub type NodePairVector = Vector<(Arc<Node>, Arc<Node>), ArcK>;
-pub type BranchVector = Vector<(NodeVector, Arc<Node>), ArcK>;
-pub type ReceiptVector = Vector<NodeVector, ArcK>;
+pub type RholangNodeVector = Vector<Arc<RholangNode>, ArcK>;
+pub type RholangNodePairVector = Vector<(Arc<RholangNode>, Arc<RholangNode>), ArcK>;
+pub type RholangBranchVector = Vector<(RholangNodeVector, Arc<RholangNode>), ArcK>;
+pub type RholangReceiptVector = Vector<RholangNodeVector, ArcK>;
 
 /// Represents the position of a node relative to the previous node's end position in the source code.
 /// Used to compute absolute positions dynamically during traversal.
@@ -91,141 +91,141 @@ impl NodeBase {
 /// - Var: Variable reference (e.g., x in x!()).
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-pub enum Node {
+pub enum RholangNode {
     /// Parallel composition of two processes.
     Par {
         base: NodeBase,
-        left: Arc<Node>,
-        right: Arc<Node>,
+        left: Arc<RholangNode>,
+        right: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Synchronous send with a continuation process.
     SendSync {
         base: NodeBase,
-        channel: Arc<Node>,
-        inputs: NodeVector,
-        cont: Arc<Node>,
+        channel: Arc<RholangNode>,
+        inputs: RholangNodeVector,
+        cont: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Asynchronous send operation on a channel.
     Send {
         base: NodeBase,
-        channel: Arc<Node>,
-        send_type: SendType,
+        channel: Arc<RholangNode>,
+        send_type: RholangSendType,
         send_type_delta: RelativePosition,
-        inputs: NodeVector,
+        inputs: RholangNodeVector,
         metadata: Option<Arc<Metadata>>,
     },
     /// Declaration of new names with a scoped process
     New {
         base: NodeBase,
-        decls: NodeVector,
-        proc: Arc<Node>,
+        decls: RholangNodeVector,
+        proc: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Conditional branching with optional else clause.
     IfElse {
         base: NodeBase,
-        condition: Arc<Node>,
-        consequence: Arc<Node>,
-        alternative: Option<Arc<Node>>,
+        condition: Arc<RholangNode>,
+        consequence: Arc<RholangNode>,
+        alternative: Option<Arc<RholangNode>>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Variable binding with a subsequent process.
     Let {
         base: NodeBase,
-        decls: NodeVector,
-        proc: Arc<Node>,
+        decls: RholangNodeVector,
+        proc: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Access-controlled process with a bundle type.
     Bundle {
         base: NodeBase,
-        bundle_type: BundleType,
-        proc: Arc<Node>,
+        bundle_type: RholangBundleType,
+        proc: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Pattern matching construct with cases.
     Match {
         base: NodeBase,
-        expression: Arc<Node>,
-        cases: NodePairVector,
+        expression: Arc<RholangNode>,
+        cases: RholangNodePairVector,
         metadata: Option<Arc<Metadata>>,
     },
     /// Non-deterministic choice among branches.
     Choice {
         base: NodeBase,
-        branches: BranchVector,
+        branches: RholangBranchVector,
         metadata: Option<Arc<Metadata>>,
     },
     /// Contract definition with name, parameters, and body.
     Contract {
         base: NodeBase,
-        name: Arc<Node>,
-        formals: NodeVector,
-        formals_remainder: Option<Arc<Node>>,
-        proc: Arc<Node>,
+        name: Arc<RholangNode>,
+        formals: RholangNodeVector,
+        formals_remainder: Option<Arc<RholangNode>>,
+        proc: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Input binding from channels with a process.
     Input {
         base: NodeBase,
-        receipts: ReceiptVector,
-        proc: Arc<Node>,
+        receipts: RholangReceiptVector,
+        proc: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Block of a single process (e.g., { P }).
     Block {
         base: NodeBase,
-        proc: Arc<Node>,
+        proc: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Parenthesized expression (e.g., (P)).
     Parenthesized {
         base: NodeBase,
-        expr: Arc<Node>,
+        expr: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Binary operation (e.g., P + Q).
     BinOp {
         base: NodeBase,
         op: BinOperator,
-        left: Arc<Node>,
-        right: Arc<Node>,
+        left: Arc<RholangNode>,
+        right: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Unary operation (e.g., -P or not P).
     UnaryOp {
         base: NodeBase,
         op: UnaryOperator,
-        operand: Arc<Node>,
+        operand: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Method call on a receiver (e.g., obj.method(args)).
     Method {
         base: NodeBase,
-        receiver: Arc<Node>,
+        receiver: Arc<RholangNode>,
         name: String,
-        args: NodeVector,
+        args: RholangNodeVector,
         metadata: Option<Arc<Metadata>>,
     },
     /// Evaluation of a name (e.g., *name).
     Eval {
         base: NodeBase,
-        name: Arc<Node>,
+        name: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Quotation of a process (e.g., @P).
     Quote {
         base: NodeBase,
-        quotable: Arc<Node>,
+        quotable: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Variable reference with assignment kind.
     VarRef {
         base: NodeBase,
-        kind: VarRefKind,
-        var: Arc<Node>,
+        kind: RholangVarRefKind,
+        var: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Boolean literal (e.g., true or false).
@@ -260,28 +260,28 @@ pub enum Node {
     /// List collection (e.g., [1, 2, 3]).
     List {
         base: NodeBase,
-        elements: NodeVector,
-        remainder: Option<Arc<Node>>,
+        elements: RholangNodeVector,
+        remainder: Option<Arc<RholangNode>>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Set collection (e.g., Set(1, 2, 3)).
     Set {
         base: NodeBase,
-        elements: NodeVector,
-        remainder: Option<Arc<Node>>,
+        elements: RholangNodeVector,
+        remainder: Option<Arc<RholangNode>>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Map collection (e.g., {k: v}).
     Map {
         base: NodeBase,
-        pairs: NodePairVector,
-        remainder: Option<Arc<Node>>,
+        pairs: RholangNodePairVector,
+        remainder: Option<Arc<RholangNode>>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Tuple collection (e.g., (1, 2)).
     Tuple {
         base: NodeBase,
-        elements: NodeVector,
+        elements: RholangNodeVector,
         metadata: Option<Arc<Metadata>>,
     },
     /// Variable identifier (e.g., x).
@@ -293,40 +293,40 @@ pub enum Node {
     /// Name declaration in a new construct (e.g., x or x(uri)).
     NameDecl {
         base: NodeBase,
-        var: Arc<Node>,
-        uri: Option<Arc<Node>>,
+        var: Arc<RholangNode>,
+        uri: Option<Arc<RholangNode>>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Declaration in a let statement (e.g., x = P).
     Decl {
         base: NodeBase,
-        names: NodeVector,
-        names_remainder: Option<Arc<Node>>,
-        procs: NodeVector,
+        names: RholangNodeVector,
+        names_remainder: Option<Arc<RholangNode>>,
+        procs: RholangNodeVector,
         metadata: Option<Arc<Metadata>>,
     },
     /// Linear binding in a for (e.g., x <- ch).
     LinearBind {
         base: NodeBase,
-        names: NodeVector,
-        remainder: Option<Arc<Node>>,
-        source: Arc<Node>,
+        names: RholangNodeVector,
+        remainder: Option<Arc<RholangNode>>,
+        source: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Repeated binding in a for (e.g., x <= ch).
     RepeatedBind {
         base: NodeBase,
-        names: NodeVector,
-        remainder: Option<Arc<Node>>,
-        source: Arc<Node>,
+        names: RholangNodeVector,
+        remainder: Option<Arc<RholangNode>>,
+        source: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Peek binding in a for (e.g., x <<- ch).
     PeekBind {
         base: NodeBase,
-        names: NodeVector,
-        remainder: Option<Arc<Node>>,
-        source: Arc<Node>,
+        names: RholangNodeVector,
+        remainder: Option<Arc<RholangNode>>,
+        source: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Comment in the source code (e.g., // text or /* text */).
@@ -349,40 +349,40 @@ pub enum Node {
     /// Receive-send source (e.g., ch?!).
     ReceiveSendSource {
         base: NodeBase,
-        name: Arc<Node>,
+        name: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Send-receive source (e.g., ch!?(args)).
     SendReceiveSource {
         base: NodeBase,
-        name: Arc<Node>,
-        inputs: NodeVector,
+        name: Arc<RholangNode>,
+        inputs: RholangNodeVector,
         metadata: Option<Arc<Metadata>>,
     },
     /// Represents a syntax error in the source code with its erroneous subtree.
     Error {
         base: NodeBase,
-        children: NodeVector,
+        children: RholangNodeVector,
         metadata: Option<Arc<Metadata>>,
     },
     /// Pattern disjunction (e.g., P | Q in patterns).
     Disjunction {
         base: NodeBase,
-        left: Arc<Node>,
-        right: Arc<Node>,
+        left: Arc<RholangNode>,
+        right: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Pattern conjunction (e.g., P & Q in patterns).
     Conjunction {
         base: NodeBase,
-        left: Arc<Node>,
-        right: Arc<Node>,
+        left: Arc<RholangNode>,
+        right: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Pattern negation (e.g., ~P in patterns).
     Negation {
         base: NodeBase,
-        operand: Arc<Node>,
+        operand: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Unit value (e.g., ()).
@@ -393,7 +393,7 @@ pub enum Node {
 }
 
 #[derive(Clone, PartialEq, Debug, Hash)]
-pub enum BundleType {
+pub enum RholangBundleType {
     Read,
     Write,
     Equiv,
@@ -401,7 +401,7 @@ pub enum BundleType {
 }
 
 #[derive(Clone, PartialEq, Debug, Hash)]
-pub enum SendType {
+pub enum RholangSendType {
     Single,
     Multiple,
 }
@@ -437,7 +437,7 @@ pub enum UnaryOperator {
 }
 
 #[derive(Clone, PartialEq, Debug, Hash, Eq, Ord, PartialOrd)]
-pub enum VarRefKind {
+pub enum RholangVarRefKind {
     Bind,
     Unforgeable,
 }
@@ -449,14 +449,14 @@ pub enum CommentKind {
 }
 
 /// Computes absolute positions for all nodes in the IR tree, storing them in a HashMap.
-/// Positions are keyed by the raw pointer to the Node cast to usize.
+/// Positions are keyed by the raw pointer to the RholangNode cast to usize.
 ///
 /// # Arguments
 /// * root - The root node of the IR tree.
 ///
 /// # Returns
 /// A HashMap mapping node pointers (as usize) to tuples of (start, end) Positions.
-pub fn compute_absolute_positions(root: &Arc<Node>) -> HashMap<usize, (Position, Position)> {
+pub fn compute_absolute_positions(root: &Arc<RholangNode>) -> HashMap<usize, (Position, Position)> {
     let mut positions = HashMap::new();
     let initial_prev_end = Position {
         row: 0,
@@ -479,12 +479,12 @@ pub fn compute_absolute_positions(root: &Arc<Node>) -> HashMap<usize, (Position,
 /// The absolute end position of the current node.
 #[allow(unused_assignments)]
 fn compute_positions_helper(
-    node: &Arc<Node>,
+    node: &Arc<RholangNode>,
     prev_end: Position,
     positions: &mut HashMap<usize, (Position, Position)>,
 ) -> Position {
     let base = node.base();
-    let key = &**node as *const Node as usize;
+    let key = &**node as *const RholangNode as usize;
     let relative_start = base.relative_start();
     let start = Position {
         row: (prev_end.row as i32 + relative_start.delta_lines) as usize,
@@ -498,26 +498,26 @@ fn compute_positions_helper(
     let end = compute_end_position(start, base.span_lines(), base.span_columns(), base.length());
 
     // Debug logging for Block nodes to track position issues
-    if matches!(&**node, Node::Block { .. }) {
+    if matches!(&**node, RholangNode::Block { .. }) {
         debug!("Block compute: prev_end={:?}, delta_bytes={}, computed start={:?}, length={}",
                prev_end, relative_start.delta_bytes, start, base.length());
     }
 
     // Debug logging for Send nodes to track position issues
-    if matches!(&**node, Node::Send { .. }) {
+    if matches!(&**node, RholangNode::Send { .. }) {
         debug!("Send compute: prev_end={:?}, delta_bytes={}, computed start={:?}",
                prev_end, relative_start.delta_bytes, start);
     }
 
     // Debug logging for Var nodes to track position issues
-    if let Node::Var { name, .. } = &**node {
+    if let RholangNode::Var { name, .. } = &**node {
         debug!("Var '{}': prev_end={:?}, start={:?}, length={}, end={:?}",
                name, prev_end, start, base.length(), end);
     }
 
     // Debug logging for Contract nodes
-    if let Node::Contract { name, .. } = &**node {
-        if let Node::Var { name: contract_name, .. } = &**name {
+    if let RholangNode::Contract { name, .. } = &**node {
+        if let RholangNode::Var { name: contract_name, .. } = &**name {
             debug!("Contract '{}': prev_end={:?}, delta=({},{},{}), computed start={:?}, end={:?}",
                 contract_name, prev_end,
                 relative_start.delta_lines, relative_start.delta_columns, relative_start.delta_bytes,
@@ -529,14 +529,14 @@ fn compute_positions_helper(
 
     // Process children
     match &**node {
-        Node::Par { left, right, .. } => {
+        RholangNode::Par { left, right, .. } => {
             debug!("Processing Par: current_prev before left = {:?}", current_prev);
             current_prev = compute_positions_helper(left, current_prev, positions);
             debug!("Processing Par: current_prev after left = {:?}", current_prev);
             current_prev = compute_positions_helper(right, current_prev, positions);
             debug!("Processing Par: current_prev after right = {:?}", current_prev);
         }
-        Node::SendSync {
+        RholangNode::SendSync {
             channel, inputs, cont, ..
         } => {
             current_prev = compute_positions_helper(channel, current_prev, positions);
@@ -545,7 +545,7 @@ fn compute_positions_helper(
             }
             current_prev = compute_positions_helper(cont, current_prev, positions);
         }
-        Node::Send {
+        RholangNode::Send {
             channel,
             inputs,
             send_type_delta,
@@ -573,13 +573,13 @@ fn compute_positions_helper(
             }
             current_prev = temp_prev;
         }
-        Node::New { decls, proc, .. } => {
+        RholangNode::New { decls, proc, .. } => {
             for decl in decls {
                 current_prev = compute_positions_helper(decl, current_prev, positions);
             }
             current_prev = compute_positions_helper(proc, current_prev, positions);
         }
-        Node::IfElse {
+        RholangNode::IfElse {
             condition,
             consequence,
             alternative,
@@ -591,23 +591,23 @@ fn compute_positions_helper(
                 current_prev = compute_positions_helper(alt, current_prev, positions);
             }
         }
-        Node::Let { decls, proc, .. } => {
+        RholangNode::Let { decls, proc, .. } => {
             for decl in decls {
                 current_prev = compute_positions_helper(decl, current_prev, positions);
             }
             current_prev = compute_positions_helper(proc, current_prev, positions);
         }
-        Node::Bundle { proc, .. } => {
+        RholangNode::Bundle { proc, .. } => {
             current_prev = compute_positions_helper(proc, current_prev, positions);
         }
-        Node::Match { expression, cases, .. } => {
+        RholangNode::Match { expression, cases, .. } => {
             current_prev = compute_positions_helper(expression, current_prev, positions);
             for (pattern, proc) in cases {
                 current_prev = compute_positions_helper(pattern, current_prev, positions);
                 current_prev = compute_positions_helper(proc, current_prev, positions);
             }
         }
-        Node::Choice { branches, .. } => {
+        RholangNode::Choice { branches, .. } => {
             for (inputs, proc) in branches {
                 let mut temp_prev = current_prev;
                 for input in inputs {
@@ -616,7 +616,7 @@ fn compute_positions_helper(
                 current_prev = compute_positions_helper(proc, temp_prev, positions);
             }
         }
-        Node::Contract {
+        RholangNode::Contract {
             name,
             formals,
             formals_remainder,
@@ -632,7 +632,7 @@ fn compute_positions_helper(
             }
             current_prev = compute_positions_helper(proc, current_prev, positions);
         }
-        Node::Input { receipts, proc, .. } => {
+        RholangNode::Input { receipts, proc, .. } => {
             for receipt in receipts {
                 for bind in receipt {
                     current_prev = compute_positions_helper(bind, current_prev, positions);
@@ -640,29 +640,29 @@ fn compute_positions_helper(
             }
             current_prev = compute_positions_helper(proc, current_prev, positions);
         }
-        Node::Block { proc, .. } => {
+        RholangNode::Block { proc, .. } => {
             current_prev = compute_positions_helper(proc, current_prev, positions);
         }
-        Node::Parenthesized { expr, .. } => {
+        RholangNode::Parenthesized { expr, .. } => {
             current_prev = compute_positions_helper(expr, current_prev, positions);
         }
-        Node::BinOp { left, right, .. } => {
+        RholangNode::BinOp { left, right, .. } => {
             current_prev = compute_positions_helper(left, current_prev, positions);
             current_prev = compute_positions_helper(right, current_prev, positions);
         }
-        Node::UnaryOp { operand, .. } => {
+        RholangNode::UnaryOp { operand, .. } => {
             current_prev = compute_positions_helper(operand, current_prev, positions);
         }
-        Node::Method { receiver, args, .. } => {
+        RholangNode::Method { receiver, args, .. } => {
             current_prev = compute_positions_helper(receiver, current_prev, positions);
             for arg in args {
                 current_prev = compute_positions_helper(arg, current_prev, positions);
             }
         }
-        Node::Eval { name, .. } => {
+        RholangNode::Eval { name, .. } => {
             current_prev = compute_positions_helper(name, current_prev, positions);
         }
-        Node::Quote { quotable, .. } => {
+        RholangNode::Quote { quotable, .. } => {
             // The quotable's delta in the IR was calculated from the end of '@',
             // so we need to start from after the '@' character (Quote start + 1 byte).
             let after_at = Position {
@@ -672,10 +672,10 @@ fn compute_positions_helper(
             };
             current_prev = compute_positions_helper(quotable, after_at, positions);
         }
-        Node::VarRef { var, .. } => {
+        RholangNode::VarRef { var, .. } => {
             current_prev = compute_positions_helper(var, current_prev, positions);
         }
-        Node::List {
+        RholangNode::List {
             elements,
             remainder,
             ..
@@ -687,7 +687,7 @@ fn compute_positions_helper(
                 current_prev = compute_positions_helper(rem, current_prev, positions);
             }
         }
-        Node::Set {
+        RholangNode::Set {
             elements,
             remainder,
             ..
@@ -699,7 +699,7 @@ fn compute_positions_helper(
                 current_prev = compute_positions_helper(rem, current_prev, positions);
             }
         }
-        Node::Map { pairs, remainder, .. } => {
+        RholangNode::Map { pairs, remainder, .. } => {
             for (key, value) in pairs {
                 current_prev = compute_positions_helper(key, current_prev, positions);
                 current_prev = compute_positions_helper(value, current_prev, positions);
@@ -708,18 +708,18 @@ fn compute_positions_helper(
                 current_prev = compute_positions_helper(rem, current_prev, positions);
             }
         }
-        Node::Tuple { elements, .. } => {
+        RholangNode::Tuple { elements, .. } => {
             for elem in elements {
                 current_prev = compute_positions_helper(elem, current_prev, positions);
             }
         }
-        Node::NameDecl { var, uri, .. } => {
+        RholangNode::NameDecl { var, uri, .. } => {
             current_prev = compute_positions_helper(var, current_prev, positions);
             if let Some(u) = uri {
                 current_prev = compute_positions_helper(u, current_prev, positions);
             }
         }
-        Node::Decl {
+        RholangNode::Decl {
             names,
             names_remainder,
             procs,
@@ -735,7 +735,7 @@ fn compute_positions_helper(
                 current_prev = compute_positions_helper(proc, current_prev, positions);
             }
         }
-        Node::LinearBind {
+        RholangNode::LinearBind {
             names,
             remainder,
             source,
@@ -752,7 +752,7 @@ fn compute_positions_helper(
             current_prev = compute_positions_helper(source, current_prev, positions);
             debug!("LinearBind: after processing children, current_prev={:?}", current_prev);
         }
-        Node::RepeatedBind {
+        RholangNode::RepeatedBind {
             names,
             remainder,
             source,
@@ -766,7 +766,7 @@ fn compute_positions_helper(
             }
             current_prev = compute_positions_helper(source, current_prev, positions);
         }
-        Node::PeekBind {
+        RholangNode::PeekBind {
             names,
             remainder,
             source,
@@ -780,32 +780,32 @@ fn compute_positions_helper(
             }
             current_prev = compute_positions_helper(source, current_prev, positions);
         }
-        Node::ReceiveSendSource { name, .. } => {
+        RholangNode::ReceiveSendSource { name, .. } => {
             current_prev = compute_positions_helper(name, current_prev, positions);
         }
-        Node::SendReceiveSource { name, inputs, .. } => {
+        RholangNode::SendReceiveSource { name, inputs, .. } => {
             current_prev = compute_positions_helper(name, current_prev, positions);
             for input in inputs {
                 current_prev = compute_positions_helper(input, current_prev, positions);
             }
         }
-        Node::Error { children, .. } => {
+        RholangNode::Error { children, .. } => {
             for child in children {
                 current_prev = compute_positions_helper(child, current_prev, positions);
             }
         }
-        Node::Disjunction { left, right, .. } => {
+        RholangNode::Disjunction { left, right, .. } => {
             current_prev = compute_positions_helper(left, current_prev, positions);
             current_prev = compute_positions_helper(right, current_prev, positions);
         }
-        Node::Conjunction { left, right, .. } => {
+        RholangNode::Conjunction { left, right, .. } => {
             current_prev = compute_positions_helper(left, current_prev, positions);
             current_prev = compute_positions_helper(right, current_prev, positions);
         }
-        Node::Negation { operand, .. } => {
+        RholangNode::Negation { operand, .. } => {
             current_prev = compute_positions_helper(operand, current_prev, positions);
         }
-        Node::Unit { .. } => {}
+        RholangNode::Unit { .. } => {}
         _ => {}
     }
 
@@ -852,10 +852,10 @@ pub fn compute_end_position(
 }
 
 /// Matches a pattern against a concrete node, with substitution for variables.
-pub fn match_pat(pat: &Arc<Node>, concrete: &Arc<Node>, subst: &mut HashMap<String, Arc<Node>>) -> bool {
+pub fn match_pat(pat: &Arc<RholangNode>, concrete: &Arc<RholangNode>, subst: &mut HashMap<String, Arc<RholangNode>>) -> bool {
     match (&**pat, &**concrete) {
-        (Node::Wildcard { .. }, _) => true,
-        (Node::Var { name: p_name, .. }, _) => {
+        (RholangNode::Wildcard { .. }, _) => true,
+        (RholangNode::Var { name: p_name, .. }, _) => {
             if let Some(bound) = subst.get(p_name) {
                 **bound == **concrete
             } else {
@@ -864,33 +864,33 @@ pub fn match_pat(pat: &Arc<Node>, concrete: &Arc<Node>, subst: &mut HashMap<Stri
             }
         }
         (
-            Node::Quote {
+            RholangNode::Quote {
                 quotable: p_q, ..
             },
-            Node::Quote {
+            RholangNode::Quote {
                 quotable: c_q, ..
             },
         ) => match_pat(p_q, c_q, subst),
-        (Node::Eval { name: p_n, .. }, Node::Eval { name: c_n, .. }) => match_pat(p_n, c_n, subst),
+        (RholangNode::Eval { name: p_n, .. }, RholangNode::Eval { name: c_n, .. }) => match_pat(p_n, c_n, subst),
         (
-            Node::VarRef {
+            RholangNode::VarRef {
                 kind: p_k,
                 var: p_v,
                 ..
             },
-            Node::VarRef {
+            RholangNode::VarRef {
                 kind: c_k,
                 var: c_v,
                 ..
             },
         ) => p_k == c_k && match_pat(p_v, c_v, subst),
         (
-            Node::List {
+            RholangNode::List {
                 elements: p_e,
                 remainder: p_r,
                 ..
             },
-            Node::List {
+            RholangNode::List {
                 elements: c_e,
                 remainder: c_r,
                 ..
@@ -915,7 +915,7 @@ pub fn match_pat(pat: &Arc<Node>, concrete: &Arc<Node>, subst: &mut HashMap<Stri
                 0,
                 0,
             );
-            let rem_list = Arc::new(Node::List {
+            let rem_list = Arc::new(RholangNode::List {
                 base: rem_base,
                 elements: rem_c_elements,
                 remainder: c_r.clone(),
@@ -923,7 +923,7 @@ pub fn match_pat(pat: &Arc<Node>, concrete: &Arc<Node>, subst: &mut HashMap<Stri
             });
             if let Some(r) = p_r {
                 match_pat(r, &rem_list, subst)
-            } else if let Node::List {
+            } else if let RholangNode::List {
                 elements,
                 remainder,
                 ..
@@ -933,7 +933,7 @@ pub fn match_pat(pat: &Arc<Node>, concrete: &Arc<Node>, subst: &mut HashMap<Stri
                 false
             }
         }
-        (Node::Tuple { elements: p_e, .. }, Node::Tuple { elements: c_e, .. }) => {
+        (RholangNode::Tuple { elements: p_e, .. }, RholangNode::Tuple { elements: c_e, .. }) => {
             if p_e.len() != c_e.len() {
                 false
             } else {
@@ -943,21 +943,21 @@ pub fn match_pat(pat: &Arc<Node>, concrete: &Arc<Node>, subst: &mut HashMap<Stri
             }
         }
         (
-            Node::Set {
+            RholangNode::Set {
                 elements: p_e,
                 remainder: p_r,
                 ..
             },
-            Node::Set {
+            RholangNode::Set {
                 elements: c_e,
                 remainder: c_r,
                 ..
             },
         ) => {
-            let mut p_sorted: Vec<&Arc<Node>> = p_e.iter().collect();
-            p_sorted.sort_by(|a, b| Node::node_cmp(a, b));
-            let mut c_sorted: Vec<&Arc<Node>> = c_e.iter().collect();
-            c_sorted.sort_by(|a, b| Node::node_cmp(a, b));
+            let mut p_sorted: Vec<&Arc<RholangNode>> = p_e.iter().collect();
+            p_sorted.sort_by(|a, b| RholangNode::node_cmp(a, b));
+            let mut c_sorted: Vec<&Arc<RholangNode>> = c_e.iter().collect();
+            c_sorted.sort_by(|a, b| RholangNode::node_cmp(a, b));
             if p_sorted.len() > c_sorted.len() {
                 return false;
             }
@@ -977,7 +977,7 @@ pub fn match_pat(pat: &Arc<Node>, concrete: &Arc<Node>, subst: &mut HashMap<Stri
                 0,
                 0,
             );
-            let rem_set = Arc::new(Node::Set {
+            let rem_set = Arc::new(RholangNode::Set {
                 base: rem_base,
                 elements: rem_c_elements,
                 remainder: c_r.clone(),
@@ -985,7 +985,7 @@ pub fn match_pat(pat: &Arc<Node>, concrete: &Arc<Node>, subst: &mut HashMap<Stri
             });
             if let Some(r) = p_r {
                 match_pat(r, &rem_set, subst)
-            } else if let Node::Set {
+            } else if let RholangNode::Set {
                 elements,
                 remainder,
                 ..
@@ -996,23 +996,23 @@ pub fn match_pat(pat: &Arc<Node>, concrete: &Arc<Node>, subst: &mut HashMap<Stri
             }
         }
         (
-            Node::Map {
+            RholangNode::Map {
                 pairs: p_pairs,
                 remainder: p_r,
                 ..
             },
-            Node::Map {
+            RholangNode::Map {
                 pairs: c_pairs,
                 remainder: c_r,
                 ..
             },
         ) => {
-            let mut p_sorted: Vec<(&Arc<Node>, &Arc<Node>)> =
+            let mut p_sorted: Vec<(&Arc<RholangNode>, &Arc<RholangNode>)> =
                 p_pairs.iter().map(|(k, v)| (k, v)).collect();
-            p_sorted.sort_by(|(ka, _), (kb, _)| Node::node_cmp(ka, kb));
-            let mut c_sorted: Vec<(&Arc<Node>, &Arc<Node>)> =
+            p_sorted.sort_by(|(ka, _), (kb, _)| RholangNode::node_cmp(ka, kb));
+            let mut c_sorted: Vec<(&Arc<RholangNode>, &Arc<RholangNode>)> =
                 c_pairs.iter().map(|(k, v)| (k, v)).collect();
-            c_sorted.sort_by(|(ka, _), (kb, _)| Node::node_cmp(ka, kb));
+            c_sorted.sort_by(|(ka, _), (kb, _)| RholangNode::node_cmp(ka, kb));
             if p_sorted.len() > c_sorted.len() {
                 return false;
             }
@@ -1032,7 +1032,7 @@ pub fn match_pat(pat: &Arc<Node>, concrete: &Arc<Node>, subst: &mut HashMap<Stri
                 0,
                 0,
             );
-            let rem_map = Arc::new(Node::Map {
+            let rem_map = Arc::new(RholangNode::Map {
                 base: rem_base,
                 pairs: rem_c_pairs,
                 remainder: c_r.clone(),
@@ -1040,7 +1040,7 @@ pub fn match_pat(pat: &Arc<Node>, concrete: &Arc<Node>, subst: &mut HashMap<Stri
             });
             if let Some(r) = p_r {
                 match_pat(r, &rem_map, subst)
-            } else if let Node::Map {
+            } else if let RholangNode::Map {
                 pairs,
                 remainder,
                 ..
@@ -1050,23 +1050,23 @@ pub fn match_pat(pat: &Arc<Node>, concrete: &Arc<Node>, subst: &mut HashMap<Stri
                 false
             }
         }
-        (Node::BoolLiteral { value: p, .. }, Node::BoolLiteral { value: c, .. }) => p == c,
-        (Node::LongLiteral { value: p, .. }, Node::LongLiteral { value: c, .. }) => p == c,
-        (Node::StringLiteral { value: p, .. }, Node::StringLiteral { value: c, .. }) => p == c,
-        (Node::UriLiteral { value: p, .. }, Node::UriLiteral { value: c, .. }) => p == c,
-        (Node::SimpleType { value: p, .. }, Node::SimpleType { value: c, .. }) => p == c,
-        (Node::Nil { .. }, Node::Nil { .. }) => true,
-        (Node::Unit { .. }, Node::Unit { .. }) => true,
-        (Node::Disjunction { left: p_l, right: p_r, .. }, Node::Disjunction { left: c_l, right: c_r, .. }) => {
+        (RholangNode::BoolLiteral { value: p, .. }, RholangNode::BoolLiteral { value: c, .. }) => p == c,
+        (RholangNode::LongLiteral { value: p, .. }, RholangNode::LongLiteral { value: c, .. }) => p == c,
+        (RholangNode::StringLiteral { value: p, .. }, RholangNode::StringLiteral { value: c, .. }) => p == c,
+        (RholangNode::UriLiteral { value: p, .. }, RholangNode::UriLiteral { value: c, .. }) => p == c,
+        (RholangNode::SimpleType { value: p, .. }, RholangNode::SimpleType { value: c, .. }) => p == c,
+        (RholangNode::Nil { .. }, RholangNode::Nil { .. }) => true,
+        (RholangNode::Unit { .. }, RholangNode::Unit { .. }) => true,
+        (RholangNode::Disjunction { left: p_l, right: p_r, .. }, RholangNode::Disjunction { left: c_l, right: c_r, .. }) => {
             match_pat(p_l, c_l, subst) && match_pat(p_r, c_r, subst)
         }
-        (Node::Conjunction { left: p_l, right: p_r, .. }, Node::Conjunction { left: c_l, right: c_r, .. }) => {
+        (RholangNode::Conjunction { left: p_l, right: p_r, .. }, RholangNode::Conjunction { left: c_l, right: c_r, .. }) => {
             match_pat(p_l, c_l, subst) && match_pat(p_r, c_r, subst)
         }
-        (Node::Negation { operand: p_o, .. }, Node::Negation { operand: c_o, .. }) => {
+        (RholangNode::Negation { operand: p_o, .. }, RholangNode::Negation { operand: c_o, .. }) => {
             match_pat(p_o, c_o, subst)
         }
-        (Node::Parenthesized { expr: p_e, .. }, Node::Parenthesized { expr: c_e, .. }) => {
+        (RholangNode::Parenthesized { expr: p_e, .. }, RholangNode::Parenthesized { expr: c_e, .. }) => {
             match_pat(p_e, c_e, subst)
         }
         _ => false,
@@ -1075,18 +1075,18 @@ pub fn match_pat(pat: &Arc<Node>, concrete: &Arc<Node>, subst: &mut HashMap<Stri
 
 /// Matches a contract against a call's channel and inputs.
 /// Check if two nodes are equal for contract name matching (avoids pattern matching's Var unification)
-fn contract_names_equal(a: &Arc<Node>, b: &Arc<Node>) -> bool {
+fn contract_names_equal(a: &Arc<RholangNode>, b: &Arc<RholangNode>) -> bool {
     match (&**a, &**b) {
         // Fast path: pointer equality
         _ if Arc::ptr_eq(a, b) => true,
         // Var nodes: compare names by reference (cheap since names are strings in Arc)
-        (Node::Var { name: a_name, .. }, Node::Var { name: b_name, .. }) => a_name == b_name,
+        (RholangNode::Var { name: a_name, .. }, RholangNode::Var { name: b_name, .. }) => a_name == b_name,
         // Quote nodes: recursively check quotable
-        (Node::Quote { quotable: a_q, .. }, Node::Quote { quotable: b_q, .. }) => contract_names_equal(a_q, b_q),
+        (RholangNode::Quote { quotable: a_q, .. }, RholangNode::Quote { quotable: b_q, .. }) => contract_names_equal(a_q, b_q),
         // Eval nodes: recursively check name
-        (Node::Eval { name: a_n, .. }, Node::Eval { name: b_n, .. }) => contract_names_equal(a_n, b_n),
+        (RholangNode::Eval { name: a_n, .. }, RholangNode::Eval { name: b_n, .. }) => contract_names_equal(a_n, b_n),
         // VarRef nodes: check kind and var
-        (Node::VarRef { kind: a_k, var: a_v, .. }, Node::VarRef { kind: b_k, var: b_v, .. }) => {
+        (RholangNode::VarRef { kind: a_k, var: a_v, .. }, RholangNode::VarRef { kind: b_k, var: b_v, .. }) => {
             a_k == b_k && contract_names_equal(a_v, b_v)
         }
         // Different node types or other cases: not equal
@@ -1094,8 +1094,8 @@ fn contract_names_equal(a: &Arc<Node>, b: &Arc<Node>) -> bool {
     }
 }
 
-pub fn match_contract(channel: &Arc<Node>, inputs: &NodeVector, contract: &Arc<Node>) -> bool {
-    if let Node::Contract {
+pub fn match_contract(channel: &Arc<RholangNode>, inputs: &RholangNodeVector, contract: &Arc<RholangNode>) -> bool {
+    if let RholangNode::Contract {
         name,
         formals,
         formals_remainder,
@@ -1138,7 +1138,7 @@ pub fn match_contract(channel: &Arc<Node>, inputs: &NodeVector, contract: &Arc<N
                 0,
                 0,
             );
-            let remaining_list = Arc::new(Node::List {
+            let remaining_list = Arc::new(RholangNode::List {
                 base: rem_base,
                 elements: remaining_elements,
                 remainder: None,
@@ -1154,14 +1154,14 @@ pub fn match_contract(channel: &Arc<Node>, inputs: &NodeVector, contract: &Arc<N
 }
 
 /// Collects all contract nodes from the IR tree.
-pub fn collect_contracts(node: &Arc<Node>, contracts: &mut Vec<Arc<Node>>) {
+pub fn collect_contracts(node: &Arc<RholangNode>, contracts: &mut Vec<Arc<RholangNode>>) {
     match &**node {
-        Node::Contract { .. } => contracts.push(node.clone()),
-        Node::Par { left, right, .. } => {
+        RholangNode::Contract { .. } => contracts.push(node.clone()),
+        RholangNode::Par { left, right, .. } => {
             collect_contracts(left, contracts);
             collect_contracts(right, contracts);
         }
-        Node::SendSync {
+        RholangNode::SendSync {
             channel, inputs, cont, ..
         } => {
             collect_contracts(channel, contracts);
@@ -1170,19 +1170,19 @@ pub fn collect_contracts(node: &Arc<Node>, contracts: &mut Vec<Arc<Node>>) {
             }
             collect_contracts(cont, contracts);
         }
-        Node::Send { channel, inputs, .. } => {
+        RholangNode::Send { channel, inputs, .. } => {
             collect_contracts(channel, contracts);
             for input in inputs {
                 collect_contracts(input, contracts);
             }
         }
-        Node::New { decls, proc, .. } => {
+        RholangNode::New { decls, proc, .. } => {
             for decl in decls {
                 collect_contracts(decl, contracts);
             }
             collect_contracts(proc, contracts);
         }
-        Node::IfElse {
+        RholangNode::IfElse {
             condition,
             consequence,
             alternative,
@@ -1194,14 +1194,14 @@ pub fn collect_contracts(node: &Arc<Node>, contracts: &mut Vec<Arc<Node>>) {
                 collect_contracts(alt, contracts);
             }
         }
-        Node::Let { decls, proc, .. } => {
+        RholangNode::Let { decls, proc, .. } => {
             for decl in decls {
                 collect_contracts(decl, contracts);
             }
             collect_contracts(proc, contracts);
         }
-        Node::Bundle { proc, .. } => collect_contracts(proc, contracts),
-        Node::Match {
+        RholangNode::Bundle { proc, .. } => collect_contracts(proc, contracts),
+        RholangNode::Match {
             expression, cases, ..
         } => {
             collect_contracts(expression, contracts);
@@ -1210,7 +1210,7 @@ pub fn collect_contracts(node: &Arc<Node>, contracts: &mut Vec<Arc<Node>>) {
                 collect_contracts(proc, contracts);
             }
         }
-        Node::Choice { branches, .. } => {
+        RholangNode::Choice { branches, .. } => {
             for (inputs, proc) in branches {
                 for input in inputs {
                     collect_contracts(input, contracts);
@@ -1218,7 +1218,7 @@ pub fn collect_contracts(node: &Arc<Node>, contracts: &mut Vec<Arc<Node>>) {
                 collect_contracts(proc, contracts);
             }
         }
-        Node::Input { receipts, proc, .. } => {
+        RholangNode::Input { receipts, proc, .. } => {
             for receipt in receipts {
                 for bind in receipt {
                     collect_contracts(bind, contracts);
@@ -1226,14 +1226,14 @@ pub fn collect_contracts(node: &Arc<Node>, contracts: &mut Vec<Arc<Node>>) {
             }
             collect_contracts(proc, contracts);
         }
-        Node::Block { proc, .. } => collect_contracts(proc, contracts),
-        Node::Parenthesized { expr, .. } => collect_contracts(expr, contracts),
-        Node::BinOp { left, right, .. } => {
+        RholangNode::Block { proc, .. } => collect_contracts(proc, contracts),
+        RholangNode::Parenthesized { expr, .. } => collect_contracts(expr, contracts),
+        RholangNode::BinOp { left, right, .. } => {
             collect_contracts(left, contracts);
             collect_contracts(right, contracts);
         }
-        Node::UnaryOp { operand, .. } => collect_contracts(operand, contracts),
-        Node::Method {
+        RholangNode::UnaryOp { operand, .. } => collect_contracts(operand, contracts),
+        RholangNode::Method {
             receiver, args, ..
         } => {
             collect_contracts(receiver, contracts);
@@ -1241,10 +1241,10 @@ pub fn collect_contracts(node: &Arc<Node>, contracts: &mut Vec<Arc<Node>>) {
                 collect_contracts(arg, contracts);
             }
         }
-        Node::Eval { name, .. } => collect_contracts(name, contracts),
-        Node::Quote { quotable, .. } => collect_contracts(quotable, contracts),
-        Node::VarRef { var, .. } => collect_contracts(var, contracts),
-        Node::List {
+        RholangNode::Eval { name, .. } => collect_contracts(name, contracts),
+        RholangNode::Quote { quotable, .. } => collect_contracts(quotable, contracts),
+        RholangNode::VarRef { var, .. } => collect_contracts(var, contracts),
+        RholangNode::List {
             elements,
             remainder,
             ..
@@ -1256,7 +1256,7 @@ pub fn collect_contracts(node: &Arc<Node>, contracts: &mut Vec<Arc<Node>>) {
                 collect_contracts(rem, contracts);
             }
         }
-        Node::Set {
+        RholangNode::Set {
             elements,
             remainder,
             ..
@@ -1268,7 +1268,7 @@ pub fn collect_contracts(node: &Arc<Node>, contracts: &mut Vec<Arc<Node>>) {
                 collect_contracts(rem, contracts);
             }
         }
-        Node::Map {
+        RholangNode::Map {
             pairs, remainder, ..
         } => {
             for (key, value) in pairs {
@@ -1279,18 +1279,18 @@ pub fn collect_contracts(node: &Arc<Node>, contracts: &mut Vec<Arc<Node>>) {
                 collect_contracts(rem, contracts);
             }
         }
-        Node::Tuple { elements, .. } => {
+        RholangNode::Tuple { elements, .. } => {
             for elem in elements {
                 collect_contracts(elem, contracts);
             }
         }
-        Node::NameDecl { var, uri, .. } => {
+        RholangNode::NameDecl { var, uri, .. } => {
             collect_contracts(var, contracts);
             if let Some(u) = uri {
                 collect_contracts(u, contracts);
             }
         }
-        Node::Decl {
+        RholangNode::Decl {
             names,
             names_remainder,
             procs,
@@ -1306,7 +1306,7 @@ pub fn collect_contracts(node: &Arc<Node>, contracts: &mut Vec<Arc<Node>>) {
                 collect_contracts(proc, contracts);
             }
         }
-        Node::LinearBind {
+        RholangNode::LinearBind {
             names,
             remainder,
             source,
@@ -1320,7 +1320,7 @@ pub fn collect_contracts(node: &Arc<Node>, contracts: &mut Vec<Arc<Node>>) {
             }
             collect_contracts(source, contracts);
         }
-        Node::RepeatedBind {
+        RholangNode::RepeatedBind {
             names,
             remainder,
             source,
@@ -1334,7 +1334,7 @@ pub fn collect_contracts(node: &Arc<Node>, contracts: &mut Vec<Arc<Node>>) {
             }
             collect_contracts(source, contracts);
         }
-        Node::PeekBind {
+        RholangNode::PeekBind {
             names,
             remainder,
             source,
@@ -1348,47 +1348,47 @@ pub fn collect_contracts(node: &Arc<Node>, contracts: &mut Vec<Arc<Node>>) {
             }
             collect_contracts(source, contracts);
         }
-        Node::ReceiveSendSource { name, .. } => collect_contracts(name, contracts),
-        Node::SendReceiveSource { name, inputs, .. } => {
+        RholangNode::ReceiveSendSource { name, .. } => collect_contracts(name, contracts),
+        RholangNode::SendReceiveSource { name, inputs, .. } => {
             collect_contracts(name, contracts);
             for input in inputs {
                 collect_contracts(input, contracts);
             }
         }
-        Node::Error { children, .. } => {
+        RholangNode::Error { children, .. } => {
             for child in children {
                 collect_contracts(child, contracts);
             }
         }
-        Node::Disjunction { left, right, .. } => {
+        RholangNode::Disjunction { left, right, .. } => {
             collect_contracts(left, contracts);
             collect_contracts(right, contracts);
         }
-        Node::Conjunction { left, right, .. } => {
+        RholangNode::Conjunction { left, right, .. } => {
             collect_contracts(left, contracts);
             collect_contracts(right, contracts);
         }
-        Node::Negation { operand, .. } => collect_contracts(operand, contracts),
-        Node::Unit { .. } => {}
+        RholangNode::Negation { operand, .. } => collect_contracts(operand, contracts),
+        RholangNode::Unit { .. } => {}
         _ => {}
     }
 }
 
 /// Collects all call nodes (Send and SendSync) from the IR tree.
-pub fn collect_calls(node: &Arc<Node>, calls: &mut Vec<Arc<Node>>) {
+pub fn collect_calls(node: &Arc<RholangNode>, calls: &mut Vec<Arc<RholangNode>>) {
     match &**node {
-        Node::Send { .. } | Node::SendSync { .. } => calls.push(node.clone()),
-        Node::Par { left, right, .. } => {
+        RholangNode::Send { .. } | RholangNode::SendSync { .. } => calls.push(node.clone()),
+        RholangNode::Par { left, right, .. } => {
             collect_calls(left, calls);
             collect_calls(right, calls);
         }
-        Node::New { decls, proc, .. } => {
+        RholangNode::New { decls, proc, .. } => {
             for decl in decls {
                 collect_calls(decl, calls);
             }
             collect_calls(proc, calls);
         }
-        Node::IfElse {
+        RholangNode::IfElse {
             condition,
             consequence,
             alternative,
@@ -1400,14 +1400,14 @@ pub fn collect_calls(node: &Arc<Node>, calls: &mut Vec<Arc<Node>>) {
                 collect_calls(alt, calls);
             }
         }
-        Node::Let { decls, proc, .. } => {
+        RholangNode::Let { decls, proc, .. } => {
             for decl in decls {
                 collect_calls(decl, calls);
             }
             collect_calls(proc, calls);
         }
-        Node::Bundle { proc, .. } => collect_calls(proc, calls),
-        Node::Match {
+        RholangNode::Bundle { proc, .. } => collect_calls(proc, calls),
+        RholangNode::Match {
             expression, cases, ..
         } => {
             collect_calls(expression, calls);
@@ -1416,7 +1416,7 @@ pub fn collect_calls(node: &Arc<Node>, calls: &mut Vec<Arc<Node>>) {
                 collect_calls(proc, calls);
             }
         }
-        Node::Choice { branches, .. } => {
+        RholangNode::Choice { branches, .. } => {
             for (inputs, proc) in branches {
                 for input in inputs {
                     collect_calls(input, calls);
@@ -1424,7 +1424,7 @@ pub fn collect_calls(node: &Arc<Node>, calls: &mut Vec<Arc<Node>>) {
                 collect_calls(proc, calls);
             }
         }
-        Node::Contract {
+        RholangNode::Contract {
             name,
             formals,
             formals_remainder,
@@ -1440,7 +1440,7 @@ pub fn collect_calls(node: &Arc<Node>, calls: &mut Vec<Arc<Node>>) {
             }
             collect_calls(proc, calls);
         }
-        Node::Input { receipts, proc, .. } => {
+        RholangNode::Input { receipts, proc, .. } => {
             for receipt in receipts {
                 for bind in receipt {
                     collect_calls(bind, calls);
@@ -1448,14 +1448,14 @@ pub fn collect_calls(node: &Arc<Node>, calls: &mut Vec<Arc<Node>>) {
             }
             collect_calls(proc, calls);
         }
-        Node::Block { proc, .. } => collect_calls(proc, calls),
-        Node::Parenthesized { expr, .. } => collect_calls(expr, calls),
-        Node::BinOp { left, right, .. } => {
+        RholangNode::Block { proc, .. } => collect_calls(proc, calls),
+        RholangNode::Parenthesized { expr, .. } => collect_calls(expr, calls),
+        RholangNode::BinOp { left, right, .. } => {
             collect_calls(left, calls);
             collect_calls(right, calls);
         }
-        Node::UnaryOp { operand, .. } => collect_calls(operand, calls),
-        Node::Method {
+        RholangNode::UnaryOp { operand, .. } => collect_calls(operand, calls),
+        RholangNode::Method {
             receiver, args, ..
         } => {
             collect_calls(receiver, calls);
@@ -1463,10 +1463,10 @@ pub fn collect_calls(node: &Arc<Node>, calls: &mut Vec<Arc<Node>>) {
                 collect_calls(arg, calls);
             }
         }
-        Node::Eval { name, .. } => collect_calls(name, calls),
-        Node::Quote { quotable, .. } => collect_calls(quotable, calls),
-        Node::VarRef { var, .. } => collect_calls(var, calls),
-        Node::List {
+        RholangNode::Eval { name, .. } => collect_calls(name, calls),
+        RholangNode::Quote { quotable, .. } => collect_calls(quotable, calls),
+        RholangNode::VarRef { var, .. } => collect_calls(var, calls),
+        RholangNode::List {
             elements,
             remainder,
             ..
@@ -1478,7 +1478,7 @@ pub fn collect_calls(node: &Arc<Node>, calls: &mut Vec<Arc<Node>>) {
                 collect_calls(rem, calls);
             }
         }
-        Node::Set {
+        RholangNode::Set {
             elements,
             remainder,
             ..
@@ -1490,7 +1490,7 @@ pub fn collect_calls(node: &Arc<Node>, calls: &mut Vec<Arc<Node>>) {
                 collect_calls(rem, calls);
             }
         }
-        Node::Map {
+        RholangNode::Map {
             pairs, remainder, ..
         } => {
             for (key, value) in pairs {
@@ -1501,18 +1501,18 @@ pub fn collect_calls(node: &Arc<Node>, calls: &mut Vec<Arc<Node>>) {
                 collect_calls(rem, calls);
             }
         }
-        Node::Tuple { elements, .. } => {
+        RholangNode::Tuple { elements, .. } => {
             for elem in elements {
                 collect_calls(elem, calls);
             }
         }
-        Node::NameDecl { var, uri, .. } => {
+        RholangNode::NameDecl { var, uri, .. } => {
             collect_calls(var, calls);
             if let Some(u) = uri {
                 collect_calls(u, calls);
             }
         }
-        Node::Decl {
+        RholangNode::Decl {
             names,
             names_remainder,
             procs,
@@ -1528,7 +1528,7 @@ pub fn collect_calls(node: &Arc<Node>, calls: &mut Vec<Arc<Node>>) {
                 collect_calls(proc, calls);
             }
         }
-        Node::LinearBind {
+        RholangNode::LinearBind {
             names,
             remainder,
             source,
@@ -1542,7 +1542,7 @@ pub fn collect_calls(node: &Arc<Node>, calls: &mut Vec<Arc<Node>>) {
             }
             collect_calls(source, calls);
         }
-        Node::RepeatedBind {
+        RholangNode::RepeatedBind {
             names,
             remainder,
             source,
@@ -1556,7 +1556,7 @@ pub fn collect_calls(node: &Arc<Node>, calls: &mut Vec<Arc<Node>>) {
             }
             collect_calls(source, calls);
         }
-        Node::PeekBind {
+        RholangNode::PeekBind {
             names,
             remainder,
             source,
@@ -1570,60 +1570,60 @@ pub fn collect_calls(node: &Arc<Node>, calls: &mut Vec<Arc<Node>>) {
             }
             collect_calls(source, calls);
         }
-        Node::ReceiveSendSource { name, .. } => collect_calls(name, calls),
-        Node::SendReceiveSource { name, inputs, .. } => {
+        RholangNode::ReceiveSendSource { name, .. } => collect_calls(name, calls),
+        RholangNode::SendReceiveSource { name, inputs, .. } => {
             collect_calls(name, calls);
             for input in inputs {
                 collect_calls(input, calls);
             }
         }
-        Node::Error { children, .. } => {
+        RholangNode::Error { children, .. } => {
             for child in children {
                 collect_calls(child, calls);
             }
         }
-        Node::Disjunction { left, right, .. } => {
+        RholangNode::Disjunction { left, right, .. } => {
             collect_calls(left, calls);
             collect_calls(right, calls);
         }
-        Node::Conjunction { left, right, .. } => {
+        RholangNode::Conjunction { left, right, .. } => {
             collect_calls(left, calls);
             collect_calls(right, calls);
         }
-        Node::Negation { operand, .. } => collect_calls(operand, calls),
-        Node::Unit { .. } => {},
+        RholangNode::Negation { operand, .. } => collect_calls(operand, calls),
+        RholangNode::Unit { .. } => {},
         _ => {},
     }
 }
 
 /// Traverses the tree with path tracking for finding node at position.
 pub fn find_node_at_position_with_path(
-    root: &Arc<Node>,
+    root: &Arc<RholangNode>,
     positions: &HashMap<usize, (Position, Position)>,
     position: Position,
-) -> Option<(Arc<Node>, Vec<Arc<Node>>)> {
+) -> Option<(Arc<RholangNode>, Vec<Arc<RholangNode>>)> {
     let mut path = Vec::new();
-    let mut best: Option<(Arc<Node>, Vec<Arc<Node>>, usize)> = None;
+    let mut best: Option<(Arc<RholangNode>, Vec<Arc<RholangNode>>, usize)> = None;
     traverse_with_path(root, position, positions, &mut path, &mut best, 0);
     best.map(|(node, p, _)| (node, p))
 }
 
 fn traverse_with_path(
-    node: &Arc<Node>,
+    node: &Arc<RholangNode>,
     pos: Position,
     positions: &HashMap<usize, (Position, Position)>,
-    path: &mut Vec<Arc<Node>>,
-    best: &mut Option<(Arc<Node>, Vec<Arc<Node>>, usize)>,
+    path: &mut Vec<Arc<RholangNode>>,
+    best: &mut Option<(Arc<RholangNode>, Vec<Arc<RholangNode>>, usize)>,
     depth: usize,
 ) {
     path.push(node.clone());
-    let key = &**node as *const Node as usize;
+    let key = &**node as *const RholangNode as usize;
     if let Some(&(start, end)) = positions.get(&key) {
         debug!("traverse_with_path: Checking node {:p} at depth {} with range [{}, {}] for position {}",
                &**node, depth, start.byte, end.byte, pos.byte);
         if start.byte <= pos.byte && pos.byte <= end.byte {
             let is_better = best.as_ref().map_or(true, |(_, _, b_depth)| depth > *b_depth);
-            debug!("  traverse_with_path: Node {:p} contains position. is_better={} (current depth={}, best depth={:?})",
+            debug!("  traverse_with_path: RholangNode {:p} contains position. is_better={} (current depth={}, best depth={:?})",
                    &**node, is_better, depth, best.as_ref().map(|(_, _, d)| d));
             if is_better {
                 debug!("  traverse_with_path: Setting node {:p} as new best at depth {}", &**node, depth);
@@ -1632,11 +1632,11 @@ fn traverse_with_path(
         }
     }
     match &**node {
-        Node::Par { left, right, .. } => {
+        RholangNode::Par { left, right, .. } => {
             traverse_with_path(left, pos, positions, path, best, depth + 1);
             traverse_with_path(right, pos, positions, path, best, depth + 1);
         }
-        Node::SendSync {
+        RholangNode::SendSync {
             channel, inputs, cont, ..
         } => {
             traverse_with_path(channel, pos, positions, path, best, depth + 1);
@@ -1645,19 +1645,19 @@ fn traverse_with_path(
             }
             traverse_with_path(cont, pos, positions, path, best, depth + 1);
         }
-        Node::Send { channel, inputs, .. } => {
+        RholangNode::Send { channel, inputs, .. } => {
             traverse_with_path(channel, pos, positions, path, best, depth + 1);
             for input in inputs {
                 traverse_with_path(input, pos, positions, path, best, depth + 1);
             }
         }
-        Node::New { decls, proc, .. } => {
+        RholangNode::New { decls, proc, .. } => {
             for decl in decls {
                 traverse_with_path(decl, pos, positions, path, best, depth + 1);
             }
             traverse_with_path(proc, pos, positions, path, best, depth + 1);
         }
-        Node::IfElse {
+        RholangNode::IfElse {
             condition,
             consequence,
             alternative,
@@ -1669,21 +1669,21 @@ fn traverse_with_path(
                 traverse_with_path(alt, pos, positions, path, best, depth + 1);
             }
         }
-        Node::Let { decls, proc, .. } => {
+        RholangNode::Let { decls, proc, .. } => {
             for decl in decls {
                 traverse_with_path(decl, pos, positions, path, best, depth + 1);
             }
             traverse_with_path(proc, pos, positions, path, best, depth + 1);
         }
-        Node::Bundle { proc, .. } => traverse_with_path(proc, pos, positions, path, best, depth + 1),
-        Node::Match { expression, cases, .. } => {
+        RholangNode::Bundle { proc, .. } => traverse_with_path(proc, pos, positions, path, best, depth + 1),
+        RholangNode::Match { expression, cases, .. } => {
             traverse_with_path(expression, pos, positions, path, best, depth + 1);
             for (pat, proc) in cases {
                 traverse_with_path(pat, pos, positions, path, best, depth + 1);
                 traverse_with_path(proc, pos, positions, path, best, depth + 1);
             }
         }
-        Node::Choice { branches, .. } => {
+        RholangNode::Choice { branches, .. } => {
             for (inputs, proc) in branches {
                 for input in inputs {
                     traverse_with_path(input, pos, positions, path, best, depth + 1);
@@ -1691,7 +1691,7 @@ fn traverse_with_path(
                 traverse_with_path(proc, pos, positions, path, best, depth + 1);
             }
         }
-        Node::Contract { name, formals, formals_remainder, proc, .. } => {
+        RholangNode::Contract { name, formals, formals_remainder, proc, .. } => {
             traverse_with_path(name, pos, positions, path, best, depth + 1);
             for formal in formals {
                 traverse_with_path(formal, pos, positions, path, best, depth + 1);
@@ -1701,7 +1701,7 @@ fn traverse_with_path(
             }
             traverse_with_path(proc, pos, positions, path, best, depth + 1);
         }
-        Node::Input { receipts, proc, .. } => {
+        RholangNode::Input { receipts, proc, .. } => {
             for receipt in receipts {
                 for bind in receipt {
                     traverse_with_path(bind, pos, positions, path, best, depth + 1);
@@ -1709,23 +1709,23 @@ fn traverse_with_path(
             }
             traverse_with_path(proc, pos, positions, path, best, depth + 1);
         }
-        Node::Block { proc, .. } => traverse_with_path(proc, pos, positions, path, best, depth + 1),
-        Node::Parenthesized { expr, .. } => traverse_with_path(expr, pos, positions, path, best, depth + 1),
-        Node::BinOp { left, right, .. } => {
+        RholangNode::Block { proc, .. } => traverse_with_path(proc, pos, positions, path, best, depth + 1),
+        RholangNode::Parenthesized { expr, .. } => traverse_with_path(expr, pos, positions, path, best, depth + 1),
+        RholangNode::BinOp { left, right, .. } => {
             traverse_with_path(left, pos, positions, path, best, depth + 1);
             traverse_with_path(right, pos, positions, path, best, depth + 1);
         }
-        Node::UnaryOp { operand, .. } => traverse_with_path(operand, pos, positions, path, best, depth + 1),
-        Node::Method { receiver, args, .. } => {
+        RholangNode::UnaryOp { operand, .. } => traverse_with_path(operand, pos, positions, path, best, depth + 1),
+        RholangNode::Method { receiver, args, .. } => {
             traverse_with_path(receiver, pos, positions, path, best, depth + 1);
             for arg in args {
                 traverse_with_path(arg, pos, positions, path, best, depth + 1);
             }
         }
-        Node::Eval { name, .. } => traverse_with_path(name, pos, positions, path, best, depth + 1),
-        Node::Quote { quotable, .. } => traverse_with_path(quotable, pos, positions, path, best, depth + 1),
-        Node::VarRef { var, .. } => traverse_with_path(var, pos, positions, path, best, depth + 1),
-        Node::List { elements, remainder, .. } => {
+        RholangNode::Eval { name, .. } => traverse_with_path(name, pos, positions, path, best, depth + 1),
+        RholangNode::Quote { quotable, .. } => traverse_with_path(quotable, pos, positions, path, best, depth + 1),
+        RholangNode::VarRef { var, .. } => traverse_with_path(var, pos, positions, path, best, depth + 1),
+        RholangNode::List { elements, remainder, .. } => {
             for elem in elements {
                 traverse_with_path(elem, pos, positions, path, best, depth + 1);
             }
@@ -1733,7 +1733,7 @@ fn traverse_with_path(
                 traverse_with_path(rem, pos, positions, path, best, depth + 1);
             }
         }
-        Node::Set { elements, remainder, .. } => {
+        RholangNode::Set { elements, remainder, .. } => {
             for elem in elements {
                 traverse_with_path(elem, pos, positions, path, best, depth + 1);
             }
@@ -1741,7 +1741,7 @@ fn traverse_with_path(
                 traverse_with_path(rem, pos, positions, path, best, depth + 1);
             }
         }
-        Node::Map { pairs, remainder, .. } => {
+        RholangNode::Map { pairs, remainder, .. } => {
             for (key, value) in pairs {
                 traverse_with_path(key, pos, positions, path, best, depth + 1);
                 traverse_with_path(value, pos, positions, path, best, depth + 1);
@@ -1750,18 +1750,18 @@ fn traverse_with_path(
                 traverse_with_path(rem, pos, positions, path, best, depth + 1);
             }
         }
-        Node::Tuple { elements, .. } => {
+        RholangNode::Tuple { elements, .. } => {
             for elem in elements {
                 traverse_with_path(elem, pos, positions, path, best, depth + 1);
             }
         }
-        Node::NameDecl { var, uri, .. } => {
+        RholangNode::NameDecl { var, uri, .. } => {
             traverse_with_path(var, pos, positions, path, best, depth + 1);
             if let Some(u) = uri {
                 traverse_with_path(u, pos, positions, path, best, depth + 1);
             }
         }
-        Node::Decl { names, names_remainder, procs, .. } => {
+        RholangNode::Decl { names, names_remainder, procs, .. } => {
             for name in names {
                 traverse_with_path(name, pos, positions, path, best, depth + 1);
             }
@@ -1772,7 +1772,7 @@ fn traverse_with_path(
                 traverse_with_path(proc, pos, positions, path, best, depth + 1);
             }
         }
-        Node::LinearBind { names, remainder, source, .. } => {
+        RholangNode::LinearBind { names, remainder, source, .. } => {
             for name in names {
                 traverse_with_path(name, pos, positions, path, best, depth + 1);
             }
@@ -1781,7 +1781,7 @@ fn traverse_with_path(
             }
             traverse_with_path(source, pos, positions, path, best, depth + 1);
         }
-        Node::RepeatedBind { names, remainder, source, .. } => {
+        RholangNode::RepeatedBind { names, remainder, source, .. } => {
             for name in names {
                 traverse_with_path(name, pos, positions, path, best, depth + 1);
             }
@@ -1790,7 +1790,7 @@ fn traverse_with_path(
             }
             traverse_with_path(source, pos, positions, path, best, depth + 1);
         }
-        Node::PeekBind { names, remainder, source, .. } => {
+        RholangNode::PeekBind { names, remainder, source, .. } => {
             for name in names {
                 traverse_with_path(name, pos, positions, path, best, depth + 1);
             }
@@ -1799,47 +1799,47 @@ fn traverse_with_path(
             }
             traverse_with_path(source, pos, positions, path, best, depth + 1);
         }
-        Node::ReceiveSendSource { name, .. } => traverse_with_path(name, pos, positions, path, best, depth + 1),
-        Node::SendReceiveSource { name, inputs, .. } => {
+        RholangNode::ReceiveSendSource { name, .. } => traverse_with_path(name, pos, positions, path, best, depth + 1),
+        RholangNode::SendReceiveSource { name, inputs, .. } => {
             traverse_with_path(name, pos, positions, path, best, depth + 1);
             for input in inputs {
                 traverse_with_path(input, pos, positions, path, best, depth + 1);
             }
         }
-        Node::Error { children, .. } => {
+        RholangNode::Error { children, .. } => {
             for child in children {
                 traverse_with_path(child, pos, positions, path, best, depth + 1);
             }
         }
-        Node::Disjunction { left, right, .. } => {
+        RholangNode::Disjunction { left, right, .. } => {
             traverse_with_path(left, pos, positions, path, best, depth + 1);
             traverse_with_path(right, pos, positions, path, best, depth + 1);
         }
-        Node::Conjunction { left, right, .. } => {
+        RholangNode::Conjunction { left, right, .. } => {
             traverse_with_path(left, pos, positions, path, best, depth + 1);
             traverse_with_path(right, pos, positions, path, best, depth + 1);
         }
-        Node::Negation { operand, .. } => traverse_with_path(operand, pos, positions, path, best, depth + 1),
-        Node::Unit { .. } => {}
+        RholangNode::Negation { operand, .. } => traverse_with_path(operand, pos, positions, path, best, depth + 1),
+        RholangNode::Unit { .. } => {}
         _ => {}
     }
     path.pop();
 }
 
 fn traverse(
-    node: &Arc<Node>,
+    node: &Arc<RholangNode>,
     pos: Position,
     positions: &HashMap<usize, (Position, Position)>,
-    best: &mut Option<(Arc<Node>, Position, usize)>,
+    best: &mut Option<(Arc<RholangNode>, Position, usize)>,
     depth: usize,
 ) {
-    let key = &**node as *const Node as usize;
+    let key = &**node as *const RholangNode as usize;
     if let Some(&(start, end)) = positions.get(&key) {
         debug!("traverse: Checking node {:p} at depth {} with range [{}, {}] for position {}",
                &**node, depth, start.byte, end.byte, pos.byte);
         if start.byte <= pos.byte && pos.byte <= end.byte {
             let is_better = best.as_ref().map_or(true, |(_, _, b_depth)| depth > *b_depth);
-            debug!("  traverse: Node {:p} contains position. is_better={} (current depth={}, best depth={:?})",
+            debug!("  traverse: RholangNode {:p} contains position. is_better={} (current depth={}, best depth={:?})",
                    &**node, is_better, depth, best.as_ref().map(|(_, _, d)| d));
             if is_better {
                 debug!("  traverse: Setting node {:p} as new best at depth {}", &**node, depth);
@@ -1848,30 +1848,30 @@ fn traverse(
         }
     }
     match &**node {
-        Node::Par { left, right, .. } => {
+        RholangNode::Par { left, right, .. } => {
             traverse(left, pos, positions, best, depth + 1);
             traverse(right, pos, positions, best, depth + 1);
         }
-        Node::SendSync { channel, inputs, cont, .. } => {
+        RholangNode::SendSync { channel, inputs, cont, .. } => {
             traverse(channel, pos, positions, best, depth + 1);
             for input in inputs {
                 traverse(input, pos, positions, best, depth + 1);
             }
             traverse(cont, pos, positions, best, depth + 1);
         }
-        Node::Send { channel, inputs, .. } => {
+        RholangNode::Send { channel, inputs, .. } => {
             traverse(channel, pos, positions, best, depth + 1);
             for input in inputs {
                 traverse(input, pos, positions, best, depth + 1);
             }
         }
-        Node::New { decls, proc, .. } => {
+        RholangNode::New { decls, proc, .. } => {
             for decl in decls {
                 traverse(decl, pos, positions, best, depth + 1);
             }
             traverse(proc, pos, positions, best, depth + 1);
         }
-        Node::IfElse {
+        RholangNode::IfElse {
             condition,
             consequence,
             alternative,
@@ -1883,21 +1883,21 @@ fn traverse(
                 traverse(alt, pos, positions, best, depth + 1);
             }
         }
-        Node::Let { decls, proc, .. } => {
+        RholangNode::Let { decls, proc, .. } => {
             for decl in decls {
                 traverse(decl, pos, positions, best, depth + 1);
             }
             traverse(proc, pos, positions, best, depth + 1);
         }
-        Node::Bundle { proc, .. } => traverse(proc, pos, positions, best, depth + 1),
-        Node::Match { expression, cases, .. } => {
+        RholangNode::Bundle { proc, .. } => traverse(proc, pos, positions, best, depth + 1),
+        RholangNode::Match { expression, cases, .. } => {
             traverse(expression, pos, positions, best, depth + 1);
             for (pat, proc) in cases {
                 traverse(pat, pos, positions, best, depth + 1);
                 traverse(proc, pos, positions, best, depth + 1);
             }
         }
-        Node::Choice { branches, .. } => {
+        RholangNode::Choice { branches, .. } => {
             for (inputs, proc) in branches {
                 for input in inputs {
                     traverse(input, pos, positions, best, depth + 1);
@@ -1905,7 +1905,7 @@ fn traverse(
                 traverse(proc, pos, positions, best, depth + 1);
             }
         }
-        Node::Contract { name, formals, formals_remainder, proc, .. } => {
+        RholangNode::Contract { name, formals, formals_remainder, proc, .. } => {
             traverse(name, pos, positions, best, depth + 1);
             for formal in formals {
                 traverse(formal, pos, positions, best, depth + 1);
@@ -1915,7 +1915,7 @@ fn traverse(
             }
             traverse(proc, pos, positions, best, depth + 1);
         }
-        Node::Input { receipts, proc, .. } => {
+        RholangNode::Input { receipts, proc, .. } => {
             for receipt in receipts {
                 for bind in receipt {
                     traverse(bind, pos, positions, best, depth + 1);
@@ -1923,23 +1923,23 @@ fn traverse(
             }
             traverse(proc, pos, positions, best, depth + 1);
         }
-        Node::Block { proc, .. } => traverse(proc, pos, positions, best, depth + 1),
-        Node::Parenthesized { expr, .. } => traverse(expr, pos, positions, best, depth + 1),
-        Node::BinOp { left, right, .. } => {
+        RholangNode::Block { proc, .. } => traverse(proc, pos, positions, best, depth + 1),
+        RholangNode::Parenthesized { expr, .. } => traverse(expr, pos, positions, best, depth + 1),
+        RholangNode::BinOp { left, right, .. } => {
             traverse(left, pos, positions, best, depth + 1);
             traverse(right, pos, positions, best, depth + 1);
         }
-        Node::UnaryOp { operand, .. } => traverse(operand, pos, positions, best, depth + 1),
-        Node::Method { receiver, args, .. } => {
+        RholangNode::UnaryOp { operand, .. } => traverse(operand, pos, positions, best, depth + 1),
+        RholangNode::Method { receiver, args, .. } => {
             traverse(receiver, pos, positions, best, depth + 1);
             for arg in args {
                 traverse(arg, pos, positions, best, depth + 1);
             }
         }
-        Node::Eval { name, .. } => traverse(name, pos, positions, best, depth + 1),
-        Node::Quote { quotable, .. } => traverse(quotable, pos, positions, best, depth + 1),
-        Node::VarRef { var, .. } => traverse(var, pos, positions, best, depth + 1),
-        Node::List { elements, remainder, .. } => {
+        RholangNode::Eval { name, .. } => traverse(name, pos, positions, best, depth + 1),
+        RholangNode::Quote { quotable, .. } => traverse(quotable, pos, positions, best, depth + 1),
+        RholangNode::VarRef { var, .. } => traverse(var, pos, positions, best, depth + 1),
+        RholangNode::List { elements, remainder, .. } => {
             for elem in elements {
                 traverse(elem, pos, positions, best, depth + 1);
             }
@@ -1947,7 +1947,7 @@ fn traverse(
                 traverse(rem, pos, positions, best, depth + 1);
             }
         }
-        Node::Set { elements, remainder, .. } => {
+        RholangNode::Set { elements, remainder, .. } => {
             for elem in elements {
                 traverse(elem, pos, positions, best, depth + 1);
             }
@@ -1955,7 +1955,7 @@ fn traverse(
                 traverse(rem, pos, positions, best, depth + 1);
             }
         }
-        Node::Map { pairs, remainder, .. } => {
+        RholangNode::Map { pairs, remainder, .. } => {
             for (key, value) in pairs {
                 traverse(key, pos, positions, best, depth + 1);
                 traverse(value, pos, positions, best, depth + 1);
@@ -1964,18 +1964,18 @@ fn traverse(
                 traverse(rem, pos, positions, best, depth + 1);
             }
         }
-        Node::Tuple { elements, .. } => {
+        RholangNode::Tuple { elements, .. } => {
             for elem in elements {
                 traverse(elem, pos, positions, best, depth + 1);
             }
         }
-        Node::NameDecl { var, uri, .. } => {
+        RholangNode::NameDecl { var, uri, .. } => {
             traverse(var, pos, positions, best, depth + 1);
             if let Some(u) = uri {
                 traverse(u, pos, positions, best, depth + 1);
             }
         }
-        Node::Decl { names, names_remainder, procs, .. } => {
+        RholangNode::Decl { names, names_remainder, procs, .. } => {
             for name in names {
                 traverse(name, pos, positions, best, depth + 1);
             }
@@ -1986,7 +1986,7 @@ fn traverse(
                 traverse(proc, pos, positions, best, depth + 1);
             }
         }
-        Node::LinearBind { names, remainder, source, .. } => {
+        RholangNode::LinearBind { names, remainder, source, .. } => {
             for name in names {
                 traverse(name, pos, positions, best, depth + 1);
             }
@@ -1995,7 +1995,7 @@ fn traverse(
             }
             traverse(source, pos, positions, best, depth + 1);
         }
-        Node::RepeatedBind { names, remainder, source, .. } => {
+        RholangNode::RepeatedBind { names, remainder, source, .. } => {
             for name in names {
                 traverse(name, pos, positions, best, depth + 1);
             }
@@ -2004,7 +2004,7 @@ fn traverse(
             }
             traverse(source, pos, positions, best, depth + 1);
         }
-        Node::PeekBind { names, remainder, source, .. } => {
+        RholangNode::PeekBind { names, remainder, source, .. } => {
             for name in names {
                 traverse(name, pos, positions, best, depth + 1);
             }
@@ -2013,38 +2013,38 @@ fn traverse(
             }
             traverse(source, pos, positions, best, depth + 1);
         }
-        Node::ReceiveSendSource { name, .. } => traverse(name, pos, positions, best, depth + 1),
-        Node::SendReceiveSource { name, inputs, .. } => {
+        RholangNode::ReceiveSendSource { name, .. } => traverse(name, pos, positions, best, depth + 1),
+        RholangNode::SendReceiveSource { name, inputs, .. } => {
             traverse(name, pos, positions, best, depth + 1);
             for input in inputs {
                 traverse(input, pos, positions, best, depth + 1);
             }
         }
-        Node::Error { children, .. } => {
+        RholangNode::Error { children, .. } => {
             for child in children {
                 traverse(child, pos, positions, best, depth + 1);
             }
         }
-        Node::Disjunction { left, right, .. } => {
+        RholangNode::Disjunction { left, right, .. } => {
             traverse(left, pos, positions, best, depth + 1);
             traverse(right, pos, positions, best, depth + 1);
         }
-        Node::Conjunction { left, right, .. } => {
+        RholangNode::Conjunction { left, right, .. } => {
             traverse(left, pos, positions, best, depth + 1);
             traverse(right, pos, positions, best, depth + 1);
         }
-        Node::Negation { operand, .. } => traverse(operand, pos, positions, best, depth + 1),
-        Node::Unit { .. } => {},
+        RholangNode::Negation { operand, .. } => traverse(operand, pos, positions, best, depth + 1),
+        RholangNode::Unit { .. } => {},
         _ => {},
     }
 }
 
 pub fn find_node_at_position(
-    root: &Arc<Node>,
+    root: &Arc<RholangNode>,
     positions: &HashMap<usize, (Position, Position)>,
     position: Position,
-) -> Option<Arc<Node>> {
-    let mut best: Option<(Arc<Node>, Position, usize)> = None;
+) -> Option<Arc<RholangNode>> {
+    let mut best: Option<(Arc<RholangNode>, Position, usize)> = None;
     traverse(root, position, positions, &mut best, 0);
     if let Some(node) = best.map(|(node, _, _) | node) {
         debug!("Found best match");
@@ -2055,55 +2055,55 @@ pub fn find_node_at_position(
     }
 }
 
-impl Node {
+impl RholangNode {
     /// Returns the starting line number of the node within the source code.
     ///
     /// # Arguments
     /// * root - The root node of the IR tree, used for position computation.
-    pub fn start_line(&self, root: &Arc<Node>) -> usize {
+    pub fn start_line(&self, root: &Arc<RholangNode>) -> usize {
         let positions = compute_absolute_positions(root);
-        let key = self as *const Node as usize;
-        positions.get(&key).expect("Node not found").0.row
+        let key = self as *const RholangNode as usize;
+        positions.get(&key).expect("RholangNode not found").0.row
     }
 
     /// Returns the starting column number of the node within the source code.
     ///
     /// # Arguments
     /// * root - The root node of the IR tree, used for position computation.
-    pub fn start_column(&self, root: &Arc<Node>) -> usize {
+    pub fn start_column(&self, root: &Arc<RholangNode>) -> usize {
         let positions = compute_absolute_positions(root);
-        let key = self as *const Node as usize;
-        positions.get(&key).expect("Node not found").0.column
+        let key = self as *const RholangNode as usize;
+        positions.get(&key).expect("RholangNode not found").0.column
     }
 
     /// Returns the ending line number of the node within the source code.
     ///
     /// # Arguments
     /// * root - The root node of the IR tree, used for position computation.
-    pub fn end_line(&self, root: &Arc<Node>) -> usize {
+    pub fn end_line(&self, root: &Arc<RholangNode>) -> usize {
         let positions = compute_absolute_positions(root);
-        let key = self as *const Node as usize;
-        positions.get(&key).expect("Node not found").1.row
+        let key = self as *const RholangNode as usize;
+        positions.get(&key).expect("RholangNode not found").1.row
     }
 
     /// Returns the ending column number of the node within the source code.
     ///
     /// # Arguments
     /// * root - The root node of the IR tree, used for position computation.
-    pub fn end_column(&self, root: &Arc<Node>) -> usize {
+    pub fn end_column(&self, root: &Arc<RholangNode>) -> usize {
         let positions = compute_absolute_positions(root);
-        let key = self as *const Node as usize;
-        positions.get(&key).expect("Node not found").1.column
+        let key = self as *const RholangNode as usize;
+        positions.get(&key).expect("RholangNode not found").1.column
     }
 
     /// Returns the byte offset of the node’s start position in the source code.
     ///
     /// # Arguments
     /// * root - The root node of the IR tree, used for position computation.
-    pub fn position(&self, root: &Arc<Node>) -> usize {
+    pub fn position(&self, root: &Arc<RholangNode>) -> usize {
         let positions = compute_absolute_positions(root);
-        let key = self as *const Node as usize;
-        positions.get(&key).expect("Node not found").0.byte
+        let key = self as *const RholangNode as usize;
+        positions.get(&key).expect("RholangNode not found").0.byte
     }
 
     /// Returns the length of the node’s text in bytes.
@@ -2115,20 +2115,20 @@ impl Node {
     ///
     /// # Arguments
     /// * root - The root node of the IR tree, used for position computation.
-    pub fn absolute_start(&self, root: &Arc<Node>) -> Position {
+    pub fn absolute_start(&self, root: &Arc<RholangNode>) -> Position {
         let positions = compute_absolute_positions(root);
-        let key = self as *const Node as usize;
-        positions.get(&key).expect("Node not found").0
+        let key = self as *const RholangNode as usize;
+        positions.get(&key).expect("RholangNode not found").0
     }
 
     /// Returns the absolute end position of the node in the source code.
     ///
     /// # Arguments
     /// * root - The root node of the IR tree, used for position computation.
-    pub fn absolute_end(&self, root: &Arc<Node>) -> Position {
+    pub fn absolute_end(&self, root: &Arc<RholangNode>) -> Position {
         let positions = compute_absolute_positions(root);
-        let key = self as *const Node as usize;
-        positions.get(&key).expect("Node not found").1
+        let key = self as *const RholangNode as usize;
+        positions.get(&key).expect("RholangNode not found").1
     }
 
     /// Creates a new node with the same fields but a different NodeBase.
@@ -2137,41 +2137,41 @@ impl Node {
     /// * new_base - The new NodeBase to apply to the node.
     ///
     /// # Returns
-    /// A new Arc<Node> with the updated base.
-    pub fn with_base(&self, new_base: NodeBase) -> Arc<Node> {
+    /// A new Arc<RholangNode> with the updated base.
+    pub fn with_base(&self, new_base: NodeBase) -> Arc<RholangNode> {
         match self {
-            Node::Par {
+            RholangNode::Par {
                 metadata,
                 left,
                 right,
                 ..
-            } => Arc::new(Node::Par {
+            } => Arc::new(RholangNode::Par {
                 base: new_base,
                 left: left.clone(),
                 right: right.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::SendSync {
+            RholangNode::SendSync {
                 metadata,
                 channel,
                 inputs,
                 cont,
                 ..
-            } => Arc::new(Node::SendSync {
+            } => Arc::new(RholangNode::SendSync {
                 base: new_base,
                 channel: channel.clone(),
                 inputs: inputs.clone(),
                 cont: cont.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Send {
+            RholangNode::Send {
                 metadata,
                 channel,
                 send_type,
                 send_type_delta,
                 inputs,
                 ..
-            } => Arc::new(Node::Send {
+            } => Arc::new(RholangNode::Send {
                 base: new_base,
                 channel: channel.clone(),
                 send_type: send_type.clone(),
@@ -2179,68 +2179,68 @@ impl Node {
                 inputs: inputs.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::New { decls, proc, metadata, .. } => Arc::new(Node::New {
+            RholangNode::New { decls, proc, metadata, .. } => Arc::new(RholangNode::New {
                 base: new_base,
                 decls: decls.clone(),
                 proc: proc.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::IfElse {
+            RholangNode::IfElse {
                 condition,
                 consequence,
                 alternative,
                 metadata,
                 ..
-            } => Arc::new(Node::IfElse {
+            } => Arc::new(RholangNode::IfElse {
                 base: new_base,
                 condition: condition.clone(),
                 consequence: consequence.clone(),
                 alternative: alternative.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Let { decls, proc, metadata, .. } => Arc::new(Node::Let {
+            RholangNode::Let { decls, proc, metadata, .. } => Arc::new(RholangNode::Let {
                 base: new_base,
                 decls: decls.clone(),
                 proc: proc.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Bundle {
+            RholangNode::Bundle {
                 bundle_type,
                 proc,
                 metadata,
                 ..
-            } => Arc::new(Node::Bundle {
+            } => Arc::new(RholangNode::Bundle {
                 base: new_base,
                 bundle_type: bundle_type.clone(),
                 proc: proc.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Match {
+            RholangNode::Match {
                 expression,
                 cases,
                 metadata,
                 ..
-            } => Arc::new(Node::Match {
+            } => Arc::new(RholangNode::Match {
                 base: new_base,
                 expression: expression.clone(),
                 cases: cases.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Choice {
+            RholangNode::Choice {
                 branches, metadata, ..
-            } => Arc::new(Node::Choice {
+            } => Arc::new(RholangNode::Choice {
                 base: new_base,
                 branches: branches.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Contract {
+            RholangNode::Contract {
                 name,
                 formals,
                 formals_remainder,
                 proc,
                 metadata,
                 ..
-            } => Arc::new(Node::Contract {
+            } => Arc::new(RholangNode::Contract {
                 base: new_base,
                 name: name.clone(),
                 formals: formals.clone(),
@@ -2248,268 +2248,268 @@ impl Node {
                 proc: proc.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Input {
+            RholangNode::Input {
                 receipts, proc, metadata, ..
-            } => Arc::new(Node::Input {
+            } => Arc::new(RholangNode::Input {
                 base: new_base,
                 receipts: receipts.clone(),
                 proc: proc.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Block { proc, metadata, .. } => Arc::new(Node::Block {
+            RholangNode::Block { proc, metadata, .. } => Arc::new(RholangNode::Block {
                 base: new_base,
                 proc: proc.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Parenthesized { expr, metadata, .. } => Arc::new(Node::Parenthesized {
+            RholangNode::Parenthesized { expr, metadata, .. } => Arc::new(RholangNode::Parenthesized {
                 base: new_base,
                 expr: expr.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::BinOp {
+            RholangNode::BinOp {
                 op,
                 left,
                 right,
                 metadata,
                 ..
-            } => Arc::new(Node::BinOp {
+            } => Arc::new(RholangNode::BinOp {
                 base: new_base,
                 op: op.clone(),
                 left: left.clone(),
                 right: right.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::UnaryOp {
+            RholangNode::UnaryOp {
                 op, operand, metadata, ..
-            } => Arc::new(Node::UnaryOp {
+            } => Arc::new(RholangNode::UnaryOp {
                 base: new_base,
                 op: op.clone(),
                 operand: operand.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Method {
+            RholangNode::Method {
                 receiver,
                 name,
                 args,
                 metadata,
                 ..
-            } => Arc::new(Node::Method {
+            } => Arc::new(RholangNode::Method {
                 base: new_base,
                 receiver: receiver.clone(),
                 name: name.clone(),
                 args: args.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Eval { name, metadata, .. } => Arc::new(Node::Eval {
+            RholangNode::Eval { name, metadata, .. } => Arc::new(RholangNode::Eval {
                 base: new_base,
                 name: name.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Quote {
+            RholangNode::Quote {
                 quotable, metadata, ..
-            } => Arc::new(Node::Quote {
+            } => Arc::new(RholangNode::Quote {
                 base: new_base,
                 quotable: quotable.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::VarRef {
+            RholangNode::VarRef {
                 kind, var, metadata, ..
-            } => Arc::new(Node::VarRef {
+            } => Arc::new(RholangNode::VarRef {
                 base: new_base,
                 kind: kind.clone(),
                 var: var.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::BoolLiteral { value, metadata, .. } => Arc::new(Node::BoolLiteral {
+            RholangNode::BoolLiteral { value, metadata, .. } => Arc::new(RholangNode::BoolLiteral {
                 base: new_base,
                 value: *value,
                 metadata: metadata.clone(),
             }),
-            Node::LongLiteral { value, metadata, .. } => Arc::new(Node::LongLiteral {
+            RholangNode::LongLiteral { value, metadata, .. } => Arc::new(RholangNode::LongLiteral {
                 base: new_base,
                 value: *value,
                 metadata: metadata.clone(),
             }),
-            Node::StringLiteral { value, metadata, .. } => Arc::new(Node::StringLiteral {
+            RholangNode::StringLiteral { value, metadata, .. } => Arc::new(RholangNode::StringLiteral {
                 base: new_base,
                 value: value.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::UriLiteral { value, metadata, .. } => Arc::new(Node::UriLiteral {
+            RholangNode::UriLiteral { value, metadata, .. } => Arc::new(RholangNode::UriLiteral {
                 base: new_base,
                 value: value.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Nil { metadata, .. } => Arc::new(Node::Nil {
+            RholangNode::Nil { metadata, .. } => Arc::new(RholangNode::Nil {
                 base: new_base,
                 metadata: metadata.clone(),
             }),
-            Node::List {
+            RholangNode::List {
                 elements,
                 remainder,
                 metadata,
                 ..
-            } => Arc::new(Node::List {
+            } => Arc::new(RholangNode::List {
                 base: new_base,
                 elements: elements.clone(),
                 remainder: remainder.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Set {
+            RholangNode::Set {
                 elements,
                 remainder,
                 metadata,
                 ..
-            } => Arc::new(Node::Set {
+            } => Arc::new(RholangNode::Set {
                 base: new_base,
                 elements: elements.clone(),
                 remainder: remainder.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Map {
+            RholangNode::Map {
                 pairs,
                 remainder,
                 metadata,
                 ..
-            } => Arc::new(Node::Map {
+            } => Arc::new(RholangNode::Map {
                 base: new_base,
                 pairs: pairs.clone(),
                 remainder: remainder.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Tuple {
+            RholangNode::Tuple {
                 elements, metadata, ..
-            } => Arc::new(Node::Tuple {
+            } => Arc::new(RholangNode::Tuple {
                 base: new_base,
                 elements: elements.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Var { name, metadata, .. } => Arc::new(Node::Var {
+            RholangNode::Var { name, metadata, .. } => Arc::new(RholangNode::Var {
                 base: new_base,
                 name: name.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::NameDecl {
+            RholangNode::NameDecl {
                 var, uri, metadata, ..
-            } => Arc::new(Node::NameDecl {
+            } => Arc::new(RholangNode::NameDecl {
                 base: new_base,
                 var: var.clone(),
                 uri: uri.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Decl {
+            RholangNode::Decl {
                 names,
                 names_remainder,
                 procs,
                 metadata,
                 ..
-            } => Arc::new(Node::Decl {
+            } => Arc::new(RholangNode::Decl {
                 base: new_base,
                 names: names.clone(),
                 names_remainder: names_remainder.clone(),
                 procs: procs.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::LinearBind {
+            RholangNode::LinearBind {
                 names,
                 remainder,
                 source,
                 metadata,
                 ..
-            } => Arc::new(Node::LinearBind {
+            } => Arc::new(RholangNode::LinearBind {
                 base: new_base,
                 names: names.clone(),
                 remainder: remainder.clone(),
                 source: source.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::RepeatedBind {
+            RholangNode::RepeatedBind {
                 names,
                 remainder,
                 source,
                 metadata,
                 ..
-            } => Arc::new(Node::RepeatedBind {
+            } => Arc::new(RholangNode::RepeatedBind {
                 base: new_base,
                 names: names.clone(),
                 remainder: remainder.clone(),
                 source: source.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::PeekBind {
+            RholangNode::PeekBind {
                 names,
                 remainder,
                 source,
                 metadata,
                 ..
-            } => Arc::new(Node::PeekBind {
+            } => Arc::new(RholangNode::PeekBind {
                 base: new_base,
                 names: names.clone(),
                 remainder: remainder.clone(),
                 source: source.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Comment { kind, metadata, .. } => Arc::new(Node::Comment {
+            RholangNode::Comment { kind, metadata, .. } => Arc::new(RholangNode::Comment {
                 base: new_base,
                 kind: kind.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Wildcard { metadata, .. } => Arc::new(Node::Wildcard {
+            RholangNode::Wildcard { metadata, .. } => Arc::new(RholangNode::Wildcard {
                 base: new_base,
                 metadata: metadata.clone(),
             }),
-            Node::SimpleType { value, metadata, .. } => Arc::new(Node::SimpleType {
+            RholangNode::SimpleType { value, metadata, .. } => Arc::new(RholangNode::SimpleType {
                 base: new_base,
                 value: value.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::ReceiveSendSource { name, metadata, .. } => Arc::new(Node::ReceiveSendSource {
+            RholangNode::ReceiveSendSource { name, metadata, .. } => Arc::new(RholangNode::ReceiveSendSource {
                 base: new_base,
                 name: name.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::SendReceiveSource {
+            RholangNode::SendReceiveSource {
                 name,
                 inputs,
                 metadata,
                 ..
-            } => Arc::new(Node::SendReceiveSource {
+            } => Arc::new(RholangNode::SendReceiveSource {
                 base: new_base,
                 name: name.clone(),
                 inputs: inputs.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Error {
+            RholangNode::Error {
                 children, metadata, ..
-            } => Arc::new(Node::Error {
+            } => Arc::new(RholangNode::Error {
                 base: new_base,
                 children: children.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Disjunction {
+            RholangNode::Disjunction {
                 left, right, metadata, ..
-            } => Arc::new(Node::Disjunction {
+            } => Arc::new(RholangNode::Disjunction {
                 base: new_base,
                 left: left.clone(),
                 right: right.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Conjunction {
+            RholangNode::Conjunction {
                 left, right, metadata, ..
-            } => Arc::new(Node::Conjunction {
+            } => Arc::new(RholangNode::Conjunction {
                 base: new_base,
                 left: left.clone(),
                 right: right.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Negation {
+            RholangNode::Negation {
                 operand, metadata, ..
-            } => Arc::new(Node::Negation {
+            } => Arc::new(RholangNode::Negation {
                 base: new_base,
                 operand: operand.clone(),
                 metadata: metadata.clone(),
             }),
-            Node::Unit { metadata, .. } => Arc::new(Node::Unit {
+            RholangNode::Unit { metadata, .. } => Arc::new(RholangNode::Unit {
                 base: new_base,
                 metadata: metadata.clone(),
             }),
@@ -2528,24 +2528,24 @@ impl Node {
             "or", "and", "not", "matches",
         ];
         match self {
-            Node::Send { channel, .. } | Node::SendSync { channel, .. } => {
-                if let Node::Var { name, .. } = &**channel {
+            RholangNode::Send { channel, .. } | RholangNode::SendSync { channel, .. } => {
+                if let RholangNode::Var { name, .. } = &**channel {
                     if RESERVED_KEYWORDS.contains(&name.as_str()) {
                         return Err(format!("Channel name '{name}' is a reserved keyword"));
                     }
                 }
             }
-            Node::Par { left, right, .. } => {
+            RholangNode::Par { left, right, .. } => {
                 left.validate()?;
                 right.validate()?;
             }
-            Node::New { decls, proc, .. } => {
+            RholangNode::New { decls, proc, .. } => {
                 for decl in decls {
                     decl.validate()?;
                 }
                 proc.validate()?;
             }
-            Node::IfElse {
+            RholangNode::IfElse {
                 condition,
                 consequence,
                 alternative,
@@ -2557,19 +2557,19 @@ impl Node {
                     alt.validate()?;
                 }
             }
-            Node::Let { decls, proc, .. } => {
+            RholangNode::Let { decls, proc, .. } => {
                 for decl in decls {
                     decl.validate()?;
                 }
                 proc.validate()?;
             }
-            Node::Bundle { proc, .. } => proc.validate()?,
-            Node::Match {
+            RholangNode::Bundle { proc, .. } => proc.validate()?,
+            RholangNode::Match {
                 expression, cases, ..
             } => {
                 expression.validate()?;
                 for (pattern, proc) in cases {
-                    if let Node::Var { name, .. } = &**pattern {
+                    if let RholangNode::Var { name, .. } = &**pattern {
                         if RESERVED_KEYWORDS.contains(&name.as_str()) {
                             let pos = pattern.absolute_start(&Arc::new(self.clone()));
                             return Err(format!(
@@ -2582,15 +2582,15 @@ impl Node {
                     proc.validate()?;
                 }
             }
-            Node::Choice { branches, .. } => {
+            RholangNode::Choice { branches, .. } => {
                 for (inputs, proc) in branches {
                     for input in inputs {
-                        if let Node::LinearBind {
+                        if let RholangNode::LinearBind {
                             names, remainder, ..
                         } = &**input
                         {
                             for name in names {
-                                if let Node::Var { name: var_name, .. } = &**name {
+                                if let RholangNode::Var { name: var_name, .. } = &**name {
                                     if RESERVED_KEYWORDS.contains(&var_name.as_str()) {
                                         let pos = name.absolute_start(&Arc::new(self.clone()));
                                         return Err(format!(
@@ -2609,7 +2609,7 @@ impl Node {
                     proc.validate()?;
                 }
             }
-            Node::Contract {
+            RholangNode::Contract {
                 name,
                 formals,
                 formals_remainder,
@@ -2625,7 +2625,7 @@ impl Node {
                 }
                 proc.validate()?;
             }
-            Node::Input { receipts, proc, .. } => {
+            RholangNode::Input { receipts, proc, .. } => {
                 for receipt in receipts {
                     for bind in receipt {
                         bind.validate()?;
@@ -2633,23 +2633,23 @@ impl Node {
                 }
                 proc.validate()?;
             }
-            Node::Block { proc, .. } => proc.validate()?,
-            Node::Parenthesized { expr, .. } => expr.validate()?,
-            Node::BinOp { left, right, .. } => {
+            RholangNode::Block { proc, .. } => proc.validate()?,
+            RholangNode::Parenthesized { expr, .. } => expr.validate()?,
+            RholangNode::BinOp { left, right, .. } => {
                 left.validate()?;
                 right.validate()?;
             }
-            Node::UnaryOp { operand, .. } => operand.validate()?,
-            Node::Method { receiver, args, .. } => {
+            RholangNode::UnaryOp { operand, .. } => operand.validate()?,
+            RholangNode::Method { receiver, args, .. } => {
                 receiver.validate()?;
                 for arg in args {
                     arg.validate()?;
                 }
             }
-            Node::Eval { name, .. } => name.validate()?,
-            Node::Quote { quotable, .. } => quotable.validate()?,
-            Node::VarRef { var, .. } => var.validate()?,
-            Node::List {
+            RholangNode::Eval { name, .. } => name.validate()?,
+            RholangNode::Quote { quotable, .. } => quotable.validate()?,
+            RholangNode::VarRef { var, .. } => var.validate()?,
+            RholangNode::List {
                 elements,
                 remainder,
                 ..
@@ -2661,7 +2661,7 @@ impl Node {
                     rem.validate()?;
                 }
             }
-            Node::Set {
+            RholangNode::Set {
                 elements,
                 remainder,
                 ..
@@ -2673,7 +2673,7 @@ impl Node {
                     rem.validate()?;
                 }
             }
-            Node::Map { pairs, remainder, .. } => {
+            RholangNode::Map { pairs, remainder, .. } => {
                 for (key, value) in pairs {
                     key.validate()?;
                     value.validate()?;
@@ -2682,18 +2682,18 @@ impl Node {
                     rem.validate()?;
                 }
             }
-            Node::Tuple { elements, .. } => {
+            RholangNode::Tuple { elements, .. } => {
                 for elem in elements {
                     elem.validate()?;
                 }
             }
-            Node::NameDecl { var, uri, .. } => {
+            RholangNode::NameDecl { var, uri, .. } => {
                 var.validate()?;
                 if let Some(u) = uri {
                     u.validate()?;
                 }
             }
-            Node::Decl {
+            RholangNode::Decl {
                 names,
                 names_remainder,
                 procs,
@@ -2709,7 +2709,7 @@ impl Node {
                     proc.validate()?;
                 }
             }
-            Node::LinearBind {
+            RholangNode::LinearBind {
                 names,
                 remainder,
                 source,
@@ -2723,7 +2723,7 @@ impl Node {
                 }
                 source.validate()?;
             }
-            Node::RepeatedBind {
+            RholangNode::RepeatedBind {
                 names,
                 remainder,
                 source,
@@ -2737,7 +2737,7 @@ impl Node {
                 }
                 source.validate()?;
             }
-            Node::PeekBind {
+            RholangNode::PeekBind {
                 names,
                 remainder,
                 source,
@@ -2751,28 +2751,28 @@ impl Node {
                 }
                 source.validate()?;
             }
-            Node::ReceiveSendSource { name, .. } => name.validate()?,
-            Node::SendReceiveSource { name, inputs, .. } => {
+            RholangNode::ReceiveSendSource { name, .. } => name.validate()?,
+            RholangNode::SendReceiveSource { name, inputs, .. } => {
                 name.validate()?;
                 for input in inputs {
                     input.validate()?;
                 }
             }
-            Node::Error { children, .. } => {
+            RholangNode::Error { children, .. } => {
                 for child in children {
                     child.validate()?;
                 }
             }
-            Node::Disjunction { left, right, .. } => {
+            RholangNode::Disjunction { left, right, .. } => {
                 left.validate()?;
                 right.validate()?;
             }
-            Node::Conjunction { left, right, .. } => {
+            RholangNode::Conjunction { left, right, .. } => {
                 left.validate()?;
                 right.validate()?;
             }
-            Node::Negation { operand, .. } => operand.validate()?,
-            Node::Unit { .. } => {},
+            RholangNode::Negation { operand, .. } => operand.validate()?,
+            RholangNode::Unit { .. } => {},
             _ => {},
         }
         Ok(())
@@ -2784,36 +2784,36 @@ impl Node {
     /// * new_metadata - The new metadata to apply to the node.
     ///
     /// # Returns
-    /// A new Arc<Node> with the updated metadata.
-    pub fn with_metadata(&self, new_metadata: Option<Arc<Metadata>>) -> Arc<Node> {
+    /// A new Arc<RholangNode> with the updated metadata.
+    pub fn with_metadata(&self, new_metadata: Option<Arc<Metadata>>) -> Arc<RholangNode> {
         match self {
-            Node::Par { base, left, right, .. } => Arc::new(Node::Par {
+            RholangNode::Par { base, left, right, .. } => Arc::new(RholangNode::Par {
                 base: base.clone(),
                 left: left.clone(),
                 right: right.clone(),
                 metadata: new_metadata,
             }),
-            Node::SendSync {
+            RholangNode::SendSync {
                 base,
                 channel,
                 inputs,
                 cont,
                 ..
-            } => Arc::new(Node::SendSync {
+            } => Arc::new(RholangNode::SendSync {
                 base: base.clone(),
                 channel: channel.clone(),
                 inputs: inputs.clone(),
                 cont: cont.clone(),
                 metadata: new_metadata,
             }),
-            Node::Send {
+            RholangNode::Send {
                 base,
                 channel,
                 send_type,
                 send_type_delta,
                 inputs,
                 ..
-            } => Arc::new(Node::Send {
+            } => Arc::new(RholangNode::Send {
                 base: base.clone(),
                 channel: channel.clone(),
                 send_type: send_type.clone(),
@@ -2821,60 +2821,60 @@ impl Node {
                 inputs: inputs.clone(),
                 metadata: new_metadata,
             }),
-            Node::New { base, decls, proc, .. } => Arc::new(Node::New {
+            RholangNode::New { base, decls, proc, .. } => Arc::new(RholangNode::New {
                 base: base.clone(),
                 decls: decls.clone(),
                 proc: proc.clone(),
                 metadata: new_metadata,
             }),
-            Node::IfElse {
+            RholangNode::IfElse {
                 base,
                 condition,
                 consequence,
                 alternative,
                 ..
-            } => Arc::new(Node::IfElse {
+            } => Arc::new(RholangNode::IfElse {
                 base: base.clone(),
                 condition: condition.clone(),
                 consequence: consequence.clone(),
                 alternative: alternative.clone(),
                 metadata: new_metadata,
             }),
-            Node::Let { base, decls, proc, .. } => Arc::new(Node::Let {
+            RholangNode::Let { base, decls, proc, .. } => Arc::new(RholangNode::Let {
                 base: base.clone(),
                 decls: decls.clone(),
                 proc: proc.clone(),
                 metadata: new_metadata,
             }),
-            Node::Bundle {
+            RholangNode::Bundle {
                 base, bundle_type, proc, ..
-            } => Arc::new(Node::Bundle {
+            } => Arc::new(RholangNode::Bundle {
                 base: base.clone(),
                 bundle_type: bundle_type.clone(),
                 proc: proc.clone(),
                 metadata: new_metadata,
             }),
-            Node::Match {
+            RholangNode::Match {
                 base, expression, cases, ..
-            } => Arc::new(Node::Match {
+            } => Arc::new(RholangNode::Match {
                 base: base.clone(),
                 expression: expression.clone(),
                 cases: cases.clone(),
                 metadata: new_metadata,
             }),
-            Node::Choice { base, branches, .. } => Arc::new(Node::Choice {
+            RholangNode::Choice { base, branches, .. } => Arc::new(RholangNode::Choice {
                 base: base.clone(),
                 branches: branches.clone(),
                 metadata: new_metadata,
             }),
-            Node::Contract {
+            RholangNode::Contract {
                 base,
                 name,
                 formals,
                 formals_remainder,
                 proc,
                 ..
-            } => Arc::new(Node::Contract {
+            } => Arc::new(RholangNode::Contract {
                 base: base.clone(),
                 name: name.clone(),
                 formals: formals.clone(),
@@ -2882,259 +2882,259 @@ impl Node {
                 proc: proc.clone(),
                 metadata: new_metadata,
             }),
-            Node::Input {
+            RholangNode::Input {
                 base, receipts, proc, ..
-            } => Arc::new(Node::Input {
+            } => Arc::new(RholangNode::Input {
                 base: base.clone(),
                 receipts: receipts.clone(),
                 proc: proc.clone(),
                 metadata: new_metadata,
             }),
-            Node::Block { base, proc, .. } => Arc::new(Node::Block {
+            RholangNode::Block { base, proc, .. } => Arc::new(RholangNode::Block {
                 base: base.clone(),
                 proc: proc.clone(),
                 metadata: new_metadata,
             }),
-            Node::Parenthesized { base, expr, .. } => Arc::new(Node::Parenthesized {
+            RholangNode::Parenthesized { base, expr, .. } => Arc::new(RholangNode::Parenthesized {
                 base: base.clone(),
                 expr: expr.clone(),
                 metadata: new_metadata,
             }),
-            Node::BinOp {
+            RholangNode::BinOp {
                 base,
                 op,
                 left,
                 right,
                 ..
-            } => Arc::new(Node::BinOp {
+            } => Arc::new(RholangNode::BinOp {
                 base: base.clone(),
                 op: op.clone(),
                 left: left.clone(),
                 right: right.clone(),
                 metadata: new_metadata,
             }),
-            Node::UnaryOp {
+            RholangNode::UnaryOp {
                 base, op, operand, ..
-            } => Arc::new(Node::UnaryOp {
+            } => Arc::new(RholangNode::UnaryOp {
                 base: base.clone(),
                 op: op.clone(),
                 operand: operand.clone(),
                 metadata: new_metadata,
             }),
-            Node::Method {
+            RholangNode::Method {
                 base,
                 receiver,
                 name,
                 args,
                 ..
-            } => Arc::new(Node::Method {
+            } => Arc::new(RholangNode::Method {
                 base: base.clone(),
                 receiver: receiver.clone(),
                 name: name.clone(),
                 args: args.clone(),
                 metadata: new_metadata,
             }),
-            Node::Eval { base, name, .. } => Arc::new(Node::Eval {
+            RholangNode::Eval { base, name, .. } => Arc::new(RholangNode::Eval {
                 base: base.clone(),
                 name: name.clone(),
                 metadata: new_metadata,
             }),
-            Node::Quote { base, quotable, .. } => Arc::new(Node::Quote {
+            RholangNode::Quote { base, quotable, .. } => Arc::new(RholangNode::Quote {
                 base: base.clone(),
                 quotable: quotable.clone(),
                 metadata: new_metadata,
             }),
-            Node::VarRef {
+            RholangNode::VarRef {
                 base, kind, var, ..
-            } => Arc::new(Node::VarRef {
+            } => Arc::new(RholangNode::VarRef {
                 base: base.clone(),
                 kind: kind.clone(),
                 var: var.clone(),
                 metadata: new_metadata,
             }),
-            Node::BoolLiteral { base, value, .. } => Arc::new(Node::BoolLiteral {
+            RholangNode::BoolLiteral { base, value, .. } => Arc::new(RholangNode::BoolLiteral {
                 base: base.clone(),
                 value: *value,
                 metadata: new_metadata,
             }),
-            Node::LongLiteral { base, value, .. } => Arc::new(Node::LongLiteral {
+            RholangNode::LongLiteral { base, value, .. } => Arc::new(RholangNode::LongLiteral {
                 base: base.clone(),
                 value: *value,
                 metadata: new_metadata,
             }),
-            Node::StringLiteral { base, value, .. } => Arc::new(Node::StringLiteral {
+            RholangNode::StringLiteral { base, value, .. } => Arc::new(RholangNode::StringLiteral {
                 base: base.clone(),
                 value: value.clone(),
                 metadata: new_metadata,
             }),
-            Node::UriLiteral { base, value, .. } => Arc::new(Node::UriLiteral {
+            RholangNode::UriLiteral { base, value, .. } => Arc::new(RholangNode::UriLiteral {
                 base: base.clone(),
                 value: value.clone(),
                 metadata: new_metadata,
             }),
-            Node::Nil { base, .. } => Arc::new(Node::Nil {
+            RholangNode::Nil { base, .. } => Arc::new(RholangNode::Nil {
                 base: base.clone(),
                 metadata: new_metadata,
             }),
-            Node::List {
+            RholangNode::List {
                 base,
                 elements,
                 remainder,
                 ..
-            } => Arc::new(Node::List {
+            } => Arc::new(RholangNode::List {
                 base: base.clone(),
                 elements: elements.clone(),
                 remainder: remainder.clone(),
                 metadata: new_metadata,
             }),
-            Node::Set {
+            RholangNode::Set {
                 base,
                 elements,
                 remainder,
                 ..
-            } => Arc::new(Node::Set {
+            } => Arc::new(RholangNode::Set {
                 base: base.clone(),
                 elements: elements.clone(),
                 remainder: remainder.clone(),
                 metadata: new_metadata,
             }),
-            Node::Map {
+            RholangNode::Map {
                 base,
                 pairs,
                 remainder,
                 ..
-            } => Arc::new(Node::Map {
+            } => Arc::new(RholangNode::Map {
                 base: base.clone(),
                 pairs: pairs.clone(),
                 remainder: remainder.clone(),
                 metadata: new_metadata,
             }),
-            Node::Tuple { base, elements, .. } => Arc::new(Node::Tuple {
+            RholangNode::Tuple { base, elements, .. } => Arc::new(RholangNode::Tuple {
                 base: base.clone(),
                 elements: elements.clone(),
                 metadata: new_metadata,
             }),
-            Node::Var { base, name, .. } => Arc::new(Node::Var {
+            RholangNode::Var { base, name, .. } => Arc::new(RholangNode::Var {
                 base: base.clone(),
                 name: name.clone(),
                 metadata: new_metadata,
             }),
-            Node::NameDecl {
+            RholangNode::NameDecl {
                 base, var, uri, ..
-            } => Arc::new(Node::NameDecl {
+            } => Arc::new(RholangNode::NameDecl {
                 base: base.clone(),
                 var: var.clone(),
                 uri: uri.clone(),
                 metadata: new_metadata,
             }),
-            Node::Decl {
+            RholangNode::Decl {
                 base,
                 names,
                 names_remainder,
                 procs,
                 ..
-            } => Arc::new(Node::Decl {
+            } => Arc::new(RholangNode::Decl {
                 base: base.clone(),
                 names: names.clone(),
                 names_remainder: names_remainder.clone(),
                 procs: procs.clone(),
                 metadata: new_metadata,
             }),
-            Node::LinearBind {
+            RholangNode::LinearBind {
                 base,
                 names,
                 remainder,
                 source,
                 ..
-            } => Arc::new(Node::LinearBind {
+            } => Arc::new(RholangNode::LinearBind {
                 base: base.clone(),
                 names: names.clone(),
                 remainder: remainder.clone(),
                 source: source.clone(),
                 metadata: new_metadata,
             }),
-            Node::RepeatedBind {
+            RholangNode::RepeatedBind {
                 base,
                 names,
                 remainder,
                 source,
                 ..
-            } => Arc::new(Node::RepeatedBind {
+            } => Arc::new(RholangNode::RepeatedBind {
                 base: base.clone(),
                 names: names.clone(),
                 remainder: remainder.clone(),
                 source: source.clone(),
                 metadata: new_metadata,
             }),
-            Node::PeekBind {
+            RholangNode::PeekBind {
                 base,
                 names,
                 remainder,
                 source,
                 ..
-            } => Arc::new(Node::PeekBind {
+            } => Arc::new(RholangNode::PeekBind {
                 base: base.clone(),
                 names: names.clone(),
                 remainder: remainder.clone(),
                 source: source.clone(),
                 metadata: new_metadata,
             }),
-            Node::Comment { base, kind, .. } => Arc::new(Node::Comment {
+            RholangNode::Comment { base, kind, .. } => Arc::new(RholangNode::Comment {
                 base: base.clone(),
                 kind: kind.clone(),
                 metadata: new_metadata,
             }),
-            Node::Wildcard { base, .. } => Arc::new(Node::Wildcard {
+            RholangNode::Wildcard { base, .. } => Arc::new(RholangNode::Wildcard {
                 base: base.clone(),
                 metadata: new_metadata,
             }),
-            Node::SimpleType { base, value, .. } => Arc::new(Node::SimpleType {
+            RholangNode::SimpleType { base, value, .. } => Arc::new(RholangNode::SimpleType {
                 base: base.clone(),
                 value: value.clone(),
                 metadata: new_metadata,
             }),
-            Node::ReceiveSendSource { base, name, .. } => Arc::new(Node::ReceiveSendSource {
+            RholangNode::ReceiveSendSource { base, name, .. } => Arc::new(RholangNode::ReceiveSendSource {
                 base: base.clone(),
                 name: name.clone(),
                 metadata: new_metadata,
             }),
-            Node::SendReceiveSource {
+            RholangNode::SendReceiveSource {
                 base, name, inputs, ..
-            } => Arc::new(Node::SendReceiveSource {
+            } => Arc::new(RholangNode::SendReceiveSource {
                 base: base.clone(),
                 name: name.clone(),
                 inputs: inputs.clone(),
                 metadata: new_metadata,
             }),
-            Node::Error {
+            RholangNode::Error {
                 base, children, ..
-            } => Arc::new(Node::Error {
+            } => Arc::new(RholangNode::Error {
                 base: base.clone(),
                 children: children.clone(),
                 metadata: new_metadata,
             }),
-            Node::Disjunction {
+            RholangNode::Disjunction {
                 base, left, right, ..
-            } => Arc::new(Node::Disjunction {
+            } => Arc::new(RholangNode::Disjunction {
                 base: base.clone(),
                 left: left.clone(),
                 right: right.clone(),
                 metadata: new_metadata,
             }),
-            Node::Conjunction {
+            RholangNode::Conjunction {
                 base, left, right, ..
-            } => Arc::new(Node::Conjunction {
+            } => Arc::new(RholangNode::Conjunction {
                 base: base.clone(),
                 left: left.clone(),
                 right: right.clone(),
                 metadata: new_metadata,
             }),
-            Node::Negation { base, operand, .. } => Arc::new(Node::Negation {
+            RholangNode::Negation { base, operand, .. } => Arc::new(RholangNode::Negation {
                 base: base.clone(),
                 operand: operand.clone(),
                 metadata: new_metadata,
             }),
-            Node::Unit { base, .. } => Arc::new(Node::Unit {
+            RholangNode::Unit { base, .. } => Arc::new(RholangNode::Unit {
                 base: base.clone(),
                 metadata: new_metadata,
             }),
@@ -3143,7 +3143,7 @@ impl Node {
 
     /// Returns the textual representation of the node by slicing the Rope.
     /// The slice is based on the node's absolute start and end byte offsets in the source.
-    pub fn text<'a>(&self, rope: &'a Rope, root: &Arc<Node>) -> RopeSlice<'a> {
+    pub fn text<'a>(&self, rope: &'a Rope, root: &Arc<RholangNode>) -> RopeSlice<'a> {
         let start = self.absolute_start(root).byte;
         let end = self.absolute_end(root).byte;
 
@@ -3197,201 +3197,201 @@ impl Node {
     /// Returns a reference to the node’s NodeBase.
     pub fn base(&self) -> &NodeBase {
         match self {
-            Node::Par { base, .. } => base,
-            Node::SendSync { base, .. } => base,
-            Node::Send { base, .. } => base,
-            Node::New { base, .. } => base,
-            Node::IfElse { base, .. } => base,
-            Node::Let { base, .. } => base,
-            Node::Bundle { base, .. } => base,
-            Node::Match { base, .. } => base,
-            Node::Choice { base, .. } => base,
-            Node::Contract { base, .. } => base,
-            Node::Input { base, .. } => base,
-            Node::Block { base, .. } => base,
-            Node::Parenthesized { base, .. } => base,
-            Node::BinOp { base, .. } => base,
-            Node::UnaryOp { base, .. } => base,
-            Node::Method { base, .. } => base,
-            Node::Eval { base, .. } => base,
-            Node::Quote { base, .. } => base,
-            Node::VarRef { base, .. } => base,
-            Node::BoolLiteral { base, .. } => base,
-            Node::LongLiteral { base, .. } => base,
-            Node::StringLiteral { base, .. } => base,
-            Node::UriLiteral { base, .. } => base,
-            Node::Nil { base, .. } => base,
-            Node::List { base, .. } => base,
-            Node::Set { base, .. } => base,
-            Node::Map { base, .. } => base,
-            Node::Tuple { base, .. } => base,
-            Node::Var { base, .. } => base,
-            Node::NameDecl { base, .. } => base,
-            Node::Decl { base, .. } => base,
-            Node::LinearBind { base, .. } => base,
-            Node::RepeatedBind { base, .. } => base,
-            Node::PeekBind { base, .. } => base,
-            Node::Comment { base, .. } => base,
-            Node::Wildcard { base, .. } => base,
-            Node::SimpleType { base, .. } => base,
-            Node::ReceiveSendSource { base, .. } => base,
-            Node::SendReceiveSource { base, .. } => base,
-            Node::Error { base, .. } => base,
-            Node::Disjunction { base, .. } => base,
-            Node::Conjunction { base, .. } => base,
-            Node::Negation { base, .. } => base,
-            Node::Unit { base, .. } => base,
+            RholangNode::Par { base, .. } => base,
+            RholangNode::SendSync { base, .. } => base,
+            RholangNode::Send { base, .. } => base,
+            RholangNode::New { base, .. } => base,
+            RholangNode::IfElse { base, .. } => base,
+            RholangNode::Let { base, .. } => base,
+            RholangNode::Bundle { base, .. } => base,
+            RholangNode::Match { base, .. } => base,
+            RholangNode::Choice { base, .. } => base,
+            RholangNode::Contract { base, .. } => base,
+            RholangNode::Input { base, .. } => base,
+            RholangNode::Block { base, .. } => base,
+            RholangNode::Parenthesized { base, .. } => base,
+            RholangNode::BinOp { base, .. } => base,
+            RholangNode::UnaryOp { base, .. } => base,
+            RholangNode::Method { base, .. } => base,
+            RholangNode::Eval { base, .. } => base,
+            RholangNode::Quote { base, .. } => base,
+            RholangNode::VarRef { base, .. } => base,
+            RholangNode::BoolLiteral { base, .. } => base,
+            RholangNode::LongLiteral { base, .. } => base,
+            RholangNode::StringLiteral { base, .. } => base,
+            RholangNode::UriLiteral { base, .. } => base,
+            RholangNode::Nil { base, .. } => base,
+            RholangNode::List { base, .. } => base,
+            RholangNode::Set { base, .. } => base,
+            RholangNode::Map { base, .. } => base,
+            RholangNode::Tuple { base, .. } => base,
+            RholangNode::Var { base, .. } => base,
+            RholangNode::NameDecl { base, .. } => base,
+            RholangNode::Decl { base, .. } => base,
+            RholangNode::LinearBind { base, .. } => base,
+            RholangNode::RepeatedBind { base, .. } => base,
+            RholangNode::PeekBind { base, .. } => base,
+            RholangNode::Comment { base, .. } => base,
+            RholangNode::Wildcard { base, .. } => base,
+            RholangNode::SimpleType { base, .. } => base,
+            RholangNode::ReceiveSendSource { base, .. } => base,
+            RholangNode::SendReceiveSource { base, .. } => base,
+            RholangNode::Error { base, .. } => base,
+            RholangNode::Disjunction { base, .. } => base,
+            RholangNode::Conjunction { base, .. } => base,
+            RholangNode::Negation { base, .. } => base,
+            RholangNode::Unit { base, .. } => base,
         }
     }
 
     /// Returns an optional reference to the node’s metadata.
     pub fn metadata(&self) -> Option<&Arc<Metadata>> {
         match self {
-            Node::Par { metadata, .. } => metadata.as_ref(),
-            Node::SendSync { metadata, .. } => metadata.as_ref(),
-            Node::Send { metadata, .. } => metadata.as_ref(),
-            Node::New { metadata, .. } => metadata.as_ref(),
-            Node::IfElse { metadata, .. } => metadata.as_ref(),
-            Node::Let { metadata, .. } => metadata.as_ref(),
-            Node::Bundle { metadata, .. } => metadata.as_ref(),
-            Node::Match { metadata, .. } => metadata.as_ref(),
-            Node::Choice { metadata, .. } => metadata.as_ref(),
-            Node::Contract { metadata, .. } => metadata.as_ref(),
-            Node::Input { metadata, .. } => metadata.as_ref(),
-            Node::Block { metadata, .. } => metadata.as_ref(),
-            Node::Parenthesized { metadata, .. } => metadata.as_ref(),
-            Node::BinOp { metadata, .. } => metadata.as_ref(),
-            Node::UnaryOp { metadata, .. } => metadata.as_ref(),
-            Node::Method { metadata, .. } => metadata.as_ref(),
-            Node::Eval { metadata, .. } => metadata.as_ref(),
-            Node::Quote { metadata, .. } => metadata.as_ref(),
-            Node::VarRef { metadata, .. } => metadata.as_ref(),
-            Node::BoolLiteral { metadata, .. } => metadata.as_ref(),
-            Node::LongLiteral { metadata, .. } => metadata.as_ref(),
-            Node::StringLiteral { metadata, .. } => metadata.as_ref(),
-            Node::UriLiteral { metadata, .. } => metadata.as_ref(),
-            Node::Nil { metadata, .. } => metadata.as_ref(),
-            Node::List { metadata, .. } => metadata.as_ref(),
-            Node::Set { metadata, .. } => metadata.as_ref(),
-            Node::Map { metadata, .. } => metadata.as_ref(),
-            Node::Tuple { metadata, .. } => metadata.as_ref(),
-            Node::Var { metadata, .. } => metadata.as_ref(),
-            Node::NameDecl { metadata, .. } => metadata.as_ref(),
-            Node::Decl { metadata, .. } => metadata.as_ref(),
-            Node::LinearBind { metadata, .. } => metadata.as_ref(),
-            Node::RepeatedBind { metadata, .. } => metadata.as_ref(),
-            Node::PeekBind { metadata, .. } => metadata.as_ref(),
-            Node::Comment { metadata, .. } => metadata.as_ref(),
-            Node::Wildcard { metadata, .. } => metadata.as_ref(),
-            Node::SimpleType { metadata, .. } => metadata.as_ref(),
-            Node::ReceiveSendSource { metadata, .. } => metadata.as_ref(),
-            Node::SendReceiveSource { metadata, .. } => metadata.as_ref(),
-            Node::Error { metadata, .. } => metadata.as_ref(),
-            Node::Disjunction { metadata, .. } => metadata.as_ref(),
-            Node::Conjunction { metadata, .. } => metadata.as_ref(),
-            Node::Negation { metadata, .. } => metadata.as_ref(),
-            Node::Unit { metadata, .. } => metadata.as_ref(),
+            RholangNode::Par { metadata, .. } => metadata.as_ref(),
+            RholangNode::SendSync { metadata, .. } => metadata.as_ref(),
+            RholangNode::Send { metadata, .. } => metadata.as_ref(),
+            RholangNode::New { metadata, .. } => metadata.as_ref(),
+            RholangNode::IfElse { metadata, .. } => metadata.as_ref(),
+            RholangNode::Let { metadata, .. } => metadata.as_ref(),
+            RholangNode::Bundle { metadata, .. } => metadata.as_ref(),
+            RholangNode::Match { metadata, .. } => metadata.as_ref(),
+            RholangNode::Choice { metadata, .. } => metadata.as_ref(),
+            RholangNode::Contract { metadata, .. } => metadata.as_ref(),
+            RholangNode::Input { metadata, .. } => metadata.as_ref(),
+            RholangNode::Block { metadata, .. } => metadata.as_ref(),
+            RholangNode::Parenthesized { metadata, .. } => metadata.as_ref(),
+            RholangNode::BinOp { metadata, .. } => metadata.as_ref(),
+            RholangNode::UnaryOp { metadata, .. } => metadata.as_ref(),
+            RholangNode::Method { metadata, .. } => metadata.as_ref(),
+            RholangNode::Eval { metadata, .. } => metadata.as_ref(),
+            RholangNode::Quote { metadata, .. } => metadata.as_ref(),
+            RholangNode::VarRef { metadata, .. } => metadata.as_ref(),
+            RholangNode::BoolLiteral { metadata, .. } => metadata.as_ref(),
+            RholangNode::LongLiteral { metadata, .. } => metadata.as_ref(),
+            RholangNode::StringLiteral { metadata, .. } => metadata.as_ref(),
+            RholangNode::UriLiteral { metadata, .. } => metadata.as_ref(),
+            RholangNode::Nil { metadata, .. } => metadata.as_ref(),
+            RholangNode::List { metadata, .. } => metadata.as_ref(),
+            RholangNode::Set { metadata, .. } => metadata.as_ref(),
+            RholangNode::Map { metadata, .. } => metadata.as_ref(),
+            RholangNode::Tuple { metadata, .. } => metadata.as_ref(),
+            RholangNode::Var { metadata, .. } => metadata.as_ref(),
+            RholangNode::NameDecl { metadata, .. } => metadata.as_ref(),
+            RholangNode::Decl { metadata, .. } => metadata.as_ref(),
+            RholangNode::LinearBind { metadata, .. } => metadata.as_ref(),
+            RholangNode::RepeatedBind { metadata, .. } => metadata.as_ref(),
+            RholangNode::PeekBind { metadata, .. } => metadata.as_ref(),
+            RholangNode::Comment { metadata, .. } => metadata.as_ref(),
+            RholangNode::Wildcard { metadata, .. } => metadata.as_ref(),
+            RholangNode::SimpleType { metadata, .. } => metadata.as_ref(),
+            RholangNode::ReceiveSendSource { metadata, .. } => metadata.as_ref(),
+            RholangNode::SendReceiveSource { metadata, .. } => metadata.as_ref(),
+            RholangNode::Error { metadata, .. } => metadata.as_ref(),
+            RholangNode::Disjunction { metadata, .. } => metadata.as_ref(),
+            RholangNode::Conjunction { metadata, .. } => metadata.as_ref(),
+            RholangNode::Negation { metadata, .. } => metadata.as_ref(),
+            RholangNode::Unit { metadata, .. } => metadata.as_ref(),
         }
     }
 
-    pub fn node_cmp(a: &Node, b: &Node) -> Ordering {
+    pub fn node_cmp(a: &RholangNode, b: &RholangNode) -> Ordering {
         let tag_a = a.tag();
         let tag_b = b.tag();
         if tag_a != tag_b {
             return tag_a.cmp(&tag_b);
         }
         match (a, b) {
-            (Node::Var { name: na, .. }, Node::Var { name: nb, .. }) => na.cmp(nb),
-            (Node::BoolLiteral { value: va, .. }, Node::BoolLiteral { value: vb, .. }) => va.cmp(vb),
-            (Node::LongLiteral { value: va, .. }, Node::LongLiteral { value: vb, .. }) => va.cmp(vb),
-            (Node::StringLiteral { value: va, .. }, Node::StringLiteral { value: vb, .. }) => va.cmp(vb),
-            (Node::UriLiteral { value: va, .. }, Node::UriLiteral { value: vb, .. }) => va.cmp(vb),
-            (Node::SimpleType { value: va, .. }, Node::SimpleType { value: vb, .. }) => va.cmp(vb),
-            (Node::Nil { .. }, Node::Nil { .. }) => Ordering::Equal,
-            (Node::Unit { .. }, Node::Unit { .. }) => Ordering::Equal,
-            (Node::Quote { quotable: qa, .. }, Node::Quote { quotable: qb, .. }) => {
-                Node::node_cmp(&*qa, &*qb)
+            (RholangNode::Var { name: na, .. }, RholangNode::Var { name: nb, .. }) => na.cmp(nb),
+            (RholangNode::BoolLiteral { value: va, .. }, RholangNode::BoolLiteral { value: vb, .. }) => va.cmp(vb),
+            (RholangNode::LongLiteral { value: va, .. }, RholangNode::LongLiteral { value: vb, .. }) => va.cmp(vb),
+            (RholangNode::StringLiteral { value: va, .. }, RholangNode::StringLiteral { value: vb, .. }) => va.cmp(vb),
+            (RholangNode::UriLiteral { value: va, .. }, RholangNode::UriLiteral { value: vb, .. }) => va.cmp(vb),
+            (RholangNode::SimpleType { value: va, .. }, RholangNode::SimpleType { value: vb, .. }) => va.cmp(vb),
+            (RholangNode::Nil { .. }, RholangNode::Nil { .. }) => Ordering::Equal,
+            (RholangNode::Unit { .. }, RholangNode::Unit { .. }) => Ordering::Equal,
+            (RholangNode::Quote { quotable: qa, .. }, RholangNode::Quote { quotable: qb, .. }) => {
+                RholangNode::node_cmp(&*qa, &*qb)
             }
-            (Node::Eval { name: na, .. }, Node::Eval { name: nb, .. }) => Node::node_cmp(&*na, &*nb),
+            (RholangNode::Eval { name: na, .. }, RholangNode::Eval { name: nb, .. }) => RholangNode::node_cmp(&*na, &*nb),
             (
-                Node::VarRef {
+                RholangNode::VarRef {
                     kind: ka,
                     var: va,
                     ..
                 },
-                Node::VarRef {
+                RholangNode::VarRef {
                     kind: kb,
                     var: vb,
                     ..
                 },
-            ) => ka.cmp(kb).then_with(|| Node::node_cmp(&*va, &*vb)),
-            (Node::Disjunction { left: p_l, right: p_r, .. }, Node::Disjunction { left: c_l, right: c_r, .. }) => {
-                Node::node_cmp(p_l, c_l).then_with(|| Node::node_cmp(p_r, c_r))
+            ) => ka.cmp(kb).then_with(|| RholangNode::node_cmp(&*va, &*vb)),
+            (RholangNode::Disjunction { left: p_l, right: p_r, .. }, RholangNode::Disjunction { left: c_l, right: c_r, .. }) => {
+                RholangNode::node_cmp(p_l, c_l).then_with(|| RholangNode::node_cmp(p_r, c_r))
             }
-            (Node::Conjunction { left: p_l, right: p_r, .. }, Node::Conjunction { left: c_l, right: c_r, .. }) => {
-                Node::node_cmp(p_l, c_l).then_with(|| Node::node_cmp(p_r, c_r))
+            (RholangNode::Conjunction { left: p_l, right: p_r, .. }, RholangNode::Conjunction { left: c_l, right: c_r, .. }) => {
+                RholangNode::node_cmp(p_l, c_l).then_with(|| RholangNode::node_cmp(p_r, c_r))
             }
-            (Node::Negation { operand: p_o, .. }, Node::Negation { operand: c_o, .. }) => {
-                Node::node_cmp(p_o, c_o)
+            (RholangNode::Negation { operand: p_o, .. }, RholangNode::Negation { operand: c_o, .. }) => {
+                RholangNode::node_cmp(p_o, c_o)
             }
-            (Node::Parenthesized { expr: p_e, .. }, Node::Parenthesized { expr: c_e, .. }) => {
-                Node::node_cmp(p_e, c_e)
+            (RholangNode::Parenthesized { expr: p_e, .. }, RholangNode::Parenthesized { expr: c_e, .. }) => {
+                RholangNode::node_cmp(p_e, c_e)
             }
             (
-                Node::List {
+                RholangNode::List {
                     elements: ea,
                     remainder: ra,
                     ..
                 },
-                Node::List {
+                RholangNode::List {
                     elements: eb,
                     remainder: rb,
                     ..
                 },
             ) => {
-                let mut ea_sorted: Vec<&Arc<Node>> = ea.iter().collect();
-                ea_sorted.sort_by(|a, b| Node::node_cmp(a, b));
-                let mut eb_sorted: Vec<&Arc<Node>> = eb.iter().collect();
-                eb_sorted.sort_by(|a, b| Node::node_cmp(a, b));
+                let mut ea_sorted: Vec<&Arc<RholangNode>> = ea.iter().collect();
+                ea_sorted.sort_by(|a, b| RholangNode::node_cmp(a, b));
+                let mut eb_sorted: Vec<&Arc<RholangNode>> = eb.iter().collect();
+                eb_sorted.sort_by(|a, b| RholangNode::node_cmp(a, b));
                 ea_sorted.cmp(&eb_sorted).then_with(|| ra.cmp(rb))
             }
-            (Node::Tuple { elements: ea, .. }, Node::Tuple { elements: eb, .. }) => ea.cmp(eb),
+            (RholangNode::Tuple { elements: ea, .. }, RholangNode::Tuple { elements: eb, .. }) => ea.cmp(eb),
             (
-                Node::Set {
+                RholangNode::Set {
                     elements: ea,
                     remainder: ra,
                     ..
                 },
-                Node::Set {
+                RholangNode::Set {
                     elements: eb,
                     remainder: rb,
                     ..
                 },
             ) => {
-                let mut ea_sorted: Vec<&Arc<Node>> = ea.iter().collect();
-                ea_sorted.sort_by(|a, b| Node::node_cmp(a, b));
-                let mut eb_sorted: Vec<&Arc<Node>> = eb.iter().collect();
-                eb_sorted.sort_by(|a, b| Node::node_cmp(a, b));
+                let mut ea_sorted: Vec<&Arc<RholangNode>> = ea.iter().collect();
+                ea_sorted.sort_by(|a, b| RholangNode::node_cmp(a, b));
+                let mut eb_sorted: Vec<&Arc<RholangNode>> = eb.iter().collect();
+                eb_sorted.sort_by(|a, b| RholangNode::node_cmp(a, b));
                 ea_sorted.cmp(&eb_sorted).then_with(|| ra.cmp(rb))
             }
             (
-                Node::Map {
+                RholangNode::Map {
                     pairs: pa,
                     remainder: ra,
                     ..
                 },
-                Node::Map {
+                RholangNode::Map {
                     pairs: pb,
                     remainder: rb,
                     ..
                 },
             ) => {
-                let mut pa_sorted: Vec<(&Arc<Node>, &Arc<Node>)> =
+                let mut pa_sorted: Vec<(&Arc<RholangNode>, &Arc<RholangNode>)> =
                     pa.iter().map(|(k, v)| (k, v)).collect();
-                pa_sorted.sort_by(|(ka, _), (kb, _)| Node::node_cmp(ka, kb));
-                let mut pb_sorted: Vec<(&Arc<Node>, &Arc<Node>)> =
+                pa_sorted.sort_by(|(ka, _), (kb, _)| RholangNode::node_cmp(ka, kb));
+                let mut pb_sorted: Vec<(&Arc<RholangNode>, &Arc<RholangNode>)> =
                     pb.iter().map(|(k, v)| (k, v)).collect();
-                pb_sorted.sort_by(|(ka, _), (kb, _)| Node::node_cmp(ka, kb));
+                pb_sorted.sort_by(|(ka, _), (kb, _)| RholangNode::node_cmp(ka, kb));
                 pa_sorted.cmp(&pb_sorted).then_with(|| ra.cmp(rb))
             }
             _ => Ordering::Equal, // For unmatched or leaf variants without comparable fields
@@ -3400,57 +3400,57 @@ impl Node {
 
     pub fn tag(&self) -> u32 {
         match self {
-            Node::Par { .. } => 0,
-            Node::SendSync { .. } => 1,
-            Node::Send { .. } => 2,
-            Node::New { .. } => 3,
-            Node::IfElse { .. } => 4,
-            Node::Let { .. } => 5,
-            Node::Bundle { .. } => 6,
-            Node::Match { .. } => 7,
-            Node::Choice { .. } => 8,
-            Node::Contract { .. } => 9,
-            Node::Input { .. } => 10,
-            Node::Block { .. } => 11,
-            Node::Parenthesized { .. } => 12,
-            Node::BinOp { .. } => 13,
-            Node::UnaryOp { .. } => 14,
-            Node::Method { .. } => 15,
-            Node::Eval { .. } => 16,
-            Node::Quote { .. } => 17,
-            Node::VarRef { .. } => 18,
-            Node::BoolLiteral { .. } => 19,
-            Node::LongLiteral { .. } => 20,
-            Node::StringLiteral { .. } => 21,
-            Node::UriLiteral { .. } => 22,
-            Node::Nil { .. } => 23,
-            Node::List { .. } => 24,
-            Node::Set { .. } => 25,
-            Node::Map { .. } => 26,
-            Node::Tuple { .. } => 27,
-            Node::Var { .. } => 28,
-            Node::NameDecl { .. } => 29,
-            Node::Decl { .. } => 30,
-            Node::LinearBind { .. } => 31,
-            Node::RepeatedBind { .. } => 32,
-            Node::PeekBind { .. } => 33,
-            Node::Comment { .. } => 34,
-            Node::Wildcard { .. } => 35,
-            Node::SimpleType { .. } => 36,
-            Node::ReceiveSendSource { .. } => 37,
-            Node::SendReceiveSource { .. } => 38,
-            Node::Error { .. } => 39,
-            Node::Disjunction { .. } => 40,
-            Node::Conjunction { .. } => 41,
-            Node::Negation { .. } => 42,
-            Node::Unit { .. } => 43,
+            RholangNode::Par { .. } => 0,
+            RholangNode::SendSync { .. } => 1,
+            RholangNode::Send { .. } => 2,
+            RholangNode::New { .. } => 3,
+            RholangNode::IfElse { .. } => 4,
+            RholangNode::Let { .. } => 5,
+            RholangNode::Bundle { .. } => 6,
+            RholangNode::Match { .. } => 7,
+            RholangNode::Choice { .. } => 8,
+            RholangNode::Contract { .. } => 9,
+            RholangNode::Input { .. } => 10,
+            RholangNode::Block { .. } => 11,
+            RholangNode::Parenthesized { .. } => 12,
+            RholangNode::BinOp { .. } => 13,
+            RholangNode::UnaryOp { .. } => 14,
+            RholangNode::Method { .. } => 15,
+            RholangNode::Eval { .. } => 16,
+            RholangNode::Quote { .. } => 17,
+            RholangNode::VarRef { .. } => 18,
+            RholangNode::BoolLiteral { .. } => 19,
+            RholangNode::LongLiteral { .. } => 20,
+            RholangNode::StringLiteral { .. } => 21,
+            RholangNode::UriLiteral { .. } => 22,
+            RholangNode::Nil { .. } => 23,
+            RholangNode::List { .. } => 24,
+            RholangNode::Set { .. } => 25,
+            RholangNode::Map { .. } => 26,
+            RholangNode::Tuple { .. } => 27,
+            RholangNode::Var { .. } => 28,
+            RholangNode::NameDecl { .. } => 29,
+            RholangNode::Decl { .. } => 30,
+            RholangNode::LinearBind { .. } => 31,
+            RholangNode::RepeatedBind { .. } => 32,
+            RholangNode::PeekBind { .. } => 33,
+            RholangNode::Comment { .. } => 34,
+            RholangNode::Wildcard { .. } => 35,
+            RholangNode::SimpleType { .. } => 36,
+            RholangNode::ReceiveSendSource { .. } => 37,
+            RholangNode::SendReceiveSource { .. } => 38,
+            RholangNode::Error { .. } => 39,
+            RholangNode::Disjunction { .. } => 40,
+            RholangNode::Conjunction { .. } => 41,
+            RholangNode::Negation { .. } => 42,
+            RholangNode::Unit { .. } => 43,
         }
     }
 
     /// Constructs a new Par node with the given attributes.
     pub fn new_par(
-        left: Arc<Node>,
-        right: Arc<Node>,
+        left: Arc<RholangNode>,
+        right: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3458,7 +3458,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Par {
+        RholangNode::Par {
             base,
             left,
             right,
@@ -3468,9 +3468,9 @@ impl Node {
 
     /// Constructs a new SendSync node with the given attributes.
     pub fn new_send_sync(
-        channel: Arc<Node>,
-        inputs: NodeVector,
-        cont: Arc<Node>,
+        channel: Arc<RholangNode>,
+        inputs: RholangNodeVector,
+        cont: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3478,7 +3478,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::SendSync {
+        RholangNode::SendSync {
             base,
             channel,
             inputs,
@@ -3489,10 +3489,10 @@ impl Node {
 
     /// Constructs a new Send node with the given attributes.
     pub fn new_send(
-        channel: Arc<Node>,
-        send_type: SendType,
+        channel: Arc<RholangNode>,
+        send_type: RholangSendType,
         send_type_delta: RelativePosition,
-        inputs: NodeVector,
+        inputs: RholangNodeVector,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3500,7 +3500,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Send {
+        RholangNode::Send {
             base,
             channel,
             send_type,
@@ -3512,8 +3512,8 @@ impl Node {
 
     /// Constructs a new New node with the given attributes.
     pub fn new_new(
-        decls: NodeVector,
-        proc: Arc<Node>,
+        decls: RholangNodeVector,
+        proc: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3521,7 +3521,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::New {
+        RholangNode::New {
             base,
             decls,
             proc,
@@ -3531,9 +3531,9 @@ impl Node {
 
     /// Constructs a new IfElse node with the given attributes.
     pub fn new_if_else(
-        condition: Arc<Node>,
-        consequence: Arc<Node>,
-        alternative: Option<Arc<Node>>,
+        condition: Arc<RholangNode>,
+        consequence: Arc<RholangNode>,
+        alternative: Option<Arc<RholangNode>>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3541,7 +3541,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::IfElse {
+        RholangNode::IfElse {
             base,
             condition,
             consequence,
@@ -3552,8 +3552,8 @@ impl Node {
 
     /// Constructs a new Let node with the given attributes.
     pub fn new_let(
-        decls: NodeVector,
-        proc: Arc<Node>,
+        decls: RholangNodeVector,
+        proc: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3561,7 +3561,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Let {
+        RholangNode::Let {
             base,
             decls,
             proc,
@@ -3571,8 +3571,8 @@ impl Node {
 
     /// Constructs a new Bundle node with the given attributes.
     pub fn new_bundle(
-        bundle_type: BundleType,
-        proc: Arc<Node>,
+        bundle_type: RholangBundleType,
+        proc: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3580,7 +3580,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Bundle {
+        RholangNode::Bundle {
             base,
             bundle_type,
             proc,
@@ -3590,8 +3590,8 @@ impl Node {
 
     /// Constructs a new Match node with the given attributes.
     pub fn new_match(
-        expression: Arc<Node>,
-        cases: NodePairVector,
+        expression: Arc<RholangNode>,
+        cases: RholangNodePairVector,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3599,7 +3599,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Match {
+        RholangNode::Match {
             base,
             expression,
             cases,
@@ -3609,7 +3609,7 @@ impl Node {
 
     /// Constructs a new Choice node with the given attributes.
     pub fn new_choice(
-        branches: BranchVector,
+        branches: RholangBranchVector,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3617,7 +3617,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Choice {
+        RholangNode::Choice {
             base,
             branches,
             metadata,
@@ -3626,10 +3626,10 @@ impl Node {
 
     /// Constructs a new Contract node with the given attributes.
     pub fn new_contract(
-        name: Arc<Node>,
-        formals: NodeVector,
-        formals_remainder: Option<Arc<Node>>,
-        proc: Arc<Node>,
+        name: Arc<RholangNode>,
+        formals: RholangNodeVector,
+        formals_remainder: Option<Arc<RholangNode>>,
+        proc: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3637,7 +3637,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Contract {
+        RholangNode::Contract {
             base,
             name,
             formals,
@@ -3649,8 +3649,8 @@ impl Node {
 
     /// Constructs a new Input node with the given attributes.
     pub fn new_input(
-        receipts: ReceiptVector,
-        proc: Arc<Node>,
+        receipts: RholangReceiptVector,
+        proc: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3658,7 +3658,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Input {
+        RholangNode::Input {
             base,
             receipts,
             proc,
@@ -3668,7 +3668,7 @@ impl Node {
 
     /// Constructs a new Block node with the given attributes.
     pub fn new_block(
-        proc: Arc<Node>,
+        proc: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3676,7 +3676,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Block {
+        RholangNode::Block {
             base,
             proc,
             metadata,
@@ -3685,7 +3685,7 @@ impl Node {
 
     /// Constructs a new Parenthesized node with the given attributes.
     pub fn new_parenthesized(
-        expr: Arc<Node>,
+        expr: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3693,7 +3693,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Parenthesized {
+        RholangNode::Parenthesized {
             base,
             expr,
             metadata,
@@ -3703,8 +3703,8 @@ impl Node {
     /// Constructs a new BinOp node with the given attributes.
     pub fn new_bin_op(
         op: BinOperator,
-        left: Arc<Node>,
-        right: Arc<Node>,
+        left: Arc<RholangNode>,
+        right: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3712,7 +3712,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::BinOp {
+        RholangNode::BinOp {
             base,
             op,
             left,
@@ -3724,7 +3724,7 @@ impl Node {
     /// Constructs a new UnaryOp node with the given attributes.
     pub fn new_unary_op(
         op: UnaryOperator,
-        operand: Arc<Node>,
+        operand: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3732,7 +3732,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::UnaryOp {
+        RholangNode::UnaryOp {
             base,
             op,
             operand,
@@ -3742,9 +3742,9 @@ impl Node {
 
     /// Constructs a new Method node with the given attributes.
     pub fn new_method(
-        receiver: Arc<Node>,
+        receiver: Arc<RholangNode>,
         name: String,
-        args: NodeVector,
+        args: RholangNodeVector,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3752,7 +3752,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Method {
+        RholangNode::Method {
             base,
             receiver,
             name,
@@ -3763,7 +3763,7 @@ impl Node {
 
     /// Constructs a new Eval node with the given attributes.
     pub fn new_eval(
-        name: Arc<Node>,
+        name: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3771,7 +3771,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Eval {
+        RholangNode::Eval {
             base,
             name,
             metadata,
@@ -3780,7 +3780,7 @@ impl Node {
 
     /// Constructs a new Quote node with the given attributes.
     pub fn new_quote(
-        quotable: Arc<Node>,
+        quotable: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3788,7 +3788,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Quote {
+        RholangNode::Quote {
             base,
             quotable,
             metadata,
@@ -3797,8 +3797,8 @@ impl Node {
 
     /// Constructs a new VarRef node with the given attributes.
     pub fn new_var_ref(
-        kind: VarRefKind,
-        var: Arc<Node>,
+        kind: RholangVarRefKind,
+        var: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3806,7 +3806,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::VarRef {
+        RholangNode::VarRef {
             base,
             kind,
             var,
@@ -3824,7 +3824,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::BoolLiteral {
+        RholangNode::BoolLiteral {
             base,
             value,
             metadata,
@@ -3841,7 +3841,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::LongLiteral {
+        RholangNode::LongLiteral {
             base,
             value,
             metadata,
@@ -3858,7 +3858,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::StringLiteral {
+        RholangNode::StringLiteral {
             base,
             value,
             metadata,
@@ -3875,7 +3875,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::UriLiteral {
+        RholangNode::UriLiteral {
             base,
             value,
             metadata,
@@ -3891,13 +3891,13 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Nil { base, metadata }
+        RholangNode::Nil { base, metadata }
     }
 
     /// Constructs a new List node with the given attributes.
     pub fn new_list(
-        elements: NodeVector,
-        remainder: Option<Arc<Node>>,
+        elements: RholangNodeVector,
+        remainder: Option<Arc<RholangNode>>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3905,7 +3905,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::List {
+        RholangNode::List {
             base,
             elements,
             remainder,
@@ -3915,8 +3915,8 @@ impl Node {
 
     /// Constructs a new Set node with the given attributes.
     pub fn new_set(
-        elements: NodeVector,
-        remainder: Option<Arc<Node>>,
+        elements: RholangNodeVector,
+        remainder: Option<Arc<RholangNode>>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3924,7 +3924,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Set {
+        RholangNode::Set {
             base,
             elements,
             remainder,
@@ -3934,8 +3934,8 @@ impl Node {
 
     /// Constructs a new Map node with the given attributes.
     pub fn new_map(
-        pairs: NodePairVector,
-        remainder: Option<Arc<Node>>,
+        pairs: RholangNodePairVector,
+        remainder: Option<Arc<RholangNode>>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3943,7 +3943,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Map {
+        RholangNode::Map {
             base,
             pairs,
             remainder,
@@ -3953,7 +3953,7 @@ impl Node {
 
     /// Constructs a new Tuple node with the given attributes.
     pub fn new_tuple(
-        elements: NodeVector,
+        elements: RholangNodeVector,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3961,7 +3961,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Tuple {
+        RholangNode::Tuple {
             base,
             elements,
             metadata,
@@ -3978,13 +3978,13 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Var { base, name, metadata }
+        RholangNode::Var { base, name, metadata }
     }
 
     /// Constructs a new NameDecl node with the given attributes.
     pub fn new_name_decl(
-        var: Arc<Node>,
-        uri: Option<Arc<Node>>,
+        var: Arc<RholangNode>,
+        uri: Option<Arc<RholangNode>>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -3992,7 +3992,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::NameDecl {
+        RholangNode::NameDecl {
             base,
             var,
             uri,
@@ -4002,9 +4002,9 @@ impl Node {
 
     /// Constructs a new Decl node with the given attributes.
     pub fn new_decl(
-        names: NodeVector,
-        names_remainder: Option<Arc<Node>>,
-        procs: NodeVector,
+        names: RholangNodeVector,
+        names_remainder: Option<Arc<RholangNode>>,
+        procs: RholangNodeVector,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -4012,7 +4012,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Decl {
+        RholangNode::Decl {
             base,
             names,
             names_remainder,
@@ -4023,9 +4023,9 @@ impl Node {
 
     /// Constructs a new LinearBind node with the given attributes.
     pub fn new_linear_bind(
-        names: NodeVector,
-        remainder: Option<Arc<Node>>,
-        source: Arc<Node>,
+        names: RholangNodeVector,
+        remainder: Option<Arc<RholangNode>>,
+        source: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -4033,7 +4033,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::LinearBind {
+        RholangNode::LinearBind {
             base,
             names,
             remainder,
@@ -4044,9 +4044,9 @@ impl Node {
 
     /// Constructs a new RepeatedBind node with the given attributes.
     pub fn new_repeated_bind(
-        names: NodeVector,
-        remainder: Option<Arc<Node>>,
-        source: Arc<Node>,
+        names: RholangNodeVector,
+        remainder: Option<Arc<RholangNode>>,
+        source: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -4054,7 +4054,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::RepeatedBind {
+        RholangNode::RepeatedBind {
             base,
             names,
             remainder,
@@ -4065,9 +4065,9 @@ impl Node {
 
     /// Constructs a new PeekBind node with the given attributes.
     pub fn new_peek_bind(
-        names: NodeVector,
-        remainder: Option<Arc<Node>>,
-        source: Arc<Node>,
+        names: RholangNodeVector,
+        remainder: Option<Arc<RholangNode>>,
+        source: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -4075,7 +4075,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::PeekBind {
+        RholangNode::PeekBind {
             base,
             names,
             remainder,
@@ -4094,7 +4094,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Comment {
+        RholangNode::Comment {
             base,
             kind,
             metadata,
@@ -4110,7 +4110,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Wildcard { base, metadata }
+        RholangNode::Wildcard { base, metadata }
     }
 
     /// Constructs a new SimpleType node with the given attributes.
@@ -4123,7 +4123,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::SimpleType {
+        RholangNode::SimpleType {
             base,
             value,
             metadata,
@@ -4132,7 +4132,7 @@ impl Node {
 
     /// Constructs a new ReceiveSendSource node with the given attributes.
     pub fn new_receive_send_source(
-        name: Arc<Node>,
+        name: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -4140,7 +4140,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::ReceiveSendSource {
+        RholangNode::ReceiveSendSource {
             base,
             name,
             metadata,
@@ -4149,8 +4149,8 @@ impl Node {
 
     /// Constructs a new SendReceiveSource node with the given attributes.
     pub fn new_send_receive_source(
-        name: Arc<Node>,
-        inputs: NodeVector,
+        name: Arc<RholangNode>,
+        inputs: RholangNodeVector,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -4158,7 +4158,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::SendReceiveSource {
+        RholangNode::SendReceiveSource {
             base,
             name,
             inputs,
@@ -4168,7 +4168,7 @@ impl Node {
 
     /// Constructs a new Error node with the given attributes.
     pub fn new_error(
-        children: NodeVector,
+        children: RholangNodeVector,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -4176,7 +4176,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Error {
+        RholangNode::Error {
             base,
             children,
             metadata,
@@ -4185,8 +4185,8 @@ impl Node {
 
     /// Constructs a new Disjunction node with the given attributes.
     pub fn new_disjunction(
-        left: Arc<Node>,
-        right: Arc<Node>,
+        left: Arc<RholangNode>,
+        right: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -4194,7 +4194,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Disjunction {
+        RholangNode::Disjunction {
             base,
             left,
             right,
@@ -4204,8 +4204,8 @@ impl Node {
 
     /// Constructs a new Conjunction node with the given attributes.
     pub fn new_conjunction(
-        left: Arc<Node>,
-        right: Arc<Node>,
+        left: Arc<RholangNode>,
+        right: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -4213,7 +4213,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Conjunction {
+        RholangNode::Conjunction {
             base,
             left,
             right,
@@ -4223,7 +4223,7 @@ impl Node {
 
     /// Constructs a new Negation node with the given attributes.
     pub fn new_negation(
-        operand: Arc<Node>,
+        operand: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
         relative_start: RelativePosition,
         length: usize,
@@ -4231,7 +4231,7 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Negation {
+        RholangNode::Negation {
             base,
             operand,
             metadata,
@@ -4247,127 +4247,127 @@ impl Node {
         span_columns: usize,
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
-        Node::Unit { base, metadata }
+        RholangNode::Unit { base, metadata }
     }
 }
 
-impl PartialEq for Node {
+impl PartialEq for RholangNode {
     fn eq(&self, other: &Self) -> bool {
-        Node::node_cmp(self, other) == Ordering::Equal
+        RholangNode::node_cmp(self, other) == Ordering::Equal
     }
 }
 
-impl Eq for Node {}
+impl Eq for RholangNode {}
 
-impl PartialOrd for Node {
+impl PartialOrd for RholangNode {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(Node::node_cmp(self, other))
+        Some(RholangNode::node_cmp(self, other))
     }
 }
 
-impl Ord for Node {
+impl Ord for RholangNode {
     fn cmp(&self, other: &Self) -> Ordering {
-        Node::node_cmp(self, other)
+        RholangNode::node_cmp(self, other)
     }
 }
 
 // Implementation of SemanticNode trait for language-agnostic IR operations
-impl super::semantic_node::SemanticNode for Node {
+impl super::semantic_node::SemanticNode for RholangNode {
     fn base(&self) -> &NodeBase {
         match self {
-            Node::Par { base, .. } => base,
-            Node::SendSync { base, .. } => base,
-            Node::Send { base, .. } => base,
-            Node::New { base, .. } => base,
-            Node::IfElse { base, .. } => base,
-            Node::Let { base, .. } => base,
-            Node::Bundle { base, .. } => base,
-            Node::Match { base, .. } => base,
-            Node::Choice { base, .. } => base,
-            Node::Contract { base, .. } => base,
-            Node::Input { base, .. } => base,
-            Node::Block { base, .. } => base,
-            Node::Parenthesized { base, .. } => base,
-            Node::BinOp { base, .. } => base,
-            Node::UnaryOp { base, .. } => base,
-            Node::Method { base, .. } => base,
-            Node::Eval { base, .. } => base,
-            Node::Quote { base, .. } => base,
-            Node::VarRef { base, .. } => base,
-            Node::BoolLiteral { base, .. } => base,
-            Node::LongLiteral { base, .. } => base,
-            Node::StringLiteral { base, .. } => base,
-            Node::UriLiteral { base, .. } => base,
-            Node::Nil { base, .. } => base,
-            Node::List { base, .. } => base,
-            Node::Set { base, .. } => base,
-            Node::Map { base, .. } => base,
-            Node::Tuple { base, .. } => base,
-            Node::Var { base, .. } => base,
-            Node::NameDecl { base, .. } => base,
-            Node::Decl { base, .. } => base,
-            Node::LinearBind { base, .. } => base,
-            Node::RepeatedBind { base, .. } => base,
-            Node::PeekBind { base, .. } => base,
-            Node::Comment { base, .. } => base,
-            Node::Wildcard { base, .. } => base,
-            Node::SimpleType { base, .. } => base,
-            Node::ReceiveSendSource { base, .. } => base,
-            Node::SendReceiveSource { base, .. } => base,
-            Node::Error { base, .. } => base,
-            Node::Disjunction { base, .. } => base,
-            Node::Conjunction { base, .. } => base,
-            Node::Negation { base, .. } => base,
-            Node::Unit { base, .. } => base,
+            RholangNode::Par { base, .. } => base,
+            RholangNode::SendSync { base, .. } => base,
+            RholangNode::Send { base, .. } => base,
+            RholangNode::New { base, .. } => base,
+            RholangNode::IfElse { base, .. } => base,
+            RholangNode::Let { base, .. } => base,
+            RholangNode::Bundle { base, .. } => base,
+            RholangNode::Match { base, .. } => base,
+            RholangNode::Choice { base, .. } => base,
+            RholangNode::Contract { base, .. } => base,
+            RholangNode::Input { base, .. } => base,
+            RholangNode::Block { base, .. } => base,
+            RholangNode::Parenthesized { base, .. } => base,
+            RholangNode::BinOp { base, .. } => base,
+            RholangNode::UnaryOp { base, .. } => base,
+            RholangNode::Method { base, .. } => base,
+            RholangNode::Eval { base, .. } => base,
+            RholangNode::Quote { base, .. } => base,
+            RholangNode::VarRef { base, .. } => base,
+            RholangNode::BoolLiteral { base, .. } => base,
+            RholangNode::LongLiteral { base, .. } => base,
+            RholangNode::StringLiteral { base, .. } => base,
+            RholangNode::UriLiteral { base, .. } => base,
+            RholangNode::Nil { base, .. } => base,
+            RholangNode::List { base, .. } => base,
+            RholangNode::Set { base, .. } => base,
+            RholangNode::Map { base, .. } => base,
+            RholangNode::Tuple { base, .. } => base,
+            RholangNode::Var { base, .. } => base,
+            RholangNode::NameDecl { base, .. } => base,
+            RholangNode::Decl { base, .. } => base,
+            RholangNode::LinearBind { base, .. } => base,
+            RholangNode::RepeatedBind { base, .. } => base,
+            RholangNode::PeekBind { base, .. } => base,
+            RholangNode::Comment { base, .. } => base,
+            RholangNode::Wildcard { base, .. } => base,
+            RholangNode::SimpleType { base, .. } => base,
+            RholangNode::ReceiveSendSource { base, .. } => base,
+            RholangNode::SendReceiveSource { base, .. } => base,
+            RholangNode::Error { base, .. } => base,
+            RholangNode::Disjunction { base, .. } => base,
+            RholangNode::Conjunction { base, .. } => base,
+            RholangNode::Negation { base, .. } => base,
+            RholangNode::Unit { base, .. } => base,
         }
     }
 
     fn metadata(&self) -> Option<&Metadata> {
         match self {
-            Node::Par { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::SendSync { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Send { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::New { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::IfElse { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Let { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Bundle { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Match { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Choice { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Contract { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Input { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Block { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Parenthesized { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::BinOp { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::UnaryOp { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Method { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Eval { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Quote { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::VarRef { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::BoolLiteral { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::LongLiteral { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::StringLiteral { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::UriLiteral { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Nil { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::List { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Set { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Map { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Tuple { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Var { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::NameDecl { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Decl { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::LinearBind { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::RepeatedBind { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::PeekBind { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Comment { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Wildcard { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::SimpleType { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::ReceiveSendSource { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::SendReceiveSource { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Error { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Disjunction { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Conjunction { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Negation { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
-            Node::Unit { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Par { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::SendSync { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Send { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::New { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::IfElse { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Let { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Bundle { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Match { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Choice { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Contract { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Input { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Block { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Parenthesized { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::BinOp { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::UnaryOp { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Method { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Eval { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Quote { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::VarRef { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::BoolLiteral { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::LongLiteral { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::StringLiteral { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::UriLiteral { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Nil { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::List { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Set { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Map { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Tuple { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Var { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::NameDecl { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Decl { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::LinearBind { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::RepeatedBind { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::PeekBind { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Comment { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Wildcard { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::SimpleType { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::ReceiveSendSource { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::SendReceiveSource { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Error { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Disjunction { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Conjunction { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Negation { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Unit { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
         }
     }
 
@@ -4381,33 +4381,33 @@ impl super::semantic_node::SemanticNode for Node {
     fn node_type(&self) -> super::semantic_node::NodeType {
         use super::semantic_node::NodeType;
         match self {
-            Node::Par { .. } => NodeType::RholangPar,
-            Node::SendSync { .. } | Node::Send { .. } => NodeType::RholangSend,
-            Node::New { .. } => NodeType::RholangNew,
-            Node::IfElse { .. } => NodeType::Conditional,
-            Node::Let { .. } => NodeType::Binding,
-            Node::Bundle { .. } => NodeType::RholangBundle,
-            Node::Match { .. } => NodeType::Match,
-            Node::Choice { .. } => NodeType::Conditional,
-            Node::Contract { .. } => NodeType::RholangContract,
-            Node::Input { .. } => NodeType::RholangInput,
-            Node::Block { .. } | Node::Parenthesized { .. } => NodeType::Block,
-            Node::BinOp { .. } | Node::UnaryOp { .. } | Node::Method { .. } => NodeType::Invocation,
-            Node::Eval { .. } => NodeType::RholangEval,
-            Node::Quote { .. } => NodeType::RholangQuote,
-            Node::VarRef { .. } | Node::Var { .. } => NodeType::Variable,
-            Node::BoolLiteral { .. } | Node::LongLiteral { .. }
-            | Node::StringLiteral { .. } | Node::UriLiteral { .. } => NodeType::Literal,
-            Node::Nil { .. } | Node::Wildcard { .. } => NodeType::Literal,
-            Node::List { .. } | Node::Set { .. } | Node::Map { .. } | Node::Tuple { .. } => NodeType::Collection,
-            Node::NameDecl { .. } | Node::Decl { .. } => NodeType::Binding,
-            Node::LinearBind { .. } | Node::RepeatedBind { .. } | Node::PeekBind { .. } => NodeType::Binding,
-            Node::Comment { .. } => NodeType::Unknown,
-            Node::SimpleType { .. } => NodeType::Literal,
-            Node::ReceiveSendSource { .. } | Node::SendReceiveSource { .. } => NodeType::RholangSend,
-            Node::Error { .. } => NodeType::Unknown,
-            Node::Disjunction { .. } | Node::Conjunction { .. } | Node::Negation { .. } => NodeType::Match,
-            Node::Unit { .. } => NodeType::Literal,
+            RholangNode::Par { .. } => NodeType::RholangPar,
+            RholangNode::SendSync { .. } | RholangNode::Send { .. } => NodeType::RholangSend,
+            RholangNode::New { .. } => NodeType::RholangNew,
+            RholangNode::IfElse { .. } => NodeType::Conditional,
+            RholangNode::Let { .. } => NodeType::Binding,
+            RholangNode::Bundle { .. } => NodeType::RholangBundle,
+            RholangNode::Match { .. } => NodeType::Match,
+            RholangNode::Choice { .. } => NodeType::Conditional,
+            RholangNode::Contract { .. } => NodeType::RholangContract,
+            RholangNode::Input { .. } => NodeType::RholangInput,
+            RholangNode::Block { .. } | RholangNode::Parenthesized { .. } => NodeType::Block,
+            RholangNode::BinOp { .. } | RholangNode::UnaryOp { .. } | RholangNode::Method { .. } => NodeType::Invocation,
+            RholangNode::Eval { .. } => NodeType::RholangEval,
+            RholangNode::Quote { .. } => NodeType::RholangQuote,
+            RholangNode::VarRef { .. } | RholangNode::Var { .. } => NodeType::Variable,
+            RholangNode::BoolLiteral { .. } | RholangNode::LongLiteral { .. }
+            | RholangNode::StringLiteral { .. } | RholangNode::UriLiteral { .. } => NodeType::Literal,
+            RholangNode::Nil { .. } | RholangNode::Wildcard { .. } => NodeType::Literal,
+            RholangNode::List { .. } | RholangNode::Set { .. } | RholangNode::Map { .. } | RholangNode::Tuple { .. } => NodeType::Collection,
+            RholangNode::NameDecl { .. } | RholangNode::Decl { .. } => NodeType::Binding,
+            RholangNode::LinearBind { .. } | RholangNode::RepeatedBind { .. } | RholangNode::PeekBind { .. } => NodeType::Binding,
+            RholangNode::Comment { .. } => NodeType::Unknown,
+            RholangNode::SimpleType { .. } => NodeType::Literal,
+            RholangNode::ReceiveSendSource { .. } | RholangNode::SendReceiveSource { .. } => NodeType::RholangSend,
+            RholangNode::Error { .. } => NodeType::Unknown,
+            RholangNode::Disjunction { .. } | RholangNode::Conjunction { .. } | RholangNode::Negation { .. } => NodeType::Match,
+            RholangNode::Unit { .. } => NodeType::Literal,
         }
     }
 
@@ -4443,7 +4443,7 @@ mod tests {
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree, &rope);
         let root = Arc::new(ir.clone());
-        if let Node::Par { left, right, .. } = &*ir {
+        if let RholangNode::Par { left, right, .. } = &*ir {
             let left_start = left.absolute_start(&root);
             assert_eq!(left_start.row, 0);
             assert_eq!(left_start.column, 0);
@@ -4473,13 +4473,13 @@ mod tests {
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree, &rope);
         let root = Arc::new(ir.clone());
-        if let Node::New { decls, proc, .. } = &*ir {
+        if let RholangNode::New { decls, proc, .. } = &*ir {
             let decl_start = decls[0].absolute_start(&root);
             assert_eq!(decl_start.row, 0);
             assert_eq!(decl_start.column, 4);
             assert_eq!(decl_start.byte, 4);
-            if let Node::Block { proc: inner, .. } = &**proc {
-                if let Node::Send { channel, .. } = &**inner {
+            if let RholangNode::Block { proc: inner, .. } = &**proc {
+                if let RholangNode::Send { channel, .. } = &**inner {
                     let chan_start = channel.absolute_start(&root);
                     assert_eq!(chan_start.row, 0);
                     assert_eq!(chan_start.column, 11);
@@ -4526,7 +4526,7 @@ mod tests {
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree, &rope);
         let root = Arc::new(ir.clone());
-        if let Node::Send { inputs, .. } = &*ir {
+        if let RholangNode::Send { inputs, .. } = &*ir {
             let input_start = inputs[0].absolute_start(&root);
             assert_eq!(input_start.row, 1);
             assert_eq!(input_start.column, 0);
@@ -4543,7 +4543,7 @@ mod tests {
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree, &rope);
         let root = Arc::new(ir.clone());
-        if let Node::Match { expression, cases, .. } = &*ir {
+        if let RholangNode::Match { expression, cases, .. } = &*ir {
             let expr_start = expression.absolute_start(&root);
             assert_eq!(expr_start.row, 0);
             assert_eq!(expr_start.column, 6);
@@ -4584,7 +4584,7 @@ mod tests {
             0,
             0,
         );
-        let node = Node::Nil {
+        let node = RholangNode::Nil {
             base,
             metadata: Some(metadata.clone()),
         };
@@ -4612,8 +4612,8 @@ mod tests {
         let tree = parse_code(code);
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree, &rope);
-        if let Node::Par { left, .. } = &*ir {
-            if let Node::Error { children, .. } = left.as_ref() {
+        if let RholangNode::Par { left, .. } = &*ir {
+            if let RholangNode::Error { children, .. } = left.as_ref() {
                 assert!(!children.is_empty(), "Error node should have children");
             }
         }
@@ -4621,7 +4621,7 @@ mod tests {
 
     #[test]
     fn test_match_pat_simple() {
-        let wild = Arc::new(Node::new_wildcard(
+        let wild = Arc::new(RholangNode::new_wildcard(
             None,
             RelativePosition {
                 delta_lines: 0,
@@ -4632,7 +4632,7 @@ mod tests {
             0,
             1,
         ));
-        let var_pat = Arc::new(Node::new_var(
+        let var_pat = Arc::new(RholangNode::new_var(
             "x".to_string(),
             None,
             RelativePosition {
@@ -4644,7 +4644,7 @@ mod tests {
             0,
             1,
         ));
-        let var_con = Arc::new(Node::new_var(
+        let var_con = Arc::new(RholangNode::new_var(
             "y".to_string(),
             None,
             RelativePosition {
@@ -4656,7 +4656,7 @@ mod tests {
             0,
             1,
         ));
-        let string_pat = Arc::new(Node::new_string_literal(
+        let string_pat = Arc::new(RholangNode::new_string_literal(
             "foo".to_string(),
             None,
             RelativePosition {
@@ -4668,7 +4668,7 @@ mod tests {
             0,
             5,
         ));
-        let string_con = Arc::new(Node::new_string_literal(
+        let string_con = Arc::new(RholangNode::new_string_literal(
             "foo".to_string(),
             None,
             RelativePosition {
@@ -4680,7 +4680,7 @@ mod tests {
             0,
             5,
         ));
-        let string_con_diff = Arc::new(Node::new_string_literal(
+        let string_con_diff = Arc::new(RholangNode::new_string_literal(
             "bar".to_string(),
             None,
             RelativePosition {
@@ -4702,7 +4702,7 @@ mod tests {
 
     #[test]
     fn test_match_pat_repeat() {
-        let var_pat = Arc::new(Node::new_var(
+        let var_pat = Arc::new(RholangNode::new_var(
             "x".to_string(),
             None,
             RelativePosition {
@@ -4714,7 +4714,7 @@ mod tests {
             0,
             1,
         ));
-        let con1 = Arc::new(Node::new_long_literal(
+        let con1 = Arc::new(RholangNode::new_long_literal(
             1,
             None,
             RelativePosition {
@@ -4726,7 +4726,7 @@ mod tests {
             0,
             1,
         ));
-        let con2 = Arc::new(Node::new_long_literal(
+        let con2 = Arc::new(RholangNode::new_long_literal(
             1,
             None,
             RelativePosition {
@@ -4738,7 +4738,7 @@ mod tests {
             0,
             1,
         ));
-        let con_diff = Arc::new(Node::new_long_literal(
+        let con_diff = Arc::new(RholangNode::new_long_literal(
             2,
             None,
             RelativePosition {
@@ -4758,7 +4758,7 @@ mod tests {
 
     #[test]
     fn test_match_contract_basic() {
-        let channel = Arc::new(Node::new_var(
+        let channel = Arc::new(RholangNode::new_var(
             "foo".to_string(),
             None,
             RelativePosition {
@@ -4770,7 +4770,7 @@ mod tests {
             0,
             3,
         ));
-        let inputs = Vector::new_with_ptr_kind().push_back(Arc::new(Node::new_long_literal(
+        let inputs = Vector::new_with_ptr_kind().push_back(Arc::new(RholangNode::new_long_literal(
             1,
             None,
             RelativePosition {
@@ -4782,7 +4782,7 @@ mod tests {
             0,
             1,
         )));
-        let contract_name = Arc::new(Node::new_var(
+        let contract_name = Arc::new(RholangNode::new_var(
             "foo".to_string(),
             None,
             RelativePosition {
@@ -4794,7 +4794,7 @@ mod tests {
             0,
             3,
         ));
-        let contract_formals = Vector::new_with_ptr_kind().push_back(Arc::new(Node::new_var(
+        let contract_formals = Vector::new_with_ptr_kind().push_back(Arc::new(RholangNode::new_var(
             "x".to_string(),
             None,
             RelativePosition {
@@ -4806,11 +4806,11 @@ mod tests {
             0,
             1,
         )));
-        let contract = Arc::new(Node::new_contract(
+        let contract = Arc::new(RholangNode::new_contract(
             contract_name,
             contract_formals,
             None,
-            Arc::new(Node::new_nil(
+            Arc::new(RholangNode::new_nil(
                 None,
                 RelativePosition {
                     delta_lines: 0,
@@ -4839,7 +4839,7 @@ mod tests {
     #[test]
     fn test_match_pat_set() {
         let p_e = Vector::new_with_ptr_kind()
-            .push_back(Arc::new(Node::LongLiteral {
+            .push_back(Arc::new(RholangNode::LongLiteral {
                 base: NodeBase::new(
                     RelativePosition {
                         delta_lines: 0,
@@ -4853,7 +4853,7 @@ mod tests {
                 value: 1,
                 metadata: None,
             }))
-            .push_back(Arc::new(Node::LongLiteral {
+            .push_back(Arc::new(RholangNode::LongLiteral {
                 base: NodeBase::new(
                     RelativePosition {
                         delta_lines: 0,
@@ -4867,7 +4867,7 @@ mod tests {
                 value: 2,
                 metadata: None,
             }));
-        let pat = Arc::new(Node::Set {
+        let pat = Arc::new(RholangNode::Set {
             base: NodeBase::new(
                 RelativePosition {
                     delta_lines: 0,
@@ -4883,7 +4883,7 @@ mod tests {
             metadata: None,
         });
         let c_e = Vector::new_with_ptr_kind()
-            .push_back(Arc::new(Node::LongLiteral {
+            .push_back(Arc::new(RholangNode::LongLiteral {
                 base: NodeBase::new(
                     RelativePosition {
                         delta_lines: 0,
@@ -4897,7 +4897,7 @@ mod tests {
                 value: 2,
                 metadata: None,
             }))
-            .push_back(Arc::new(Node::LongLiteral {
+            .push_back(Arc::new(RholangNode::LongLiteral {
                 base: NodeBase::new(
                     RelativePosition {
                         delta_lines: 0,
@@ -4911,7 +4911,7 @@ mod tests {
                 value: 1,
                 metadata: None,
             }));
-        let concrete = Arc::new(Node::Set {
+        let concrete = Arc::new(RholangNode::Set {
             base: NodeBase::new(
                 RelativePosition {
                     delta_lines: 0,
@@ -4933,7 +4933,7 @@ mod tests {
     #[test]
     fn test_match_pat_map() {
         let p_pair1 = (
-            Arc::new(Node::StringLiteral {
+            Arc::new(RholangNode::StringLiteral {
                 base: NodeBase::new(
                     RelativePosition {
                         delta_lines: 0,
@@ -4947,7 +4947,7 @@ mod tests {
                 value: "a".to_string(),
                 metadata: None,
             }),
-            Arc::new(Node::LongLiteral {
+            Arc::new(RholangNode::LongLiteral {
                 base: NodeBase::new(
                     RelativePosition {
                         delta_lines: 0,
@@ -4963,7 +4963,7 @@ mod tests {
             }),
         );
         let p_pair2 = (
-            Arc::new(Node::StringLiteral {
+            Arc::new(RholangNode::StringLiteral {
                 base: NodeBase::new(
                     RelativePosition {
                         delta_lines: 0,
@@ -4977,7 +4977,7 @@ mod tests {
                 value: "b".to_string(),
                 metadata: None,
             }),
-            Arc::new(Node::LongLiteral {
+            Arc::new(RholangNode::LongLiteral {
                 base: NodeBase::new(
                     RelativePosition {
                         delta_lines: 0,
@@ -4993,7 +4993,7 @@ mod tests {
             }),
         );
         let p_pairs = Vector::new_with_ptr_kind().push_back(p_pair1).push_back(p_pair2);
-        let pat = Arc::new(Node::Map {
+        let pat = Arc::new(RholangNode::Map {
             base: NodeBase::new(
                 RelativePosition {
                     delta_lines: 0,
@@ -5009,7 +5009,7 @@ mod tests {
             metadata: None,
         });
         let c_pair1 = (
-            Arc::new(Node::StringLiteral {
+            Arc::new(RholangNode::StringLiteral {
                 base: NodeBase::new(
                     RelativePosition {
                         delta_lines: 0,
@@ -5023,7 +5023,7 @@ mod tests {
                 value: "b".to_string(),
                 metadata: None,
             }),
-            Arc::new(Node::LongLiteral {
+            Arc::new(RholangNode::LongLiteral {
                 base: NodeBase::new(
                     RelativePosition {
                         delta_lines: 0,
@@ -5039,7 +5039,7 @@ mod tests {
             }),
         );
         let c_pair2 = (
-            Arc::new(Node::StringLiteral {
+            Arc::new(RholangNode::StringLiteral {
                 base: NodeBase::new(
                     RelativePosition {
                         delta_lines: 0,
@@ -5053,7 +5053,7 @@ mod tests {
                 value: "a".to_string(),
                 metadata: None,
             }),
-            Arc::new(Node::LongLiteral {
+            Arc::new(RholangNode::LongLiteral {
                 base: NodeBase::new(
                     RelativePosition {
                         delta_lines: 0,
@@ -5069,7 +5069,7 @@ mod tests {
             }),
         );
         let c_pairs = Vector::new_with_ptr_kind().push_back(c_pair1).push_back(c_pair2);
-        let concrete = Arc::new(Node::Map {
+        let concrete = Arc::new(RholangNode::Map {
             base: NodeBase::new(
                 RelativePosition {
                     delta_lines: 0,
@@ -5090,7 +5090,7 @@ mod tests {
 
     #[test]
     fn test_match_pat_disjunction() {
-        let p_left = Arc::new(Node::LongLiteral {
+        let p_left = Arc::new(RholangNode::LongLiteral {
             base: NodeBase::new(
                 RelativePosition {
                     delta_lines: 0,
@@ -5104,7 +5104,7 @@ mod tests {
             value: 1,
             metadata: None,
         });
-        let p_right = Arc::new(Node::LongLiteral {
+        let p_right = Arc::new(RholangNode::LongLiteral {
             base: NodeBase::new(
                 RelativePosition {
                     delta_lines: 0,
@@ -5118,7 +5118,7 @@ mod tests {
             value: 2,
             metadata: None,
         });
-        let pat = Arc::new(Node::Disjunction {
+        let pat = Arc::new(RholangNode::Disjunction {
             base: NodeBase::new(
                 RelativePosition {
                     delta_lines: 0,
@@ -5133,7 +5133,7 @@ mod tests {
             right: p_right,
             metadata: None,
         });
-        let c_left = Arc::new(Node::LongLiteral {
+        let c_left = Arc::new(RholangNode::LongLiteral {
             base: NodeBase::new(
                 RelativePosition {
                     delta_lines: 0,
@@ -5147,7 +5147,7 @@ mod tests {
             value: 1,
             metadata: None,
         });
-        let c_right = Arc::new(Node::LongLiteral {
+        let c_right = Arc::new(RholangNode::LongLiteral {
             base: NodeBase::new(
                 RelativePosition {
                     delta_lines: 0,
@@ -5161,7 +5161,7 @@ mod tests {
             value: 2,
             metadata: None,
         });
-        let concrete = Arc::new(Node::Disjunction {
+        let concrete = Arc::new(RholangNode::Disjunction {
             base: NodeBase::new(
                 RelativePosition {
                     delta_lines: 0,

@@ -8,7 +8,7 @@ use archery::ArcK;
 use tower_lsp::lsp_types::{DocumentSymbol, Range, SymbolKind, SymbolInformation, Location, Url};
 use tracing::debug;
 
-use crate::ir::rholang_node::{Metadata, Node, NodeBase, Position as IrPosition};
+use crate::ir::rholang_node::{Metadata, RholangNode, NodeBase, Position as IrPosition};
 use crate::ir::symbol_table::{Symbol, SymbolTable, SymbolType};
 use crate::ir::visitor::Visitor;
 
@@ -42,8 +42,8 @@ impl<'a> DocumentSymbolVisitor<'a> {
     }
 
     /// Computes the LSP Range for a node using its precomputed positions.
-    fn node_range(&self, node: &Arc<Node>) -> Range {
-        let key = &**node as *const Node as usize;
+    fn node_range(&self, node: &Arc<RholangNode>) -> Range {
+        let key = &**node as *const RholangNode as usize;
         self.positions.get(&key).map_or_else(
             || {
                 debug!("No position found for node, using default range");
@@ -100,17 +100,17 @@ impl<'a> DocumentSymbolVisitor<'a> {
 impl<'a> Visitor for DocumentSymbolVisitor<'a> {
     fn visit_contract<'b>(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         _base: &NodeBase,
-        name: &Arc<Node>,
-        formals: &Vector<Arc<Node>, ArcK>,
-        formals_remainder: &Option<Arc<Node>>,
-        proc: &Arc<Node>,
+        name: &Arc<RholangNode>,
+        formals: &Vector<Arc<RholangNode>, ArcK>,
+        formals_remainder: &Option<Arc<RholangNode>>,
+        proc: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let range = self.node_range(&node);
         let selection_range = self.node_range(&name);
-        let contract_name = if let Node::Var { name, .. } = &**name {
+        let contract_name = if let RholangNode::Var { name, .. } = &**name {
             name.clone()
         } else {
             "contract".to_string()
@@ -164,12 +164,12 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
     fn visit_new<'b>(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         _base: &NodeBase,
-        decls: &Vector<Arc<Node>, ArcK>,
-        proc: &Arc<Node>,
+        decls: &Vector<Arc<RholangNode>, ArcK>,
+        proc: &Arc<RholangNode>,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let range = self.node_range(&node);
         let visitor = DocumentSymbolVisitor::new(self.positions);
         for decl in decls {
@@ -195,12 +195,12 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
     fn visit_let<'b>(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         _base: &NodeBase,
-        decls: &Vector<Arc<Node>, ArcK>,
-        proc: &Arc<Node>,
+        decls: &Vector<Arc<RholangNode>, ArcK>,
+        proc: &Arc<RholangNode>,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let range = self.node_range(&node);
         let visitor = DocumentSymbolVisitor::new(self.positions);
         for decl in decls {
@@ -226,13 +226,13 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
     fn visit_name_decl<'b>(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         _base: &NodeBase,
-        var: &Arc<Node>,
-        _uri: &Option<Arc<Node>>,
+        var: &Arc<RholangNode>,
+        _uri: &Option<Arc<RholangNode>>,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
-        if let Node::Var { name, .. } = &**var {
+    ) -> Arc<RholangNode> {
+        if let RholangNode::Var { name, .. } = &**var {
             let range = self.node_range(&node);
             let symbol = DocumentSymbol {
                 name: name.clone(),
@@ -253,15 +253,15 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
     fn visit_decl<'b>(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         _base: &NodeBase,
-        names: &Vector<Arc<Node>, ArcK>,
-        names_remainder: &Option<Arc<Node>>,
-        _procs: &Vector<Arc<Node>, ArcK>,
+        names: &Vector<Arc<RholangNode>, ArcK>,
+        names_remainder: &Option<Arc<RholangNode>>,
+        _procs: &Vector<Arc<RholangNode>, ArcK>,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         for name in names {
-            if let Node::Var { name: var_name, .. } = &**name {
+            if let RholangNode::Var { name: var_name, .. } = &**name {
                 let range = self.node_range(&name);
                 let symbol = DocumentSymbol {
                     name: var_name.clone(),
@@ -279,7 +279,7 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
             }
         }
         if let Some(rem) = names_remainder {
-            if let Node::Var { name: var_name, .. } = &**rem {
+            if let RholangNode::Var { name: var_name, .. } = &**rem {
                 let range = self.node_range(&rem);
                 let symbol = DocumentSymbol {
                     name: var_name.clone(),
@@ -301,12 +301,12 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
     fn visit_input<'b>(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         _base: &NodeBase,
-        _receipts: &Vector<Vector<Arc<Node>, ArcK>, ArcK>,
-        proc: &Arc<Node>,
+        _receipts: &Vector<Vector<Arc<RholangNode>, ArcK>, ArcK>,
+        proc: &Arc<RholangNode>,
         metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let range = self.node_range(&node);
         let mut children = Vec::new();
 
@@ -342,12 +342,12 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
     fn visit_match<'b>(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         _base: &NodeBase,
-        expression: &Arc<Node>,
-        cases: &Vector<(Arc<Node>, Arc<Node>), ArcK>,
+        expression: &Arc<RholangNode>,
+        cases: &Vector<(Arc<RholangNode>, Arc<RholangNode>), ArcK>,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let range = self.node_range(&node);
         let mut match_children = Vec::new();
 
@@ -358,8 +358,8 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
         // Process each case
         for (i, (pattern, proc)) in cases.iter().enumerate() {
-            let case_start = self.positions.get(&(&**pattern as *const Node as usize)).unwrap().0;
-            let case_end = self.positions.get(&(&**proc as *const Node as usize)).unwrap().1;
+            let case_start = self.positions.get(&(&**pattern as *const RholangNode as usize)).unwrap().0;
+            let case_end = self.positions.get(&(&**proc as *const RholangNode as usize)).unwrap().1;
             let case_range = Range {
                 start: tower_lsp::lsp_types::Position {
                     line: case_start.row as u32,
@@ -416,18 +416,18 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
     fn visit_choice<'b>(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         _base: &NodeBase,
-        branches: &Vector<(Vector<Arc<Node>, ArcK>, Arc<Node>), ArcK>,
+        branches: &Vector<(Vector<Arc<RholangNode>, ArcK>, Arc<RholangNode>), ArcK>,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let range = self.node_range(&node);
         let mut select_children = Vec::new();
 
         // Process each branch
         for (i, (inputs, proc)) in branches.iter().enumerate() {
-            let branch_start = self.positions.get(&(&*inputs[0] as *const Node as usize)).unwrap().0;
-            let branch_end = self.positions.get(&(&**proc as *const Node as usize)).unwrap().1;
+            let branch_start = self.positions.get(&(&*inputs[0] as *const RholangNode as usize)).unwrap().0;
+            let branch_end = self.positions.get(&(&**proc as *const RholangNode as usize)).unwrap().1;
             let branch_range = Range {
                 start: tower_lsp::lsp_types::Position {
                     line: branch_start.row as u32,
@@ -484,11 +484,11 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
     fn visit_block<'b>(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         _base: &NodeBase,
-        proc: &Arc<Node>,
+        proc: &Arc<RholangNode>,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let visitor = DocumentSymbolVisitor::new(self.positions);
         visitor.visit_node(proc);
         self.symbols.borrow_mut().extend(visitor.into_symbols());
@@ -497,12 +497,12 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 
     fn visit_par<'b>(
         &self,
-        node: &Arc<Node>,
+        node: &Arc<RholangNode>,
         _base: &NodeBase,
-        left: &Arc<Node>,
-        right: &Arc<Node>,
+        left: &Arc<RholangNode>,
+        right: &Arc<RholangNode>,
         _metadata: &Option<Arc<Metadata>>,
-    ) -> Arc<Node> {
+    ) -> Arc<RholangNode> {
         let visitor = DocumentSymbolVisitor::new(self.positions);
         visitor.visit_node(left);
         visitor.visit_node(right);
@@ -514,7 +514,7 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
 /// Collects document symbols using the visitor pattern.
 /// Assumes `node` and `positions` have `'static` lifetimes from the backend processing.
 pub fn collect_document_symbols(
-    node: &Arc<Node>,
+    node: &Arc<RholangNode>,
     positions: &HashMap<usize, (IrPosition, IrPosition)>,
 ) -> Vec<DocumentSymbol> {
     let visitor = DocumentSymbolVisitor::new(positions);
