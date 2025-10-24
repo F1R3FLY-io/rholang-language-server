@@ -1339,6 +1339,151 @@ impl RholangBackend {
             total_byte
         })
     }
+
+    /// Provides hover information for MeTTa files
+    async fn hover_metta(
+        &self,
+        doc: &Arc<CachedDocument>,
+        position: LspPosition,
+    ) -> LspResult<Option<Hover>> {
+        use crate::ir::semantic_node::SemanticNode;
+
+        debug!("MeTTa hover at position {:?}", position);
+
+        // Get MeTTa IR
+        let metta_ir = match &doc.metta_ir {
+            Some(ir) => ir,
+            None => {
+                debug!("No MeTTa IR available");
+                return Ok(None);
+            }
+        };
+
+        // Find the node at the cursor position
+        // For now, we do a simple linear search
+        // TODO: Build position index for O(log n) lookup
+        for (index, node) in metta_ir.iter().enumerate() {
+            let base = node.base();
+            let rel_start = base.relative_start();
+            let node_line = rel_start.delta_lines.max(0) as u32;
+            let node_col = rel_start.delta_columns.max(0) as u32;
+            let node_end_col = node_col + base.length() as u32;
+
+            // Check if position is within this node
+            if position.line == node_line
+                && position.character >= node_col
+                && position.character <= node_end_col
+            {
+                return self.create_metta_hover_content(node, index, position);
+            }
+        }
+
+        debug!("No MeTTa node found at position {:?}", position);
+        Ok(None)
+    }
+
+    /// Creates hover content for a MeTTa node
+    fn create_metta_hover_content(
+        &self,
+        node: &Arc<crate::ir::metta_node::MettaNode>,
+        _index: usize,
+        position: LspPosition,
+    ) -> LspResult<Option<Hover>> {
+        use crate::ir::metta_node::MettaNode;
+
+        let hover_text = match &**node {
+            MettaNode::Definition { pattern, .. } => {
+                let name = self.extract_metta_name(pattern).unwrap_or("definition".to_string());
+                format!("```metta\n(= {} ...)\n```\n\n**MeTTa Definition**", name)
+            }
+            MettaNode::TypeAnnotation { expr, type_expr, .. } => {
+                let expr_name = self.extract_metta_name(expr).unwrap_or("expr".to_string());
+                let type_name = self.extract_metta_name(type_expr).unwrap_or("type".to_string());
+                format!("```metta\n(: {} {})\n```\n\n**Type Annotation**", expr_name, type_name)
+            }
+            MettaNode::Atom { name, .. } => {
+                format!("```metta\n{}\n```\n\n**Atom**", name)
+            }
+            MettaNode::Variable { name, var_type, .. } => {
+                format!("```metta\n{}{}\n```\n\n**Variable** ({})",
+                    var_type, name,
+                    match var_type {
+                        crate::ir::metta_node::MettaVariableType::Regular => "regular",
+                        crate::ir::metta_node::MettaVariableType::Grounded => "grounded",
+                        crate::ir::metta_node::MettaVariableType::Quoted => "quoted",
+                    }
+                )
+            }
+            MettaNode::Lambda { params, .. } => {
+                let param_names = params.iter()
+                    .filter_map(|p| self.extract_metta_name(p))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("```metta\n(λ ({}) ...)\n```\n\n**Lambda Function**", param_names)
+            }
+            MettaNode::Integer { value, .. } => {
+                format!("```metta\n{}\n```\n\n**Integer**", value)
+            }
+            MettaNode::Float { value, .. } => {
+                format!("```metta\n{}\n```\n\n**Float**", value)
+            }
+            MettaNode::String { value, .. } => {
+                format!("```metta\n\"{}\"\n```\n\n**String**", value)
+            }
+            MettaNode::Bool { value, .. } => {
+                format!("```metta\n{}\n```\n\n**Boolean**", value)
+            }
+            MettaNode::Match { .. } => {
+                "```metta\n(match ...)\n```\n\n**Pattern Match**".to_string()
+            }
+            MettaNode::Let { .. } => {
+                "```metta\n(let ...)\n```\n\n**Let Binding**".to_string()
+            }
+            MettaNode::If { .. } => {
+                "```metta\n(if ...)\n```\n\n**Conditional**".to_string()
+            }
+            MettaNode::Eval { .. } => {
+                "```metta\n!(expr)\n```\n\n**Evaluation**".to_string()
+            }
+            MettaNode::SExpr { elements, .. } => {
+                let len = elements.len();
+                format!("```metta\n(...)\n```\n\n**S-Expression** ({} elements)", len)
+            }
+            MettaNode::Nil { .. } => {
+                "```metta\nNil\n```\n\n**Nil**".to_string()
+            }
+            MettaNode::Error { message, .. } => {
+                format!("**Error**: {}", message)
+            }
+            MettaNode::Comment { text, .. } => {
+                format!("**Comment**\n\n{}", text)
+            }
+        };
+
+        Ok(Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: hover_text,
+            }),
+            range: Some(Range {
+                start: position,
+                end: LspPosition {
+                    line: position.line,
+                    character: position.character + 1,
+                },
+            }),
+        }))
+    }
+
+    /// Extract name from a MeTTa node (helper for hover)
+    fn extract_metta_name(&self, node: &Arc<crate::ir::metta_node::MettaNode>) -> Option<String> {
+        use crate::ir::metta_node::MettaNode;
+        match &**node {
+            MettaNode::Atom { name, .. } => Some(name.clone()),
+            MettaNode::Variable { name, .. } => Some(format!("${}", name)),
+            _ => None,
+        }
+    }
 }
 
 #[tower_lsp::async_trait]
@@ -2024,7 +2169,19 @@ impl LanguageServer for RholangBackend {
             }
         };
 
-        // Find the node at the cursor position
+        use crate::lsp::models::DocumentLanguage;
+
+        // Route to language-specific hover handler
+        match doc.language {
+            DocumentLanguage::Metta => {
+                return self.hover_metta(&doc, position).await;
+            }
+            DocumentLanguage::Rholang | DocumentLanguage::Unknown => {
+                // Continue with Rholang hover logic below
+            }
+        }
+
+        // Find the node at the cursor position (Rholang)
         let ir_position = IrPosition {
             row: position.line as usize,
             column: position.character as usize,
