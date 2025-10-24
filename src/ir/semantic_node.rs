@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use super::node::{NodeBase, Position, RelativePosition};
+use super::rholang_node::{NodeBase, Position, RelativePosition};
 
 /// Discriminator for different node types in the semantic IR
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

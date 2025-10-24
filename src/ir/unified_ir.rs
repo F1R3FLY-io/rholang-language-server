@@ -11,7 +11,7 @@ use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
 
-use super::node::{NodeBase, Node};
+use super::rholang_node::{NodeBase, Node};
 use super::metta_node::{MettaNode, VariableType};
 use super::semantic_node::{Metadata, NodeType, SemanticNode};
 

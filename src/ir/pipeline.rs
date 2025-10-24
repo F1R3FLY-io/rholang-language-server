@@ -2,7 +2,7 @@ use std::sync::Arc;
 use petgraph::Graph;
 use petgraph::graph::NodeIndex;
 use petgraph::algo::toposort;
-use super::node::Node;
+use super::rholang_node::Node;
 use super::visitor::Visitor;
 
 /// Manages a pipeline of transformations applied to the Rholang IR tree.

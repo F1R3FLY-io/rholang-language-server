@@ -2,7 +2,7 @@ use std::sync::Arc;
 use rpds::Vector;
 use archery::ArcK;
 
-use super::node::{Node, NodeBase, Metadata, CommentKind, SendType, BundleType, BinOperator, UnaryOperator, VarRefKind, RelativePosition};
+use super::rholang_node::{Node, NodeBase, Metadata, CommentKind, SendType, BundleType, BinOperator, UnaryOperator, VarRefKind, RelativePosition};
 
 /// Provides a visitor pattern for traversing and transforming the Rholang Intermediate Representation (IR) tree.
 /// This module enables implementors to define custom logic for processing each node type, facilitating operations

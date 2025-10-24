@@ -1,5 +1,5 @@
 
-use super::node::{Node, BinOperator, SendType, BundleType, UnaryOperator, VarRefKind, CommentKind};
+use super::rholang_node::{Node, BinOperator, SendType, BundleType, UnaryOperator, VarRefKind, CommentKind};
 use std::sync::Arc;
 use ropey::Rope;
 

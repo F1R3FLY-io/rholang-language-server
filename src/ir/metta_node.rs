@@ -8,7 +8,7 @@ use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
 
-use super::node::{NodeBase, Position};
+use super::rholang_node::{NodeBase, Position};
 use super::semantic_node::{Metadata, NodeType, SemanticNode};
 
 /// MeTTa-specific node types
