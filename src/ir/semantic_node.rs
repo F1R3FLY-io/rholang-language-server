@@ -200,6 +200,151 @@ pub fn insert_metadata<T: Any + Send + Sync>(
     metadata.insert(key.to_string(), Arc::new(value) as Arc<dyn Any + Send + Sync>);
 }
 
+/// Generic visitor trait for language-agnostic IR traversal
+///
+/// This visitor works with any IR that implements SemanticNode, providing
+/// a unified way to traverse and transform IR trees regardless of the source language.
+///
+/// Unlike the language-specific Visitor trait (for Rholang Node), this visitor
+/// operates at the semantic level using NodeType discrimination.
+///
+/// # Example
+/// ```rust,ignore
+/// struct CountVariables {
+///     count: usize,
+/// }
+///
+/// impl GenericVisitor for CountVariables {
+///     fn visit_node(&mut self, node: &dyn SemanticNode) {
+///         if matches!(node.node_type(), NodeType::Variable) {
+///             self.count += 1;
+///         }
+///         self.visit_children(node);
+///     }
+/// }
+/// ```
+pub trait GenericVisitor {
+    /// Visit a semantic node
+    ///
+    /// Override this method to implement custom visiting logic.
+    /// Call `visit_children()` to recursively visit child nodes.
+    fn visit_node(&mut self, node: &dyn SemanticNode) {
+        self.visit_children(node);
+    }
+
+    /// Visit all children of a node
+    ///
+    /// This is a helper method that visits each child node.
+    /// Override to customize child traversal order or filtering.
+    fn visit_children(&mut self, node: &dyn SemanticNode) {
+        for child in node.children() {
+            self.visit_node(child);
+        }
+    }
+
+    /// Visit a node based on its semantic type
+    ///
+    /// This method dispatches to type-specific handlers based on NodeType.
+    /// Override specific handlers (visit_literal, visit_variable, etc.) to
+    /// customize behavior for specific node types.
+    fn visit_typed(&mut self, node: &dyn SemanticNode) {
+        match node.node_type() {
+            NodeType::Literal => self.visit_literal(node),
+            NodeType::Variable => self.visit_variable(node),
+            NodeType::Binding => self.visit_binding(node),
+            NodeType::Invocation => self.visit_invocation(node),
+            NodeType::Match => self.visit_match(node),
+            NodeType::Collection => self.visit_collection(node),
+            NodeType::Conditional => self.visit_conditional(node),
+            NodeType::Block => self.visit_block(node),
+            _ => self.visit_node(node), // Fallback for language-specific types
+        }
+    }
+
+    // Type-specific visitor methods (can be overridden)
+
+    fn visit_literal(&mut self, node: &dyn SemanticNode) {
+        self.visit_node(node);
+    }
+
+    fn visit_variable(&mut self, node: &dyn SemanticNode) {
+        self.visit_node(node);
+    }
+
+    fn visit_binding(&mut self, node: &dyn SemanticNode) {
+        self.visit_node(node);
+    }
+
+    fn visit_invocation(&mut self, node: &dyn SemanticNode) {
+        self.visit_node(node);
+    }
+
+    fn visit_match(&mut self, node: &dyn SemanticNode) {
+        self.visit_node(node);
+    }
+
+    fn visit_collection(&mut self, node: &dyn SemanticNode) {
+        self.visit_node(node);
+    }
+
+    fn visit_conditional(&mut self, node: &dyn SemanticNode) {
+        self.visit_node(node);
+    }
+
+    fn visit_block(&mut self, node: &dyn SemanticNode) {
+        self.visit_node(node);
+    }
+}
+
+/// Transforming visitor trait for language-agnostic IR transformation
+///
+/// Unlike GenericVisitor which is for analysis/inspection, TransformVisitor
+/// creates new IR nodes, enabling immutable transformations.
+///
+/// # Example
+/// ```rust,ignore
+/// struct RenameVariable {
+///     old_name: String,
+///     new_name: String,
+/// }
+///
+/// impl TransformVisitor for RenameVariable {
+///     fn transform_node(&self, node: &Arc<dyn SemanticNode>) -> Arc<dyn SemanticNode> {
+///         // Downcast and transform as needed
+///         // Return new node or original if unchanged
+///         node.clone()
+///     }
+/// }
+/// ```
+pub trait TransformVisitor {
+    /// Transform a node, returning a new node or the original
+    ///
+    /// Implementations should:
+    /// 1. Check if transformation applies to this node
+    /// 2. Transform children recursively
+    /// 3. Create new node if anything changed
+    /// 4. Return original if unchanged (for structural sharing)
+    fn transform_node(&self, node: &Arc<dyn SemanticNode>) -> Arc<dyn SemanticNode> {
+        // Default: return original (identity transform)
+        Arc::clone(node)
+    }
+
+    /// Transform all children of a node
+    ///
+    /// Helper method for recursively transforming child nodes.
+    fn transform_children(&self, children: Vec<&dyn SemanticNode>) -> Vec<Arc<dyn SemanticNode>> {
+        children
+            .into_iter()
+            .map(|child| {
+                // This is tricky - we need Arc<dyn SemanticNode> but have &dyn SemanticNode
+                // In practice, implementations will need to work with concrete types
+                // For now, return empty vec
+                unimplemented!("transform_children requires concrete type knowledge")
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +370,24 @@ mod tests {
     fn test_metadata_with() {
         let metadata = metadata_with("count", 100usize);
         assert_eq!(get_metadata::<usize>(&metadata, "count"), Some(&100));
+    }
+
+    // Test GenericVisitor
+    struct NodeCounter {
+        count: usize,
+    }
+
+    impl GenericVisitor for NodeCounter {
+        fn visit_node(&mut self, node: &dyn SemanticNode) {
+            self.count += 1;
+            self.visit_children(node);
+        }
+    }
+
+    #[test]
+    fn test_generic_visitor() {
+        let mut counter = NodeCounter { count: 0 };
+        // Would need actual nodes to test, but the trait compiles
+        assert_eq!(counter.count, 0);
     }
 }

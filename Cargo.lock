@@ -2444,6 +2444,8 @@ dependencies = [
  "mork-frontend",
  "pathmap 0.1.0",
  "tokio",
+ "tree-sitter",
+ "tree-sitter-metta",
 ]
 
 [[package]]
@@ -5413,6 +5415,14 @@ name = "tree-sitter-language"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4013970217383f67b18aef68f6fb2e8d409bc5755227092d32efb0422ba24b8"
+
+[[package]]
+name = "tree-sitter-metta"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "tree-sitter",
+]
 
 [[package]]
 name = "tree-sitter-rust"

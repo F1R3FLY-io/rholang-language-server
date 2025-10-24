@@ -1,4 +1,5 @@
 pub mod formatter;
+pub mod metta_node;
 pub mod node;
 pub mod pipeline;
 pub mod semantic_node;

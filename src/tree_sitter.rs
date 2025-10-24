@@ -968,7 +968,7 @@ mod tests {
 
     #[test]
     fn test_parse_par_position() {
-        let _ = crate::logging::init_logger(false, Some("warn"));
+        let _ = crate::logging::init_logger(false, Some("warn"), false);
         let code = r#"Nil | Nil"#;
         let tree = parse_code(code);
         let rope = Rope::from_str(code);
@@ -989,7 +989,7 @@ mod tests {
 
     #[test]
     fn test_parse_new_nested() {
-        let _ = crate::logging::init_logger(false, Some("warn"));
+        let _ = crate::logging::init_logger(false, Some("warn"), false);
         let code = r#"new x in { x!() }"#;
         let tree = parse_code(code);
         let rope = Rope::from_str(code);
@@ -1046,7 +1046,7 @@ mod tests {
         // Note: _parenthesized is a hidden/transparent node in the Tree-Sitter grammar,
         // so Tree-Sitter doesn't report it in the parse tree. It's purely for precedence.
         // The parentheses are syntax-level only and don't create an IR node.
-        let _ = crate::logging::init_logger(false, Some("warn"));
+        let _ = crate::logging::init_logger(false, Some("warn"), false);
         let code = r#"(Nil)"#;
         let tree = parse_code(code);
         let rope = Rope::from_str(code);
@@ -1066,7 +1066,7 @@ mod tests {
 
     #[test]
     fn test_parse_name_remainder() {
-        let _ = crate::logging::init_logger(false, Some("warn"));
+        let _ = crate::logging::init_logger(false, Some("warn"), false);
         let code = r#"for(x, ...@y <- ch) { Nil }"#;
         let tree = parse_code(code);
         let rope = Rope::from_str(code);
@@ -1097,7 +1097,7 @@ mod tests {
 
     #[test]
     fn test_parse_sync_send_empty_cont() {
-        let _ = crate::logging::init_logger(false, Some("warn"));
+        let _ = crate::logging::init_logger(false, Some("warn"), false);
         let code = r#"ch!?("msg")."#;
         let tree = parse_code(code);
         let rope = Rope::from_str(code);
@@ -1115,7 +1115,7 @@ mod tests {
 
     #[test]
     fn test_parse_sync_send_non_empty_cont() {
-        let _ = crate::logging::init_logger(false, Some("warn"));
+        let _ = crate::logging::init_logger(false, Some("warn"), false);
         let code = r#"ch!?("msg"); Nil"#;
         let tree = parse_code(code);
         let rope = Rope::from_str(code);
@@ -1133,7 +1133,7 @@ mod tests {
 
     #[test]
     fn test_parse_invalid_long_literal() {
-        let _ = crate::logging::init_logger(false, Some("warn"));
+        let _ = crate::logging::init_logger(false, Some("warn"), false);
         let code = r#"\u{509ae}"#; // Invalid integer literal
         let tree = parse_code(code);
 
@@ -1150,7 +1150,7 @@ mod tests {
 
     #[test]
     fn test_parse_valid_long_literal() {
-        let _ = crate::logging::init_logger(false, Some("warn"));
+        let _ = crate::logging::init_logger(false, Some("warn"), false);
         let code = r#"123"#;
         let tree = parse_code(code);
         let rope = Rope::from_str(code);
@@ -1165,7 +1165,7 @@ mod tests {
 
     #[test]
     fn test_parse_string_literal_with_escapes() {
-        let _ = crate::logging::init_logger(false, Some("warn"));
+        let _ = crate::logging::init_logger(false, Some("warn"), false);
         let code = r#""hello \"world\"""#;
         let tree = parse_code(code);
         let rope = Rope::from_str(code);
@@ -1180,7 +1180,7 @@ mod tests {
 
     #[test]
     fn test_parse_invalid_string_literal() {
-        let _ = crate::logging::init_logger(false, Some("warn"));
+        let _ = crate::logging::init_logger(false, Some("warn"), false);
         let code = r#""""#; // Empty quotes
         let tree = parse_code(code);
         let rope = Rope::from_str(code);
@@ -1195,7 +1195,7 @@ mod tests {
 
     #[test]
     fn test_parse_uri_literal() {
-        let _ = crate::logging::init_logger(false, Some("warn"));
+        let _ = crate::logging::init_logger(false, Some("warn"), false);
         let code = r#"`http://example.com`"#;
         let tree = parse_code(code);
         let rope = Rope::from_str(code);
