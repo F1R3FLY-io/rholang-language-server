@@ -3389,22 +3389,59 @@ impl LanguageServer for RholangBackend {
                 }
             }
 
-            // Fallback: provide basic hover info for any variable
+            // Fallback: provide enhanced hover info using symbol table
             // This prevents VSCode from clearing document highlights when hover returns None
-            debug!("Providing basic hover for variable '{}'", var_name);
-            return Ok(Some(Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: format!("**{}**\n\n*variable*", var_name),
-                }),
-                range: Some(Range {
-                    start: position,
-                    end: LspPosition {
-                        line: position.line,
-                        character: position.character + var_name.len() as u32,
-                    },
-                }),
-            }));
+            debug!("Looking up symbol information for variable '{}'", var_name);
+
+            drop(workspace); // Release workspace lock before get_symbol_at_position
+
+            if let Some(symbol) = self.get_symbol_at_position(&uri, position).await {
+                let mut hover_text = format!("**{}**", var_name);
+
+                // Add symbol type
+                let symbol_type_str = match symbol.symbol_type {
+                    SymbolType::Variable => "variable",
+                    SymbolType::Contract => "contract",
+                    SymbolType::Parameter => "parameter",
+                };
+                hover_text.push_str(&format!("\n\n*{}*", symbol_type_str));
+
+                // Add declaration location
+                let decl_loc = symbol.declaration_location;
+                hover_text.push_str(&format!("\n\nDeclared at line {}, column {}",
+                    decl_loc.row + 1, decl_loc.column + 1));
+
+                debug!("Providing enhanced hover for variable '{}'", var_name);
+                return Ok(Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: hover_text,
+                    }),
+                    range: Some(Range {
+                        start: position,
+                        end: LspPosition {
+                            line: position.line,
+                            character: position.character + var_name.len() as u32,
+                        },
+                    }),
+                }));
+            } else {
+                // Last resort: show just the variable name
+                debug!("No symbol info found, providing basic hover for variable '{}'", var_name);
+                return Ok(Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: format!("**{}**\n\n*variable*", var_name),
+                    }),
+                    range: Some(Range {
+                        start: position,
+                        end: LspPosition {
+                            line: position.line,
+                            character: position.character + var_name.len() as u32,
+                        },
+                    }),
+                }));
+            }
         }
 
         debug!("No hover information available");
