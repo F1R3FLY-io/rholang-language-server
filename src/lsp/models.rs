@@ -86,6 +86,8 @@ pub struct CachedDocument {
     pub potential_global_refs: Vec<(String, IrPosition)>,
     /// Suffix array-based symbol index for O(m log n + k) substring search
     pub symbol_index: Arc<SymbolIndex>,
+    /// Fast hash of document content for change detection
+    pub content_hash: u64,
 }
 
 /// State for an open text document managed by the LSP server.

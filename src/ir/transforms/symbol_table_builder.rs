@@ -7,7 +7,7 @@ use rpds::Vector;
 use tower_lsp::lsp_types::Url;
 use tracing::trace;
 
-use crate::ir::rholang_node::{Metadata, RholangNode, NodeBase, Position};
+use crate::ir::rholang_node::{Metadata, RholangNode, RholangNodeVector, NodeBase, Position};
 use crate::ir::symbol_table::{Symbol, SymbolTable, SymbolType};
 use crate::ir::visitor::Visitor;
 
@@ -179,9 +179,33 @@ impl Visitor for SymbolTableBuilder {
         let new_left = self.visit_node(left);
         let new_right = self.visit_node(right);
         let new_node = Arc::new(RholangNode::Par {
+                processes: None,
             base: base.clone(),
-            left: new_left,
-            right: new_right,
+            left: Some(new_left),
+            right: Some(new_right),
+            metadata: metadata.clone(),
+        });
+        self.update_with_current_table(new_node, None, metadata)
+    }
+
+    /// Visits an n-ary parallel composition node.
+    fn visit_par_nary(
+        &self,
+        _node: &Arc<RholangNode>,
+        base: &NodeBase,
+        processes: &RholangNodeVector,
+        metadata: &Option<Arc<Metadata>>,
+    ) -> Arc<RholangNode> {
+        let new_processes: Vec<Arc<RholangNode>> = processes
+            .iter()
+            .map(|proc| self.visit_node(proc))
+            .collect();
+
+        let new_node = Arc::new(RholangNode::Par {
+            processes: Some(Vector::from_iter(new_processes)),
+            base: base.clone(),
+            left: None,
+            right: None,
             metadata: metadata.clone(),
         });
         self.update_with_current_table(new_node, None, metadata)

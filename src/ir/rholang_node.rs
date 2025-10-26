@@ -8,7 +8,7 @@ use archery::ArcK;
 
 use ropey::{Rope, RopeSlice};
 
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 pub use super::semantic_node::{Metadata, NodeBase, Position, RelativePosition};
 
@@ -27,11 +27,15 @@ pub type RholangReceiptVector = Vector<RholangNodeVector, ArcK>;
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum RholangNode {
-    /// Parallel composition of two processes.
+    /// Parallel composition of processes.
+    /// Supports both binary (left/right) and n-ary (processes) forms for gradual migration.
     Par {
         base: NodeBase,
-        left: Arc<RholangNode>,
-        right: Arc<RholangNode>,
+        // Legacy binary form (deprecated, will be removed after migration)
+        left: Option<Arc<RholangNode>>,
+        right: Option<Arc<RholangNode>>,
+        // New n-ary form (preferred)
+        processes: Option<RholangNodeVector>,
         metadata: Option<Arc<Metadata>>,
     },
     /// Synchronous send with a continuation process.
@@ -432,44 +436,22 @@ fn compute_positions_helper(
     };
     let end = compute_end_position(start, base.span_lines(), base.span_columns(), base.length());
 
-    // Debug logging for Block nodes to track position issues
-    if matches!(&**node, RholangNode::Block { .. }) {
-        debug!("Block compute: prev_end={:?}, delta_bytes={}, computed start={:?}, length={}",
-               prev_end, relative_start.delta_bytes, start, base.length());
-    }
-
-    // Debug logging for Send nodes to track position issues
-    if matches!(&**node, RholangNode::Send { .. }) {
-        debug!("Send compute: prev_end={:?}, delta_bytes={}, computed start={:?}",
-               prev_end, relative_start.delta_bytes, start);
-    }
-
-    // Debug logging for Var nodes to track position issues
-    if let RholangNode::Var { name, .. } = &**node {
-        debug!("Var '{}': prev_end={:?}, start={:?}, length={}, end={:?}",
-               name, prev_end, start, base.length(), end);
-    }
-
-    // Debug logging for Contract nodes
-    if let RholangNode::Contract { name, .. } = &**node {
-        if let RholangNode::Var { name: contract_name, .. } = &**name {
-            debug!("Contract '{}': prev_end={:?}, delta=({},{},{}), computed start={:?}, end={:?}",
-                contract_name, prev_end,
-                relative_start.delta_lines, relative_start.delta_columns, relative_start.delta_bytes,
-                start, end);
-        }
-    }
+    // Hot path: Position computation runs during parsing for every node
+    // Removed per-node debug logging to avoid excessive log volume
+    // Use RUST_LOG=trace for detailed position tracking
 
     let mut current_prev = start;
 
     // Process children
     match &**node {
-        RholangNode::Par { left, right, .. } => {
-            debug!("Processing Par: current_prev before left = {:?}", current_prev);
+        RholangNode::Par { left: Some(left), right: Some(right), .. } => {
             current_prev = compute_positions_helper(left, current_prev, positions);
-            debug!("Processing Par: current_prev after left = {:?}", current_prev);
             current_prev = compute_positions_helper(right, current_prev, positions);
-            debug!("Processing Par: current_prev after right = {:?}", current_prev);
+        }
+        RholangNode::Par { processes: Some(procs), .. } => {
+            for proc in procs.iter() {
+                current_prev = compute_positions_helper(proc, current_prev, positions);
+            }
         }
         RholangNode::SendSync {
             channel, inputs, cont, ..
@@ -486,10 +468,7 @@ fn compute_positions_helper(
             send_type_delta,
             ..
         } => {
-            debug!("Send: start={:?}, current_prev={:?}", start, current_prev);
             let channel_end = compute_positions_helper(channel, current_prev, positions);
-            debug!("Send: channel_end={:?}, send_type_delta=({},{},{})",
-                   channel_end, send_type_delta.delta_lines, send_type_delta.delta_columns, send_type_delta.delta_bytes);
             let send_type_end = Position {
                 row: (channel_end.row as i32 + send_type_delta.delta_lines) as usize,
                 column: if send_type_delta.delta_lines == 0 {
@@ -499,12 +478,9 @@ fn compute_positions_helper(
                 },
                 byte: channel_end.byte + send_type_delta.delta_bytes,
             };
-            debug!("Send: send_type_end={:?}", send_type_end);
             let mut temp_prev = send_type_end;
-            for (i, input) in inputs.iter().enumerate() {
-                debug!("Send: Processing input {} with temp_prev={:?}", i, temp_prev);
+            for input in inputs.iter() {
                 temp_prev = compute_positions_helper(input, temp_prev, positions);
-                debug!("Send: After input {}, temp_prev={:?}", i, temp_prev);
             }
             current_prev = temp_prev;
         }
@@ -598,8 +574,8 @@ fn compute_positions_helper(
             current_prev = compute_positions_helper(name, current_prev, positions);
         }
         RholangNode::Quote { quotable, .. } => {
-            // The quotable's delta in the IR was calculated from the end of '@',
-            // so we need to start from after the '@' character (Quote start + 1 byte).
+            // The quotable's delta was calculated from after the '@' symbol (see quote handler in tree_sitter.rs).
+            // So we need to pass the position after '@' to match how the delta was computed.
             let after_at = Position {
                 row: start.row,
                 column: start.column + 1,
@@ -676,8 +652,6 @@ fn compute_positions_helper(
             source,
             ..
         } => {
-            debug!("LinearBind: start={:?}, length={}, computed end={:?}",
-                   start, base.length(), end);
             for name in names {
                 current_prev = compute_positions_helper(name, current_prev, positions);
             }
@@ -685,7 +659,6 @@ fn compute_positions_helper(
                 current_prev = compute_positions_helper(rem, current_prev, positions);
             }
             current_prev = compute_positions_helper(source, current_prev, positions);
-            debug!("LinearBind: after processing children, current_prev={:?}", current_prev);
         }
         RholangNode::RepeatedBind {
             names,
@@ -1092,9 +1065,14 @@ pub fn match_contract(channel: &Arc<RholangNode>, inputs: &RholangNodeVector, co
 pub fn collect_contracts(node: &Arc<RholangNode>, contracts: &mut Vec<Arc<RholangNode>>) {
     match &**node {
         RholangNode::Contract { .. } => contracts.push(node.clone()),
-        RholangNode::Par { left, right, .. } => {
+        RholangNode::Par { left: Some(left), right: Some(right), .. } => {
             collect_contracts(left, contracts);
             collect_contracts(right, contracts);
+        }
+        RholangNode::Par { processes: Some(procs), .. } => {
+            for proc in procs.iter() {
+                collect_contracts(proc, contracts);
+            }
         }
         RholangNode::SendSync {
             channel, inputs, cont, ..
@@ -1313,9 +1291,14 @@ pub fn collect_contracts(node: &Arc<RholangNode>, contracts: &mut Vec<Arc<Rholan
 pub fn collect_calls(node: &Arc<RholangNode>, calls: &mut Vec<Arc<RholangNode>>) {
     match &**node {
         RholangNode::Send { .. } | RholangNode::SendSync { .. } => calls.push(node.clone()),
-        RholangNode::Par { left, right, .. } => {
+        RholangNode::Par { left: Some(left), right: Some(right), .. } => {
             collect_calls(left, calls);
             collect_calls(right, calls);
+        }
+        RholangNode::Par { processes: Some(procs), .. } => {
+            for proc in procs.iter() {
+                collect_calls(proc, calls);
+            }
         }
         RholangNode::New { decls, proc, .. } => {
             for decl in decls {
@@ -1554,22 +1537,25 @@ fn traverse_with_path(
     path.push(node.clone());
     let key = &**node as *const RholangNode as usize;
     if let Some(&(start, end)) = positions.get(&key) {
-        debug!("traverse_with_path: Checking node {:p} at depth {} with range [{}, {}] for position {}",
-               &**node, depth, start.byte, end.byte, pos.byte);
+        // Hot path: removed per-node debug logging to avoid thousands of log lines per request
+        // Enable with RUST_LOG=trace for deep debugging
         if start.byte <= pos.byte && pos.byte <= end.byte {
             let is_better = best.as_ref().map_or(true, |(_, _, b_depth)| depth > *b_depth);
-            debug!("  traverse_with_path: RholangNode {:p} contains position. is_better={} (current depth={}, best depth={:?})",
-                   &**node, is_better, depth, best.as_ref().map(|(_, _, d)| d));
             if is_better {
-                debug!("  traverse_with_path: Setting node {:p} as new best at depth {}", &**node, depth);
+                trace!("Found better match at depth {} for position {}", depth, pos.byte);
                 *best = Some((node.clone(), path.clone(), depth));
             }
         }
     }
     match &**node {
-        RholangNode::Par { left, right, .. } => {
+        RholangNode::Par { left: Some(left), right: Some(right), .. } => {
             traverse_with_path(left, pos, positions, path, best, depth + 1);
             traverse_with_path(right, pos, positions, path, best, depth + 1);
+        }
+        RholangNode::Par { processes: Some(procs), .. } => {
+            for proc in procs.iter() {
+                traverse_with_path(proc, pos, positions, path, best, depth + 1);
+            }
         }
         RholangNode::SendSync {
             channel, inputs, cont, ..
@@ -1770,22 +1756,24 @@ fn traverse(
 ) {
     let key = &**node as *const RholangNode as usize;
     if let Some(&(start, end)) = positions.get(&key) {
-        debug!("traverse: Checking node {:p} at depth {} with range [{}, {}] for position {}",
-               &**node, depth, start.byte, end.byte, pos.byte);
+        // Hot path: removed per-node debug logging - same as traverse_with_path
         if start.byte <= pos.byte && pos.byte <= end.byte {
             let is_better = best.as_ref().map_or(true, |(_, _, b_depth)| depth > *b_depth);
-            debug!("  traverse: RholangNode {:p} contains position. is_better={} (current depth={}, best depth={:?})",
-                   &**node, is_better, depth, best.as_ref().map(|(_, _, d)| d));
             if is_better {
-                debug!("  traverse: Setting node {:p} as new best at depth {}", &**node, depth);
+                trace!("Found better match at depth {} for position {}", depth, pos.byte);
                 *best = Some((node.clone(), start, depth));
             }
         }
     }
     match &**node {
-        RholangNode::Par { left, right, .. } => {
+        RholangNode::Par { left: Some(left), right: Some(right), .. } => {
             traverse(left, pos, positions, best, depth + 1);
             traverse(right, pos, positions, best, depth + 1);
+        }
+        RholangNode::Par { processes: Some(procs), .. } => {
+            for proc in procs.iter() {
+                traverse(proc, pos, positions, best, depth + 1);
+            }
         }
         RholangNode::SendSync { channel, inputs, cont, .. } => {
             traverse(channel, pos, positions, best, depth + 1);
@@ -1991,6 +1979,24 @@ pub fn find_node_at_position(
 }
 
 impl RholangNode {
+    /// Returns the processes in a Par node, handling both binary and n-ary forms.
+    ///
+    /// This helper provides uniform access during the migration from binary to n-ary Par.
+    /// Returns an empty vector if called on a non-Par node.
+    pub fn par_processes(&self) -> Vec<Arc<RholangNode>> {
+        match self {
+            RholangNode::Par { processes: Some(procs), .. } => {
+                // N-ary form - return all processes
+                procs.iter().cloned().collect()
+            }
+            RholangNode::Par { left: Some(left), right: Some(right), .. } => {
+                // Binary form - return left and right
+                vec![left.clone(), right.clone()]
+            }
+            _ => vec![],
+        }
+    }
+
     /// Returns the starting line number of the node within the source code.
     ///
     /// # Arguments
@@ -2076,14 +2082,28 @@ impl RholangNode {
     pub fn with_base(&self, new_base: NodeBase) -> Arc<RholangNode> {
         match self {
             RholangNode::Par {
+                processes: None,
                 metadata,
                 left,
                 right,
                 ..
             } => Arc::new(RholangNode::Par {
+                processes: None,
                 base: new_base,
                 left: left.clone(),
                 right: right.clone(),
+                metadata: metadata.clone(),
+            }),
+            // N-ary Par case (currently not used but needed for exhaustiveness)
+            RholangNode::Par {
+                processes: Some(procs),
+                metadata,
+                ..
+            } => Arc::new(RholangNode::Par {
+                base: new_base,
+                left: None,
+                right: None,
+                processes: Some(procs.clone()),
                 metadata: metadata.clone(),
             }),
             RholangNode::SendSync {
@@ -2470,9 +2490,14 @@ impl RholangNode {
                     }
                 }
             }
-            RholangNode::Par { left, right, .. } => {
+            RholangNode::Par { left: Some(left), right: Some(right), .. } => {
                 left.validate()?;
                 right.validate()?;
+            }
+            RholangNode::Par { processes: Some(procs), .. } => {
+                for proc in procs.iter() {
+                    proc.validate()?;
+                }
             }
             RholangNode::New { decls, proc, .. } => {
                 for decl in decls {
@@ -2722,10 +2747,11 @@ impl RholangNode {
     /// A new Arc<RholangNode> with the updated metadata.
     pub fn with_metadata(&self, new_metadata: Option<Arc<Metadata>>) -> Arc<RholangNode> {
         match self {
-            RholangNode::Par { base, left, right, .. } => Arc::new(RholangNode::Par {
+            RholangNode::Par { base, left, right, processes, .. } => Arc::new(RholangNode::Par {
                 base: base.clone(),
                 left: left.clone(),
                 right: right.clone(),
+                processes: processes.clone(),
                 metadata: new_metadata,
             }),
             RholangNode::SendSync {
@@ -3394,9 +3420,10 @@ impl RholangNode {
     ) -> Self {
         let base = NodeBase::new(relative_start, length, span_lines, span_columns);
         RholangNode::Par {
+                processes: None,
             base,
-            left,
-            right,
+            left: Some(left),
+            right: Some(right),
             metadata,
         }
     }
@@ -4396,8 +4423,10 @@ impl super::semantic_node::SemanticNode for RholangNode {
 
     fn children_count(&self) -> usize {
         match self {
+            // N-ary nodes (variable children)
+            RholangNode::Par { processes: Some(procs), .. } => procs.len(),
             // Binary nodes (2 children)
-            RholangNode::Par { left, right, .. } => {
+            RholangNode::Par { left: Some(left), right: Some(right), .. } => {
                 let _ = (left, right);
                 2
             }
@@ -4506,8 +4535,12 @@ impl super::semantic_node::SemanticNode for RholangNode {
 
     fn child_at(&self, index: usize) -> Option<&dyn super::semantic_node::SemanticNode> {
         match self {
+            // N-ary nodes
+            RholangNode::Par { processes: Some(procs), .. } => {
+                procs.get(index).map(|p| &**p as &dyn super::semantic_node::SemanticNode)
+            }
             // Binary nodes
-            RholangNode::Par { left, right, .. } => match index {
+            RholangNode::Par { left: Some(left), right: Some(right), .. } => match index {
                 0 => Some(&**left),
                 1 => Some(&**right),
                 _ => None,
@@ -4701,7 +4734,7 @@ mod tests {
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree, &rope);
         let root = Arc::new(ir.clone());
-        if let RholangNode::Par { left, right, .. } = &*ir {
+        if let RholangNode::Par { left: Some(left), right: Some(right), .. } = &*ir {
             let left_start = left.absolute_start(&root);
             assert_eq!(left_start.row, 0);
             assert_eq!(left_start.column, 0);
@@ -4870,8 +4903,8 @@ mod tests {
         let tree = parse_code(code);
         let rope = Rope::from_str(code);
         let ir = parse_to_ir(&tree, &rope);
-        if let RholangNode::Par { left, .. } = &*ir {
-            if let RholangNode::Error { children, .. } = left.as_ref() {
+        if let RholangNode::Par { left: Some(left), .. } = &*ir {
+            if let RholangNode::Error { children, .. } = &**left {
                 assert!(!children.is_empty(), "Error node should have children");
             }
         }

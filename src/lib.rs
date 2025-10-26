@@ -1,5 +1,6 @@
 #![recursion_limit = "1024"]
 pub mod ir;
+pub mod language_regions;
 pub mod logging;
 pub mod lsp;
 pub mod parsers;

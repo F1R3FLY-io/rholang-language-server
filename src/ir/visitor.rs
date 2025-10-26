@@ -2,7 +2,7 @@ use std::sync::Arc;
 use rpds::Vector;
 use archery::ArcK;
 
-use super::rholang_node::{RholangNode, Metadata, CommentKind, RholangSendType, RholangBundleType, BinOperator, UnaryOperator, RholangVarRefKind};
+use super::rholang_node::{RholangNode, RholangNodeVector, Metadata, CommentKind, RholangSendType, RholangBundleType, BinOperator, UnaryOperator, RholangVarRefKind};
 use super::semantic_node::{NodeBase, RelativePosition};
 
 /// Provides a visitor pattern for traversing and transforming the Rholang Intermediate Representation (IR) tree.
@@ -20,7 +20,11 @@ pub trait Visitor {
     /// The transformed node, or the original if unchanged.
     fn visit_node(&self, node: &Arc<RholangNode>) -> Arc<RholangNode> {
         match &**node {
-            RholangNode::Par { base, left, right, metadata } => self.visit_par(node, base, left, right, metadata),
+            RholangNode::Par { base, left: Some(left), right: Some(right), processes: None, metadata } => self.visit_par(node, base, left, right, metadata),
+            // N-ary Par - visit all processes
+            RholangNode::Par { base, processes: Some(procs), metadata, .. } => self.visit_par_nary(node, base, procs, metadata),
+            // Incomplete Par (should not occur, but needed for exhaustiveness) - return as-is
+            RholangNode::Par { .. } => Arc::clone(node),
             RholangNode::SendSync { base, channel, inputs, cont, metadata } => self.visit_send_sync(node, base, channel, inputs, cont, metadata),
             RholangNode::Send { base, channel, send_type, send_type_delta, inputs, metadata } => self.visit_send(node, base, channel, send_type, send_type_delta, inputs, metadata),
             RholangNode::New { base, decls, proc, metadata } => self.visit_new(node, base, decls, proc, metadata),
@@ -95,9 +99,53 @@ pub trait Visitor {
             Arc::clone(node)
         } else {
             Arc::new(RholangNode::Par {
+                processes: None,
                 base: base.clone(),
-                left: new_left,
-                right: new_right,
+                left: Some(new_left),
+                right: Some(new_right),
+                metadata: metadata.clone(),
+            })
+        }
+    }
+
+    /// Visits an n-ary parallel composition node (Par with processes vector).
+    ///
+    /// # Arguments
+    /// * node - The original Par node for reference.
+    /// * base - Metadata including position and text.
+    /// * processes - Vector of all parallel processes.
+    /// * metadata - Optional node metadata.
+    ///
+    /// # Returns
+    /// A new n-ary Par node if any process changes, otherwise the original.
+    ///
+    /// # Examples
+    /// For P | Q | R (>2 processes), visits all processes and reconstructs if any change.
+    fn visit_par_nary(
+        &self,
+        node: &Arc<RholangNode>,
+        base: &NodeBase,
+        processes: &RholangNodeVector,
+        metadata: &Option<Arc<Metadata>>,
+    ) -> Arc<RholangNode> {
+        let new_processes: Vec<Arc<RholangNode>> = processes
+            .iter()
+            .map(|proc| self.visit_node(proc))
+            .collect();
+
+        // Check if any process changed
+        let changed = processes.iter()
+            .zip(new_processes.iter())
+            .any(|(old, new)| !Arc::ptr_eq(old, new));
+
+        if !changed {
+            Arc::clone(node)
+        } else {
+            Arc::new(RholangNode::Par {
+                processes: Some(Vector::from_iter(new_processes)),
+                base: base.clone(),
+                left: None,
+                right: None,
                 metadata: metadata.clone(),
             })
         }

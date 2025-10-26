@@ -37,10 +37,14 @@ pub fn format_node(node: &Arc<RholangNode>, indent: bool, indent_size: Option<us
 fn format_node_helper(node: &Arc<RholangNode>, level: usize, indent_size: usize, rope: &Rope, root: &Arc<RholangNode>) -> String {
     let indent = if indent_size > 0 { " ".repeat(level * indent_size) } else { "".to_string() };
     match &**node {
-        RholangNode::Par { left, right, .. } => {
-            let left_text = format_node_helper(left, level, indent_size, rope, root);
-            let right_text = format_node_helper(right, level, indent_size, rope, root);
+        RholangNode::Par { left: Some(l), right: Some(r), .. } => {
+            let left_text = format_node_helper(l, level, indent_size, rope, root);
+            let right_text = format_node_helper(r, level, indent_size, rope, root);
             format!("{} | {}", left_text, right_text)
+        }
+        // N-ary Par or incomplete Par (should not occur in practice, but needed for exhaustiveness)
+        RholangNode::Par { .. } => {
+            "<par>".to_string()
         }
         RholangNode::SendSync { channel, inputs, cont, .. } => {
             let inputs_str = inputs.iter().map(|i| format_node_helper(i, level, indent_size, rope, root)).collect::<Vec<_>>().join(", ");

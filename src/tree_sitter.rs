@@ -68,6 +68,10 @@ fn collect_named_descendants(node: TSNode, rope: &Rope, prev_end: Position) -> (
     let mut current_prev_end = prev_end;
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
+        // Skip comments - they don't belong in the IR
+        if is_comment(child.kind_id()) {
+            continue;
+        }
         let (child_node, child_end) = convert_ts_node_to_ir(child, rope, current_prev_end);
         nodes = nodes.push_back(child_node);
         current_prev_end = child_end;
@@ -223,9 +227,8 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
     };
     // The delta_bytes must include bytes for whitespace and newlines to maintain accurate byte offsets.
     let delta_bytes = absolute_start.byte - prev_end.byte;
-    debug!("absolute_start.byte = {}", absolute_start.byte);
-    debug!("absolute_end.byte = {}", absolute_end.byte);
-    debug!("delta_bytes = {}", delta_bytes);
+    // Hot path: removed per-node position logging (fires for every AST node during parsing)
+    // Use RUST_LOG=trace for detailed position tracking
     let relative_start = RelativePosition {
         delta_lines,
         delta_columns,
@@ -271,14 +274,15 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                 current_prev_end = end;
             }
 
+            debug!("source_file: collected {} top-level nodes", all_nodes.len());
             let result = if all_nodes.len() == 1 {
+                debug!("source_file: returning single node (no Par wrapper)");
                 all_nodes[0].clone()
             } else if all_nodes.is_empty() {
                 Arc::new(RholangNode::Nil { base: base.clone(), metadata: metadata.clone() })
-            } else {
-                // When reducing multiple top-level nodes into nested Par, each Par should have
-                // zero relative position (starts where parent starts) and zero span.
-                // The actual span is determined by children during position computation.
+            } else if all_nodes.len() == 2 {
+                // Exactly 2 top-level processes - use binary Par
+                debug!("source_file: creating binary Par for 2 top-level nodes");
                 let par_base = NodeBase::new(
                     RelativePosition {
                         delta_lines: 0,
@@ -289,15 +293,33 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                     0,  // span_lines
                     0,  // span_columns
                 );
-
-                all_nodes.into_iter().reduce(|left, right| {
-                    Arc::new(RholangNode::Par {
-                        base: par_base.clone(),
-                        left,
-                        right,
-                        metadata: metadata.clone(),
-                    })
-                }).expect("Expected at least one child for source_file reduction")
+                Arc::new(RholangNode::Par {
+                    base: par_base,
+                    left: Some(all_nodes[0].clone()),
+                    right: Some(all_nodes[1].clone()),
+                    processes: None,
+                    metadata: metadata.clone(),
+                })
+            } else {
+                // More than 2 top-level processes - use n-ary Par (O(1) depth instead of O(n))
+                debug!("source_file: creating n-ary Par for {} top-level nodes", all_nodes.len());
+                let par_base = NodeBase::new(
+                    RelativePosition {
+                        delta_lines: 0,
+                        delta_columns: 0,
+                        delta_bytes: 0,
+                    },
+                    0,  // length
+                    0,  // span_lines
+                    0,  // span_columns
+                );
+                Arc::new(RholangNode::Par {
+                    base: par_base,
+                    left: None,
+                    right: None,
+                    processes: Some(Vector::from_iter(all_nodes)),
+                    metadata: metadata.clone(),
+                })
             };
             (result, absolute_end)
         }
@@ -306,16 +328,82 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
             convert_ts_node_to_ir(child, rope, prev_end)
         }
         "par" => {
-            let left_ts = ts_node.child(0).expect("Par node must have a left child");
-            let (left, left_end) = convert_ts_node_to_ir(left_ts, rope, absolute_start);
-            let right_ts = ts_node.child(2).expect("Par node must have a right child"); // After '|'
-            let (right, right_end) = convert_ts_node_to_ir(right_ts, rope, left_end);
-            let node = Arc::new(RholangNode::Par { base, left, right, metadata });
-            (node, right_end)
+            // Par nodes should have 2 named children in the common case
+            // But can have more due to comment interleaving
+            let named_child_count = ts_node.named_child_count();
+
+            if named_child_count == 2 {
+                // Standard binary Par - use direct children to preserve tree-sitter positions
+                let left_ts = ts_node.named_child(0).expect("Par node must have a left named child");
+                let (left, left_end) = convert_ts_node_to_ir(left_ts, rope, absolute_start);
+
+                let right_ts = ts_node.named_child(1).expect("Par node must have a right named child");
+                let (right, right_end) = convert_ts_node_to_ir(right_ts, rope, left_end);
+
+                let node = Arc::new(RholangNode::Par {
+                    base,
+                    left: Some(left),
+                    right: Some(right),
+                    processes: None,
+                    metadata,
+                });
+                (node, right_end)
+            } else {
+                // N-ary Par (due to comments) - collect all children, filter comments, and reduce
+                let mut current_prev_end = absolute_start;
+                let mut process_children = Vec::new();
+
+                // Collect all named children, skipping comments
+                for child in ts_node.named_children(&mut ts_node.walk()) {
+                    let kind_id = child.kind_id();
+                    if is_comment(kind_id) {
+                        continue;
+                    }
+                    let (child_node, child_end) = convert_ts_node_to_ir(child, rope, current_prev_end);
+                    process_children.push(child_node);
+                    current_prev_end = child_end;
+                }
+
+                // Reduce all children into nested Par tree
+                let result = if process_children.len() == 1 {
+                    process_children[0].clone()
+                } else if process_children.is_empty() {
+                    Arc::new(RholangNode::Nil { base: base.clone(), metadata: metadata.clone() })
+                } else if process_children.len() == 2 {
+                    // After filtering comments, we have exactly 2 children - use the tree-sitter Par base
+                    Arc::new(RholangNode::Par {
+                        base,
+                        left: Some(process_children[0].clone()),
+                        right: Some(process_children[1].clone()),
+                        processes: None,
+                        metadata,
+                    })
+                } else {
+                    // More than 2 children - create n-ary Par (reduces nesting from O(n) to O(1))
+                    Arc::new(RholangNode::Par {
+                        base,
+                        left: None,
+                        right: None,
+                        processes: Some(Vector::from_iter(process_children)),
+                        metadata,
+                    })
+                };
+                (result, current_prev_end)
+            }
         }
         "send_sync" => {
+            if absolute_start.byte >= 8200 && absolute_start.byte <= 8300 {
+                debug!("SendSync: tree-sitter range [{}, {}]", ts_node.start_byte(), ts_node.end_byte());
+                debug!("  absolute_start={:?}", absolute_start);
+            }
             let channel_ts = ts_node.child_by_field_name("channel").expect("SendSync node must have a channel");
+            if absolute_start.byte >= 8200 && absolute_start.byte <= 8300 {
+                debug!("  channel tree-sitter range [{}, {}]", channel_ts.start_byte(), channel_ts.end_byte());
+            }
             let (channel, channel_end) = convert_ts_node_to_ir(channel_ts, rope, absolute_start);
+            if absolute_start.byte >= 8200 && absolute_start.byte <= 8300 {
+                debug!("  channel_end={:?}", channel_end);
+            }
             let inputs_ts = ts_node.child_by_field_name("inputs").expect("SendSync node must have inputs");
             let mut current_prev_end = channel_end;
             let inputs = inputs_ts.named_children(&mut inputs_ts.walk())
@@ -327,6 +415,9 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
                 .collect::<Vector<_, ArcK>>();
             let cont_ts = ts_node.child_by_field_name("cont").expect("SendSync node must have a continuation");
             let (cont, cont_end) = convert_ts_node_to_ir(cont_ts, rope, current_prev_end);
+            if absolute_start.byte >= 8200 && absolute_start.byte <= 8300 {
+                debug!("  cont_end={:?}", cont_end);
+            }
             let node = Arc::new(RholangNode::SendSync { base, channel, inputs, cont, metadata });
             (node, cont_end)
         }
@@ -519,8 +610,70 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
             (node, proc_end)
         }
         "block" => {
-            let proc_ts = ts_node.child(1).expect("Block node must have a process"); // After '{'
-            let (proc, _proc_end) = convert_ts_node_to_ir(proc_ts, rope, absolute_start);
+            // A block contains '{', multiple children (including comments), and '}'
+            // Collect all named children and reduce them into a Par tree (like source_file)
+            let (all_nodes, nodes_end) = collect_named_descendants(ts_node, rope, absolute_start);
+
+            // Comments are already skipped during collect_named_descendants,
+            // so all_nodes already contains only process nodes
+            let process_nodes = all_nodes;
+
+            let proc = if process_nodes.len() == 0 {
+                // Empty block - use Nil
+                Arc::new(RholangNode::Nil {
+                    base: NodeBase::new(
+                        RelativePosition {
+                            delta_lines: 0,
+                            delta_columns: 0,
+                            delta_bytes: 0,
+                        },
+                        0, 0, 0,
+                    ),
+                    metadata: metadata.clone(),
+                })
+            } else if process_nodes.len() == 1 {
+                // Single child - use it directly
+                process_nodes[0].clone()
+            } else if process_nodes.len() == 2 {
+                // Exactly 2 children - use binary Par
+                let par_base = NodeBase::new(
+                    RelativePosition {
+                        delta_lines: 0,
+                        delta_columns: 0,
+                        delta_bytes: 0,
+                    },
+                    0,  // length - Par has no content of its own
+                    0,  // span_lines
+                    0,  // span_columns
+                );
+                Arc::new(RholangNode::Par {
+                    base: par_base,
+                    left: Some(process_nodes[0].clone()),
+                    right: Some(process_nodes[1].clone()),
+                    processes: None,
+                    metadata: metadata.clone(),
+                })
+            } else {
+                // More than 2 children - use n-ary Par (O(1) depth instead of O(n))
+                let par_base = NodeBase::new(
+                    RelativePosition {
+                        delta_lines: 0,
+                        delta_columns: 0,
+                        delta_bytes: 0,
+                    },
+                    0,  // length - Par has no content of its own
+                    0,  // span_lines
+                    0,  // span_columns
+                );
+                Arc::new(RholangNode::Par {
+                    base: par_base,
+                    left: None,
+                    right: None,
+                    processes: Some(process_nodes),
+                    metadata: metadata.clone(),
+                })
+            };
+
             let node = Arc::new(RholangNode::Block { base, proc, metadata });
             (node, absolute_end)  // Block includes '{' and '}', so use absolute_end
         }
@@ -584,8 +737,16 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
             (node, name_end)
         }
         "quote" => {
+            // The '@' symbol is child(0) - we need to pass its end position as prev_end
+            // so the quotable's delta is computed correctly from after the '@'.
+            let at_symbol = ts_node.child(0).expect("Quote node must have an '@' symbol");
+            let after_at = Position {
+                row: at_symbol.end_position().row,
+                column: at_symbol.end_position().column,
+                byte: at_symbol.end_byte(),
+            };
             let quotable_ts = ts_node.child(1).expect("Quote node must have a quotable");
-            let (quotable, quotable_end) = convert_ts_node_to_ir(quotable_ts, rope, absolute_start);
+            let (quotable, quotable_end) = convert_ts_node_to_ir(quotable_ts, rope, after_at);
             let node = Arc::new(RholangNode::Quote { base, quotable, metadata });
             (node, quotable_end)
         }
@@ -882,13 +1043,10 @@ fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (A
             let node = Arc::new(RholangNode::SimpleType { base, value, metadata });
             (node, absolute_end)
         }
-        "line_comment" => {
-            let node = Arc::new(RholangNode::Comment { base, kind: CommentKind::Line, metadata });
-            (node, absolute_end)
-        }
-        "block_comment" => {
-            let node = Arc::new(RholangNode::Comment { base, kind: CommentKind::Block, metadata });
-            (node, absolute_end)
+        // Comments are now skipped before reaching convert_ts_node_to_ir,
+        // so these cases should never be reached
+        "line_comment" | "block_comment" => {
+            panic!("Comments should be filtered out before IR conversion");
         }
         "unit" => {
             let node = Arc::new(RholangNode::Unit { base, metadata });
@@ -975,7 +1133,7 @@ mod tests {
         let ir = parse_to_ir(&tree, &rope);
         let root = ir.clone();
         match &*ir {
-            RholangNode::Par { left, right, .. } => {
+            RholangNode::Par { left: Some(left), right: Some(right), .. } => {
                 let left_start = left.absolute_start(&root);
                 assert_eq!(left_start.row, 0);
                 assert_eq!(left_start.column, 0);

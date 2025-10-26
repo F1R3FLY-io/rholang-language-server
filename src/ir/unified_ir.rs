@@ -228,7 +228,7 @@ impl UnifiedIR {
             }),
 
             // Parallel composition (Rholang-specific)
-            RholangNode::Par { left, right, metadata, .. } => Arc::new(UnifiedIR::Composition {
+            RholangNode::Par { left: Some(left), right: Some(right), metadata, .. } => Arc::new(UnifiedIR::Composition {
                 base,
                 is_parallel: true,
                 left: UnifiedIR::from_rholang(left),

@@ -3961,6 +3961,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "tree-sitter",
+ "tree-sitter-metta",
  "url",
  "uuid",
  "validated",

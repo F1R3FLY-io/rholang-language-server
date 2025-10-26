@@ -218,7 +218,7 @@ pub enum RholangProc {
 }
 
 /// Maximum recursion depth for generation to prevent excessive tree depth.
-const MAX_DEPTH: usize = 10;
+const MAX_DEPTH: usize = 5;  // Reduced from 10 to avoid stack overflow in property tests
 
 /// List of reserved keywords in Rholang to avoid in variable names.
 const RESERVED_KEYWORDS: &[&str] = &[

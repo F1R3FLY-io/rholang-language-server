@@ -458,6 +458,145 @@ impl SemanticNode for MettaNode {
     }
 }
 
+use std::collections::HashMap;
+
+/// Computes absolute positions for all nodes in the MeTTa IR tree.
+///
+/// This function walks the entire tree and converts relative positions (deltas) to absolute
+/// positions (line, column, byte). Returns a HashMap mapping each node's address to its
+/// (start, end) position.
+pub fn compute_absolute_positions(root: &Arc<MettaNode>) -> HashMap<usize, (Position, Position)> {
+    let mut positions = HashMap::new();
+    let initial_prev_end = Position {
+        row: 0,
+        column: 0,
+        byte: 0,
+    };
+    compute_positions_helper(root, initial_prev_end, &mut positions);
+    positions
+}
+
+/// Computes absolute positions for a node tree starting from a given previous end position.
+///
+/// This is useful when processing multiple top-level nodes where each node's position
+/// is relative to the previous node's end.
+///
+/// # Returns
+/// A tuple of (positions HashMap, final prev_end) where the final prev_end is the end
+/// position of the last node processed.
+pub fn compute_positions_with_prev_end(
+    root: &Arc<MettaNode>,
+    prev_end: Position,
+) -> (HashMap<usize, (Position, Position)>, Position) {
+    let mut positions = HashMap::new();
+    let final_prev_end = compute_positions_helper(root, prev_end, &mut positions);
+    (positions, final_prev_end)
+}
+
+/// Recursively computes absolute positions for all MeTTa node types in the IR tree.
+///
+/// # Arguments
+/// * node - The current node being processed.
+/// * prev_end - The absolute end position of the previous sibling or parent's start if first child.
+/// * positions - The HashMap storing computed (start, end) positions.
+///
+/// # Returns
+/// The absolute end position of the current node.
+fn compute_positions_helper(
+    node: &Arc<MettaNode>,
+    prev_end: Position,
+    positions: &mut HashMap<usize, (Position, Position)>,
+) -> Position {
+    use crate::ir::rholang_node::compute_end_position;
+
+    let base = node.base();
+    let key = &**node as *const MettaNode as usize;
+    let relative_start = base.relative_start();
+
+    // Compute absolute start position from previous end + deltas
+    let start = Position {
+        row: (prev_end.row as i32 + relative_start.delta_lines) as usize,
+        column: if relative_start.delta_lines == 0 {
+            (prev_end.column as i32 + relative_start.delta_columns) as usize
+        } else {
+            relative_start.delta_columns as usize
+        },
+        byte: prev_end.byte + relative_start.delta_bytes,
+    };
+
+    let end = compute_end_position(start, base.span_lines(), base.span_columns(), base.length());
+
+    // Store this node's position
+    positions.insert(key, (start, end));
+
+    let mut current_prev = start;
+
+    // Process children based on node type
+    match &**node {
+        MettaNode::SExpr { elements, .. } => {
+            for elem in elements {
+                current_prev = compute_positions_helper(elem, current_prev, positions);
+            }
+        }
+        MettaNode::Definition { pattern, body, .. } => {
+            current_prev = compute_positions_helper(pattern, current_prev, positions);
+            current_prev = compute_positions_helper(body, current_prev, positions);
+        }
+        MettaNode::TypeAnnotation { expr, type_expr, .. } => {
+            current_prev = compute_positions_helper(expr, current_prev, positions);
+            current_prev = compute_positions_helper(type_expr, current_prev, positions);
+        }
+        MettaNode::Eval { expr, .. } => {
+            current_prev = compute_positions_helper(expr, current_prev, positions);
+        }
+        MettaNode::Match { scrutinee, cases, .. } => {
+            current_prev = compute_positions_helper(scrutinee, current_prev, positions);
+            for (pattern, result) in cases {
+                current_prev = compute_positions_helper(pattern, current_prev, positions);
+                current_prev = compute_positions_helper(result, current_prev, positions);
+            }
+        }
+        MettaNode::Let { bindings, body, .. } => {
+            for (var, val) in bindings {
+                current_prev = compute_positions_helper(var, current_prev, positions);
+                current_prev = compute_positions_helper(val, current_prev, positions);
+            }
+            current_prev = compute_positions_helper(body, current_prev, positions);
+        }
+        MettaNode::Lambda { params, body, .. } => {
+            for param in params {
+                current_prev = compute_positions_helper(param, current_prev, positions);
+            }
+            current_prev = compute_positions_helper(body, current_prev, positions);
+        }
+        MettaNode::If { condition, consequence, alternative, .. } => {
+            current_prev = compute_positions_helper(condition, current_prev, positions);
+            current_prev = compute_positions_helper(consequence, current_prev, positions);
+            if let Some(alt) = alternative {
+                current_prev = compute_positions_helper(alt, current_prev, positions);
+            }
+        }
+        MettaNode::Error { children, .. } => {
+            for child in children {
+                current_prev = compute_positions_helper(child, current_prev, positions);
+            }
+        }
+        // Leaf nodes - no children to process
+        MettaNode::Atom { .. }
+        | MettaNode::Variable { .. }
+        | MettaNode::Bool { .. }
+        | MettaNode::Integer { .. }
+        | MettaNode::Float { .. }
+        | MettaNode::String { .. }
+        | MettaNode::Nil { .. }
+        | MettaNode::Comment { .. } => {
+            // No children to process
+        }
+    }
+
+    end
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

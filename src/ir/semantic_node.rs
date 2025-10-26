@@ -617,8 +617,9 @@ pub trait TransformVisitor {
             RholangNode::Par { base, metadata, .. } if transformed_children.len() == 2 => {
                 Arc::new(RholangNode::Par {
                     base: base.clone(),
-                    left: to_rholang(&transformed_children[0]),
-                    right: to_rholang(&transformed_children[1]),
+                    left: Some(to_rholang(&transformed_children[0])),
+                    right: Some(to_rholang(&transformed_children[1])),
+                    processes: None,
                     metadata: metadata.clone(),
                 }) as Arc<dyn SemanticNode>
             }

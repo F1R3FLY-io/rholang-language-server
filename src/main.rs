@@ -768,8 +768,20 @@ async fn run_server(config: ServerConfig, conn_manager: ConnectionManager) -> io
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> io::Result<()> {
+fn main() -> io::Result<()> {
+    // Build Tokio runtime with larger stack size to handle deeply nested ASTs
+    // Default stack size is often 2MB, we increase to 8MB to prevent stack overflow
+    // when parsing real-world Rholang files with deeply nested structures
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .thread_stack_size(8 * 1024 * 1024)  // 8MB stack size
+        .enable_all()
+        .build()?;
+
+    runtime.block_on(async_main())
+}
+
+async fn async_main() -> io::Result<()> {
     let config = ServerConfig::from_args()?;
     let conn_manager = ConnectionManager::new();
 

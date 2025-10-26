@@ -101,7 +101,7 @@ impl SymbolIndexBuilder {
                 self.visit_node(proc);
             }
 
-            RholangNode::Par { left, right, .. } => {
+            RholangNode::Par { left: Some(left), right: Some(right), .. } => {
                 self.visit_node(left);
                 self.visit_node(right);
             }

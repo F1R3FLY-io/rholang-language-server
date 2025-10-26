@@ -587,11 +587,11 @@ with_lsp_client!(test_goto_definition_quoted_contract_cross_file, CommType::Stdi
     "#};
 
     let contract_doc = client
-        .open_document("/var/tmp/contract.rho", contract_code)
+        .open_document("/path/to/contract.rho", contract_code)
         .expect("Failed to open contract.rho");
 
     let usage_doc = client
-        .open_document("/var/tmp/usage.rho", usage_code)
+        .open_document("/path/to/usage.rho", usage_code)
         .expect("Failed to open usage.rho");
 
     // Wait for both documents to be indexed

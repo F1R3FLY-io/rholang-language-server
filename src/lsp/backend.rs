@@ -22,6 +22,9 @@ use tower_lsp::lsp_types::{
     TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit, DocumentSymbolParams,
     DocumentSymbolResponse, WorkspaceSymbolParams, WorkspaceSymbol,
     SymbolInformation, SymbolKind, Hover, HoverContents, HoverParams, MarkupContent, MarkupKind,
+    SemanticTokensParams, SemanticTokensResult, SemanticToken, SemanticTokensLegend,
+    SemanticTokenType, SemanticTokensFullOptions, SemanticTokensServerCapabilities,
+    SemanticTokensOptions,
 };
 use tower_lsp::lsp_types::request::{GotoDeclarationParams, GotoDeclarationResponse};
 use tower_lsp::jsonrpc::Result as LspResult;
@@ -39,6 +42,7 @@ use crate::ir::symbol_table::{Symbol, SymbolTable, SymbolType};
 use crate::ir::transforms::symbol_table_builder::{SymbolTableBuilder, InvertedIndex};
 use crate::ir::transforms::symbol_index_builder::SymbolIndexBuilder;
 use crate::ir::transforms::document_symbol_visitor::{collect_document_symbols, collect_workspace_symbols};
+use crate::language_regions::{ChannelFlowAnalyzer, DirectiveParser, SemanticDetector, VirtualDocumentRegistry};
 use crate::lsp::models::{CachedDocument, LspDocument, LspDocumentHistory, LspDocumentState, WorkspaceState};
 use crate::lsp::semantic_validator::SemanticValidator;
 use crate::lsp::diagnostic_provider::{BackendConfig, DiagnosticProvider, create_provider};
@@ -90,6 +94,8 @@ pub struct RholangBackend {
     version_counter: Arc<AtomicI32>,
     root_dir: Arc<RwLock<Option<PathBuf>>>,
     shutdown_tx: Arc<tokio::sync::broadcast::Sender<()>>,
+    /// Virtual document registry for embedded language regions
+    virtual_docs: Arc<RwLock<VirtualDocumentRegistry>>,
 }
 
 // Manual Debug implementation since DiagnosticProvider doesn't implement Debug
@@ -99,6 +105,56 @@ impl std::fmt::Debug for RholangBackend {
             .field("backend", &self.diagnostic_provider.backend_name())
             .field("documents_count", &"<HashMap>")
             .finish()
+    }
+}
+
+/// Helper for building semantic tokens using delta encoding
+struct SemanticTokensBuilder {
+    tokens: Vec<SemanticToken>,
+    prev_line: u32,
+    prev_start: u32,
+}
+
+impl SemanticTokensBuilder {
+    fn new() -> Self {
+        Self {
+            tokens: Vec::new(),
+            prev_line: 0,
+            prev_start: 0,
+        }
+    }
+
+    fn push(&mut self, line: u32, start: u32, length: u32, token_type: u32) {
+        let delta_line = if line >= self.prev_line {
+            line - self.prev_line
+        } else {
+            // Should not happen in well-formed code
+            0
+        };
+
+        let delta_start = if delta_line == 0 && start >= self.prev_start {
+            start - self.prev_start
+        } else if delta_line == 0 {
+            // Should not happen - tokens on same line should be in order
+            0
+        } else {
+            start
+        };
+
+        self.tokens.push(SemanticToken {
+            delta_line,
+            delta_start,
+            length,
+            token_type,
+            token_modifiers_bitset: 0,
+        });
+
+        self.prev_line = line;
+        self.prev_start = start;
+    }
+
+    fn build(self) -> Vec<SemanticToken> {
+        self.tokens
     }
 }
 
@@ -186,6 +242,7 @@ impl RholangBackend {
             version_counter: Arc::new(AtomicI32::new(0)),
             root_dir: Arc::new(RwLock::new(None)),
             shutdown_tx: Arc::new(shutdown_tx),
+            virtual_docs: Arc::new(RwLock::new(VirtualDocumentRegistry::new())),
         };
 
         // Spawn document change debouncer
@@ -409,7 +466,7 @@ impl RholangBackend {
     }
 
     /// Processes a parsed IR node through the transformation pipeline to build symbols and metadata.
-    async fn process_document(&self, ir: Arc<RholangNode>, uri: &Url, text: &Rope) -> Result<CachedDocument, String> {
+    async fn process_document(&self, ir: Arc<RholangNode>, uri: &Url, text: &Rope, content_hash: u64) -> Result<CachedDocument, String> {
         let mut pipeline = Pipeline::new();
         let global_table = self.workspace.read().await.global_table.clone();
         let global_index = self.workspace.read().await.global_index.clone();
@@ -502,6 +559,7 @@ impl RholangBackend {
             positions,
             potential_global_refs,
             symbol_index,
+            content_hash,
         })
     }
 
@@ -514,6 +572,25 @@ impl RholangBackend {
         tree: Option<tree_sitter::Tree>,
     ) -> Result<CachedDocument, String> {
         use crate::lsp::models::DocumentLanguage;
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        // Compute fast hash of content for change detection
+        let mut hasher = DefaultHasher::new();
+        text.hash(&mut hasher);
+        let content_hash = hasher.finish();
+
+        // Check if we already have this exact content indexed
+        // Note: We can't early-return here because we need to re-index to update workspace state
+        // However, we can log the hash check for debugging
+        if let Some(existing) = self.workspace.read().await.documents.get(uri) {
+            if existing.content_hash == content_hash {
+                debug!("Content unchanged for {} (hash: {}), but reindexing to update workspace", uri, content_hash);
+            } else {
+                debug!("Reindexing {} - content changed (old hash: {}, new hash: {})",
+                    uri, existing.content_hash, content_hash);
+            }
+        }
 
         // Detect language from file extension
         let language = DocumentLanguage::from_uri(uri);
@@ -522,7 +599,7 @@ impl RholangBackend {
         match language {
             DocumentLanguage::Metta => {
                 // Handle MeTTa files
-                self.index_metta_file(uri, text, _version).await
+                self.index_metta_file(uri, text, _version, content_hash).await
             }
             DocumentLanguage::Rholang | DocumentLanguage::Unknown => {
                 // Handle Rholang files (existing logic)
@@ -547,7 +624,63 @@ impl RholangBackend {
                 let tree = Arc::new(tree.unwrap_or_else(|| parse_code(text)));
                 let rope = Rope::from_str(text);
                 let ir = parse_to_ir(&tree, &rope);
-                let cached = self.process_document(ir, uri, &rope).await?;
+                let cached = self.process_document(ir, uri, &rope, content_hash).await?;
+
+                // Scan for embedded language regions using multiple detection methods
+                let mut all_regions = Vec::new();
+
+                // 1. Comment directive detection (e.g., // @metta)
+                let directive_regions = DirectiveParser::scan_directives(text, &tree, &rope);
+                debug!("Found {} regions via comment directives", directive_regions.len());
+                all_regions.extend(directive_regions);
+
+                // 2. Semantic detection (e.g., strings sent to @"rho:metta:compile")
+                let semantic_regions = SemanticDetector::detect_regions(text, &tree, &rope);
+                debug!("Found {} regions via semantic analysis", semantic_regions.len());
+
+                // Merge semantic regions, avoiding duplicates
+                // (directive regions take precedence if there's overlap)
+                for semantic_region in semantic_regions {
+                    // Check if this region overlaps with any directive region
+                    let overlaps = all_regions.iter().any(|r| {
+                        (semantic_region.start_byte >= r.start_byte && semantic_region.start_byte < r.end_byte)
+                            || (semantic_region.end_byte > r.start_byte && semantic_region.end_byte <= r.end_byte)
+                            || (semantic_region.start_byte <= r.start_byte && semantic_region.end_byte >= r.end_byte)
+                    });
+
+                    if !overlaps {
+                        all_regions.push(semantic_region);
+                    }
+                }
+
+                // 3. Channel flow analysis (e.g., variables bound to compiler channels)
+                let flow_regions = ChannelFlowAnalyzer::analyze(text, &tree, &rope);
+                debug!("Found {} regions via channel flow analysis", flow_regions.len());
+
+                // Merge flow regions, avoiding duplicates
+                for flow_region in flow_regions {
+                    let overlaps = all_regions.iter().any(|r| {
+                        (flow_region.start_byte >= r.start_byte && flow_region.start_byte < r.end_byte)
+                            || (flow_region.end_byte > r.start_byte && flow_region.end_byte <= r.end_byte)
+                            || (flow_region.start_byte <= r.start_byte && flow_region.end_byte >= r.end_byte)
+                    });
+
+                    if !overlaps {
+                        all_regions.push(flow_region);
+                    }
+                }
+
+                if !all_regions.is_empty() {
+                    debug!("Total {} embedded language regions detected in {}", all_regions.len(), uri);
+                    let mut virtual_docs = self.virtual_docs.write().await;
+                    virtual_docs.register_regions(uri, &all_regions);
+
+                    // Validate virtual documents and get diagnostics
+                    // Note: We don't publish diagnostics here; that's done in validate()
+                    let _virtual_diagnostics = virtual_docs.validate_all_for_parent(uri);
+                    debug!("Validated {} virtual documents for {}", all_regions.len(), uri);
+                }
+
                 let mut workspace = self.workspace.write().await;
                 let mut contracts = Vec::new();
                 collect_contracts(&cached.ir, &mut contracts);
@@ -566,6 +699,7 @@ impl RholangBackend {
         uri: &Url,
         text: &str,
         version: i32,
+        content_hash: u64,
     ) -> Result<CachedDocument, String> {
         use crate::parsers::MettaParser;
         use crate::lsp::models::DocumentLanguage;
@@ -642,6 +776,7 @@ impl RholangBackend {
             positions,
             potential_global_refs,
             symbol_index,
+            content_hash,
         })
     }
 
@@ -827,10 +962,12 @@ impl RholangBackend {
                         if !semantic_diagnostics.is_empty() {
                             info!("Semantic validation found {} errors for URI={} (version={})",
                                   semantic_diagnostics.len(), state.uri, version);
-                            return Ok(semantic_diagnostics);
+                            let all_diags = self.aggregate_with_virtual_diagnostics(&state.uri, semantic_diagnostics).await;
+                            return Ok(all_diags);
                         }
                         debug!("Semantic validation passed for URI={}", state.uri);
-                        return Ok(vec![]);
+                        let all_diags = self.aggregate_with_virtual_diagnostics(&state.uri, vec![]).await;
+                        return Ok(all_diags);
                     } else {
                         // Multiple procs - validate each one separately
                         let num_procs = procs.len();
@@ -843,10 +980,12 @@ impl RholangBackend {
                         if !all_diagnostics.is_empty() {
                             info!("Semantic validation found {} errors across {} processes for URI={} (version={})",
                                   all_diagnostics.len(), num_procs, state.uri, version);
-                            return Ok(all_diagnostics);
+                            let final_diags = self.aggregate_with_virtual_diagnostics(&state.uri, all_diagnostics).await;
+                            return Ok(final_diags);
                         }
                         debug!("Semantic validation passed for all {} processes", num_procs);
-                        return Ok(vec![]);
+                        let final_diags = self.aggregate_with_virtual_diagnostics(&state.uri, vec![]).await;
+                        return Ok(final_diags);
                     }
                 }
             }
@@ -865,12 +1004,29 @@ impl RholangBackend {
                        self.diagnostic_provider.backend_name(), state.uri);
             }
 
-            Ok(semantic_diagnostics)
+            let all_diags = self.aggregate_with_virtual_diagnostics(&state.uri, semantic_diagnostics).await;
+            Ok(all_diags)
         } else {
             // Return syntax errors if present
             debug!("Syntax errors found for URI={}, skipping semantic validation", state.uri);
-            Ok(local_diagnostics)
+            let all_diags = self.aggregate_with_virtual_diagnostics(&state.uri, local_diagnostics).await;
+            Ok(all_diags)
         }
+    }
+
+    /// Aggregates diagnostics from parent document and virtual documents
+    async fn aggregate_with_virtual_diagnostics(
+        &self,
+        uri: &Url,
+        mut parent_diagnostics: Vec<Diagnostic>,
+    ) -> Vec<Diagnostic> {
+        let mut virtual_docs = self.virtual_docs.write().await;
+        let virtual_diagnostics = virtual_docs.validate_all_for_parent(uri);
+        if !virtual_diagnostics.is_empty() {
+            debug!("Adding {} diagnostics from virtual documents", virtual_diagnostics.len());
+            parent_diagnostics.extend(virtual_diagnostics);
+        }
+        parent_diagnostics
     }
 
     /// Looks up the IR node, its symbol table, and inverted index at a given position in the document.
@@ -946,7 +1102,7 @@ impl RholangBackend {
                 };
 
                 if let (Some((node, path)), Some(symbol_table)) = (node_path_opt, symbol_table_opt) {
-                    debug!("RholangNode at position: {}", match &*node {
+                    let node_type_name = match &*node {
                         RholangNode::Var {..} => "Var",
                         RholangNode::Contract {..} => "Contract",
                         RholangNode::Send {..} => "Send",
@@ -957,8 +1113,19 @@ impl RholangBackend {
                         RholangNode::Match {..} => "Match",
                         RholangNode::Quote {..} => "Quote",
                         RholangNode::StringLiteral {..} => "StringLiteral",
-                        _ => "Other"
-                    });
+                        RholangNode::Input {..} => "Input",
+                        RholangNode::LinearBind {..} => "LinearBind",
+                        RholangNode::RepeatedBind {..} => "RepeatedBind",
+                        RholangNode::PeekBind {..} => "PeekBind",
+                        RholangNode::Wildcard {..} => "Wildcard",
+                        RholangNode::Block {..} => "Block",
+                        other => {
+                            // For unknown types, log the discriminant for debugging
+                            debug!("Unknown node type discriminant: {:?}", std::mem::discriminant(other));
+                            "Other"
+                        }
+                    };
+                    debug!("RholangNode at position: {}", node_type_name);
                     match &*node {
                         RholangNode::Var { name, .. } => {
                             // Check if this Var is the name of a Contract (path should be [..., Contract, Var])
@@ -1255,6 +1422,111 @@ impl RholangBackend {
                                 }));
                             }
                         }
+                        RholangNode::Input { receipts, .. } => {
+                            // Handle for comprehensions: for (@x <- channel) { body }
+                            // Check if position is within any of the channels being read from
+                            debug!("Found Input node at position");
+                            let workspace = self.workspace.read().await;
+                            if let Some(doc) = workspace.documents.get(&uri) {
+                                // Each receipt is a vector of bind nodes (LinearBind, RepeatedBind, PeekBind)
+                                for receipt in receipts.iter() {
+                                    for bind_node in receipt.iter() {
+                                        // Check if this is a bind with a source channel
+                                        let channel_opt = match &**bind_node {
+                                            RholangNode::LinearBind { source, .. } => Some(source),
+                                            RholangNode::RepeatedBind { source, .. } => Some(source),
+                                            RholangNode::PeekBind { source, .. } => Some(source),
+                                            _ => None,
+                                        };
+
+                                        if let Some(channel) = channel_opt {
+                                            let channel_key = &**channel as *const RholangNode as usize;
+                                            if let Some(&(ch_start, ch_end)) = doc.positions.get(&channel_key) {
+                                                debug!("Input channel position: start={:?}, end={:?}, cursor={}",
+                                                    ch_start, ch_end, byte);
+                                                if ch_start.byte <= byte && byte <= ch_end.byte {
+                                                    // Position is within the channel, extract the name
+                                                    if let RholangNode::Var { name: channel_name, .. } = &**channel {
+                                                        debug!("Input channel is Var '{}'", channel_name);
+                                                        // Check symbol table for local variables (channels from 'new')
+                                                        if let Some(symbol) = symbol_table.lookup(channel_name) {
+                                                            debug!("Found local symbol '{}' for Input channel at {}:{} in {}",
+                                                                channel_name, position.line, position.character, uri);
+                                                            return Some(symbol);
+                                                        } else if let Some((def_uri, def_pos)) = workspace.global_symbols.get(channel_name).cloned() {
+                                                            debug!("Found global contract symbol '{}' for Input channel at {}:{} in {}",
+                                                                channel_name, position.line, position.character, uri);
+                                                            return Some(Arc::new(Symbol {
+                                                                name: channel_name.to_string(),
+                                                                symbol_type: SymbolType::Contract,
+                                                                declaration_uri: def_uri.clone(),
+                                                                declaration_location: def_pos,
+                                                                definition_location: Some(def_pos),
+                                                            }));
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        RholangNode::Block { .. } => {
+                            // Block nodes can appear in for comprehensions
+                            // Check if parent is an Input node and handle channels
+                            debug!("Found Block node, checking if parent is Input");
+
+                            // Look for Input in the path
+                            for (i, parent) in path.iter().enumerate().rev() {
+                                if let RholangNode::Input { receipts, .. } = &**parent {
+                                    debug!("Block is inside Input node, checking channels");
+                                    let workspace = self.workspace.read().await;
+                                    if let Some(doc) = workspace.documents.get(&uri) {
+                                        // Check all channels in the Input receipts
+                                        for receipt in receipts.iter() {
+                                            for bind_node in receipt.iter() {
+                                                let channel_opt = match &**bind_node {
+                                                    RholangNode::LinearBind { source, .. } => Some(source),
+                                                    RholangNode::RepeatedBind { source, .. } => Some(source),
+                                                    RholangNode::PeekBind { source, .. } => Some(source),
+                                                    _ => None,
+                                                };
+
+                                                if let Some(channel) = channel_opt {
+                                                    let channel_key = &**channel as *const RholangNode as usize;
+                                                    if let Some(&(ch_start, ch_end)) = doc.positions.get(&channel_key) {
+                                                        debug!("Checking channel position: start={:?}, end={:?}, cursor={}",
+                                                            ch_start, ch_end, byte);
+                                                        if ch_start.byte <= byte && byte <= ch_end.byte {
+                                                            if let RholangNode::Var { name: channel_name, .. } = &**channel {
+                                                                debug!("Position is within Input channel Var '{}'", channel_name);
+                                                                if let Some(symbol) = symbol_table.lookup(channel_name) {
+                                                                    debug!("Found local symbol '{}' for Input channel via Block at {}:{} in {}",
+                                                                        channel_name, position.line, position.character, uri);
+                                                                    return Some(symbol);
+                                                                } else if let Some((def_uri, def_pos)) = workspace.global_symbols.get(channel_name).cloned() {
+                                                                    debug!("Found global contract symbol '{}' for Input channel via Block at {}:{} in {}",
+                                                                        channel_name, position.line, position.character, uri);
+                                                                    return Some(Arc::new(Symbol {
+                                                                        name: channel_name.to_string(),
+                                                                        symbol_type: SymbolType::Contract,
+                                                                        declaration_uri: def_uri.clone(),
+                                                                        declaration_location: def_pos,
+                                                                        definition_location: Some(def_pos),
+                                                                    }));
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    break; // Found the Input parent, no need to continue
+                                }
+                            }
+                        }
                         _ => {
                             debug!("RholangNode at {}:{} in {} is not a supported node type",
                                 position.line, position.character, uri);
@@ -1484,6 +1756,717 @@ impl RholangBackend {
             _ => None,
         }
     }
+
+    /// Add semantic tokens for a MeTTa code region
+    async fn add_metta_semantic_tokens(
+        &self,
+        builder: &mut SemanticTokensBuilder,
+        virtual_doc: &Arc<crate::language_regions::VirtualDocument>,
+    ) {
+        // Use cached Tree-Sitter tree from VirtualDocument
+        let tree = match virtual_doc.get_or_parse_tree() {
+            Some(tree) => tree,
+            None => {
+                error!("Failed to get or parse MeTTa tree for virtual document");
+                return;
+            }
+        };
+
+        // Token type indices (must match the order in initialize())
+        const TOKEN_COMMENT: u32 = 0;
+        const TOKEN_STRING: u32 = 1;
+        const TOKEN_NUMBER: u32 = 2;
+        const TOKEN_KEYWORD: u32 = 3;
+        const TOKEN_OPERATOR: u32 = 4;
+        const TOKEN_VARIABLE: u32 = 5;
+        const TOKEN_FUNCTION: u32 = 6;
+        const TOKEN_TYPE: u32 = 7;
+
+        // Walk the tree and generate tokens
+        let mut cursor = tree.walk();
+        self.visit_metta_node(&mut cursor, builder, virtual_doc, TOKEN_COMMENT, TOKEN_STRING, TOKEN_NUMBER, TOKEN_KEYWORD, TOKEN_OPERATOR, TOKEN_VARIABLE, TOKEN_FUNCTION, TOKEN_TYPE);
+    }
+
+    /// Recursively visit MeTTa Tree-Sitter nodes and generate semantic tokens
+    fn visit_metta_node(
+        &self,
+        cursor: &mut tree_sitter::TreeCursor,
+        builder: &mut SemanticTokensBuilder,
+        virtual_doc: &Arc<crate::language_regions::VirtualDocument>,
+        token_comment: u32,
+        token_string: u32,
+        token_number: u32,
+        token_keyword: u32,
+        token_operator: u32,
+        token_variable: u32,
+        token_function: u32,
+        token_type: u32,
+    ) {
+        let node = cursor.node();
+        let kind = node.kind();
+
+        // Get text content for keyword detection
+        let node_text = node.utf8_text(virtual_doc.content.as_bytes()).ok();
+
+        // Map Tree-Sitter node kinds to semantic token types with context-aware highlighting
+        let semantic_token_type = match kind {
+            // Comments
+            "line_comment" | "block_comment" => Some(token_comment),
+
+            // Literals
+            "string_literal" => Some(token_string),
+            "integer_literal" | "float_literal" => Some(token_number),
+            "boolean_literal" => Some(token_keyword),  // True/False as keywords
+
+            // Variables and wildcards
+            "variable" => Some(token_variable),
+            "wildcard" => Some(token_keyword),  // _ pattern
+
+            // Identifiers - distinguish between keywords, functions, and atoms
+            "identifier" => {
+                if let Some(text) = node_text {
+                    // Check if it's a known MeTTa keyword/special form
+                    match text {
+                        // Special forms and keywords
+                        "match" | "case" | "let" | "if" | "lambda" | "λ" |
+                        "import" | "pragma" | "include" | "quote" | "unquote" |
+                        "eval" | "chain" | "function" | "return" |
+                        // Common built-in functions that should stand out
+                        "superpose" | "collapse" | "empty" | "get-metatype" |
+                        "get-type" | "cons-atom" | "decons-atom" |
+                        // Type-related keywords
+                        "Type" | "Atom" | "Symbol" | "Expression" | "Variable" |
+                        "Number" | "String" | "Bool" => Some(token_keyword),
+
+                        // Check if it's the first child of a list (function position)
+                        _ => {
+                            let parent = node.parent();
+                            if let Some(parent_node) = parent {
+                                // Navigate up through atom_expression to list
+                                let check_node = if parent_node.kind() == "atom_expression" {
+                                    parent_node.parent().unwrap_or(parent_node)
+                                } else {
+                                    parent_node
+                                };
+
+                                if check_node.kind() == "list" {
+                                    // Find the first expression child
+                                    let mut first_expr_child = None;
+                                    for i in 0..check_node.child_count() {
+                                        if let Some(child) = check_node.child(i) {
+                                            if child.kind() == "expression" || child.kind() == "atom_expression" {
+                                                first_expr_child = Some(child);
+                                                break;
+                                            }
+                                        }
+                                    }
+
+                                    // Check if this node is inside the first expression
+                                    if let Some(first_expr) = first_expr_child {
+                                        if first_expr.start_byte() <= node.start_byte()
+                                            && node.end_byte() <= first_expr.end_byte() {
+                                            Some(token_function)  // First element in list = function call
+                                        } else {
+                                            Some(token_type)  // Other positions = regular atom
+                                        }
+                                    } else {
+                                        Some(token_type)
+                                    }
+                                } else {
+                                    Some(token_type)  // Default for atoms
+                                }
+                            } else {
+                                Some(token_type)  // Default for atoms
+                            }
+                        }
+                    }
+                } else {
+                    Some(token_type)  // Default if we can't get text
+                }
+            },
+
+            // Operators
+            "arrow_operator" | "comparison_operator" | "assignment_operator" |
+            "type_annotation_operator" | "rule_definition_operator" | "arithmetic_operator" |
+            "logic_operator" | "punctuation_operator" | "operator" => Some(token_operator),
+
+            // Prefixes (!, ?, ')
+            "exclaim_prefix" | "question_prefix" | "quote_prefix" => Some(token_keyword),
+
+            _ => None,
+        };
+
+        // Add token if this is a leaf node with a token type
+        if let Some(token_type_value) = semantic_token_type {
+            if node.child_count() == 0 || matches!(kind, "line_comment" | "block_comment" | "string_literal") {
+                let start_point = node.start_position();
+                let end_point = node.end_position();
+
+                // Calculate absolute line and column in the original document
+                let line = virtual_doc.parent_start.line + start_point.row as u32;
+                let column = if start_point.row == 0 {
+                    virtual_doc.parent_start.character + start_point.column as u32
+                } else {
+                    start_point.column as u32
+                };
+
+                let length = if start_point.row == end_point.row {
+                    (end_point.column - start_point.column) as u32
+                } else {
+                    // Multi-line token - use the rest of the line
+                    (node.end_byte() - node.start_byte()) as u32
+                };
+
+                builder.push(line, column, length, token_type_value);
+            }
+        }
+
+        // Recurse into children
+        if cursor.goto_first_child() {
+            loop {
+                self.visit_metta_node(cursor, builder, virtual_doc, token_comment, token_string, token_number, token_keyword, token_operator, token_variable, token_function, token_type);
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+            cursor.goto_parent();
+        }
+    }
+
+    /// Document highlights for MeTTa symbols
+    async fn document_highlight_metta(
+        &self,
+        virtual_doc: &Arc<crate::language_regions::VirtualDocument>,
+        virtual_position: LspPosition,
+        _parent_position: LspPosition,
+    ) -> LspResult<Option<Vec<DocumentHighlight>>> {
+        use crate::ir::transforms::metta_symbol_table_builder::*;
+
+        // Get symbol table
+        let symbol_table = match virtual_doc.get_or_build_symbol_table() {
+            Some(table) => table,
+            None => {
+                debug!("Failed to build symbol table for MeTTa virtual document");
+                return Ok(None);
+            }
+        };
+
+        // Find symbol at position
+        debug!("Looking up MeTTa symbol at virtual position L{}:C{}",
+            virtual_position.line, virtual_position.character);
+
+        let symbol = match symbol_table.find_symbol_at_position(&virtual_position) {
+            Some(sym) => {
+                debug!("Found MeTTa symbol '{}' at virtual L{}:C{}-{} (scope {})",
+                    sym.name,
+                    sym.range.start.line, sym.range.start.character,
+                    sym.range.end.character,
+                    sym.scope_id);
+                sym
+            }
+            None => {
+                debug!("No MeTTa symbol at position L{}:C{}",
+                    virtual_position.line, virtual_position.character);
+
+                // Debug: show nearby symbols
+                let nearby: Vec<_> = symbol_table.all_occurrences.iter()
+                    .filter(|occ| {
+                        let line_diff = (occ.range.start.line as i32 - virtual_position.line as i32).abs();
+                        line_diff <= 1  // Within 1 line
+                    })
+                    .take(10)
+                    .collect();
+
+                if !nearby.is_empty() {
+                    debug!("Nearby symbols (within 1 line of {}:{}):", virtual_position.line, virtual_position.character);
+                    for occ in &nearby {
+                        debug!("  '{}' at line {} char {}-{} (is_def={})",
+                            occ.name,
+                            occ.range.start.line,
+                            occ.range.start.character,
+                            occ.range.end.character,
+                            occ.is_definition);
+                    }
+                } else {
+                    debug!("No nearby symbols found on lines {}-{}",
+                        virtual_position.line.saturating_sub(1),
+                        virtual_position.line + 1);
+
+                    // Show a sample of all symbols to understand the coordinate system
+                    let sample: Vec<_> = symbol_table.all_occurrences.iter()
+                        .take(10)
+                        .collect();
+                    if !sample.is_empty() {
+                        debug!("Sample of symbols in table (total {}):", symbol_table.all_occurrences.len());
+                        for occ in sample {
+                            debug!("  '{}' at L{}:C{}-{} (scope {})",
+                                occ.name,
+                                occ.range.start.line, occ.range.start.character,
+                                occ.range.end.character,
+                                occ.scope_id);
+                        }
+                    }
+
+                    // Show symbols on lines around where we're looking
+                    debug!("Symbols on lines {} to {}:",
+                        virtual_position.line.saturating_sub(5),
+                        virtual_position.line + 5);
+                    let range_symbols: Vec<_> = symbol_table.all_occurrences.iter()
+                        .filter(|occ| {
+                            occ.range.start.line >= virtual_position.line.saturating_sub(5) &&
+                            occ.range.start.line <= virtual_position.line + 5
+                        })
+                        .take(20)
+                        .collect();
+                    for occ in range_symbols {
+                        debug!("  '{}' at L{}:C{}-{} (scope {})",
+                            occ.name,
+                            occ.range.start.line, occ.range.start.character,
+                            occ.range.end.character,
+                            occ.scope_id);
+                    }
+                }
+
+                return Ok(None);
+            }
+        };
+
+        // Check if this is a function name (appears in pattern matcher index)
+        let function_defs = symbol_table.pattern_matcher.get_definitions_by_name(&symbol.name);
+        let is_function = !function_defs.is_empty();
+
+        let references: Vec<&SymbolOccurrence> = if is_function {
+            // For functions, find all occurrences with the same name across all scopes
+            debug!("Symbol '{}' is a function with {} definitions, finding all usages",
+                symbol.name, function_defs.len());
+            symbol_table.all_occurrences.iter()
+                .filter(|occ| occ.name == symbol.name)
+                .collect()
+        } else {
+            // For variables, find references only in the same scope
+            debug!("Symbol '{}' is a variable in scope {}, finding scope references",
+                symbol.name, symbol.scope_id);
+            symbol_table.find_symbol_references(symbol)
+        };
+
+        // Map virtual ranges to parent ranges
+        let highlights: Vec<DocumentHighlight> = references
+            .iter()
+            .map(|occ| {
+                let parent_range = virtual_doc.map_range_to_parent(occ.range);
+                debug!(
+                    "  Mapping MeTTa highlight '{}': virtual L{}:C{}-{} -> parent L{}:C{}-{}",
+                    occ.name,
+                    occ.range.start.line, occ.range.start.character,
+                    occ.range.end.character,
+                    parent_range.start.line, parent_range.start.character,
+                    parent_range.end.character
+                );
+                DocumentHighlight {
+                    range: parent_range,
+                    kind: if occ.is_definition {
+                        Some(DocumentHighlightKind::WRITE)
+                    } else {
+                        Some(DocumentHighlightKind::READ)
+                    },
+                }
+            })
+            .collect();
+
+        debug!("Found {} MeTTa symbol highlights for '{}' (scope {}, is_function={})",
+            highlights.len(), symbol.name, symbol.scope_id, is_function);
+        Ok(Some(highlights))
+    }
+
+    /// Go-to-definition for MeTTa symbols
+    async fn goto_definition_metta(
+        &self,
+        virtual_doc: &Arc<crate::language_regions::VirtualDocument>,
+        virtual_position: LspPosition,
+    ) -> LspResult<Option<GotoDefinitionResponse>> {
+        use crate::ir::transforms::metta_symbol_table_builder::*;
+
+        // Get symbol table
+        let symbol_table = match virtual_doc.get_or_build_symbol_table() {
+            Some(table) => table,
+            None => {
+                debug!("Failed to build symbol table for MeTTa virtual document");
+                return Ok(None);
+            }
+        };
+
+        // Find symbol at position
+        let symbol = match symbol_table.find_symbol_at_position(&virtual_position) {
+            Some(sym) => sym,
+            None => {
+                debug!("No MeTTa symbol at position {:?}", virtual_position);
+                return Ok(None);
+            }
+        };
+
+        // First, check if this symbol is in a function call position
+        // If so, use pattern matching instead of scope-based lookup
+        use crate::ir::semantic_node::{Position as IrPosition, SemanticNode};
+
+        // The virtual_position is already in the coordinate system of the extracted MeTTa content
+        // (lines start from 0 of the extracted content, NOT offset by parent_start).
+        // The symbol table positions use LspPosition which starts from line 0 of extracted content.
+        // The IR node positions also start from line 0 of extracted content.
+        // So we can use virtual_position directly!
+        let ir_pos = IrPosition {
+            row: virtual_position.line as usize,
+            column: virtual_position.character as usize,
+            byte: 0,
+        };
+
+        debug!("Attempting to find function call at position for symbol '{}' (symbol table has {} IR nodes, position L{}:C{})",
+            symbol.name, symbol_table.ir_nodes.len(),
+            ir_pos.row, ir_pos.column);
+
+        // Try to find the containing SExpr (function call)
+        if let Some(call_node) = self.find_metta_call_at_position(&symbol_table.ir_nodes, &ir_pos) {
+            debug!("Found call node for symbol '{}'", symbol.name);
+
+            // Check if the clicked symbol is the function name (first element of SExpr)
+            use crate::ir::metta_node::MettaNode;
+            let is_function_name = match &call_node {
+                MettaNode::SExpr { elements, .. } if elements.len() > 0 => {
+                    // Check if the position is within the first element (function name)
+                    if let Some(first_elem_name) = elements[0].name() {
+                        debug!("Comparing first element name '{}' with symbol name '{}'", first_elem_name, symbol.name);
+                        first_elem_name == symbol.name
+                    } else {
+                        debug!("First element has no name");
+                        false
+                    }
+                }
+                _ => {
+                    debug!("Call node is not an SExpr or has no elements");
+                    false
+                }
+            };
+
+            debug!("is_function_name = {} for symbol '{}'", is_function_name, symbol.name);
+
+            if is_function_name {
+                debug!("Symbol '{}' is in function call position, using pattern matching", symbol.name);
+
+                // Find all matching definitions using pattern matcher
+                let matching_locations = symbol_table.find_function_definitions(&call_node);
+
+                if matching_locations.is_empty() {
+                    debug!("No pattern-matched definitions found for '{}'", symbol.name);
+
+                    // Fallback: Find all occurrences of this symbol
+                    // This handles cases like (connected room1 room2) in knowledge bases
+                    // where the symbol isn't a function definition but appears in S-expressions
+                    let all_usages: Vec<&SymbolOccurrence> = symbol_table.all_occurrences.iter()
+                        .filter(|occ| occ.name == symbol.name)
+                        .collect();
+
+                    if !all_usages.is_empty() {
+                        debug!("Found {} usage(s) of '{}' as S-expression head", all_usages.len(), symbol.name);
+
+                        let parent_locations: Vec<Location> = all_usages
+                            .into_iter()
+                            .map(|occ| {
+                                let parent_range = virtual_doc.map_range_to_parent(occ.range);
+                                Location {
+                                    uri: virtual_doc.parent_uri.clone(),
+                                    range: parent_range,
+                                }
+                            })
+                            .collect();
+
+                        if parent_locations.len() == 1 {
+                            return Ok(Some(GotoDefinitionResponse::Scalar(parent_locations.into_iter().next().unwrap())));
+                        } else {
+                            return Ok(Some(GotoDefinitionResponse::Array(parent_locations)));
+                        }
+                    }
+                    // Fall through to scope-based lookup as fallback
+                } else {
+                    // Map locations from virtual to parent document
+                    let parent_locations: Vec<Location> = matching_locations
+                        .into_iter()
+                        .map(|loc| {
+                            let parent_range = virtual_doc.map_range_to_parent(loc.range);
+                            Location {
+                                uri: virtual_doc.parent_uri.clone(),
+                                range: parent_range,
+                            }
+                        })
+                        .collect();
+
+                    debug!(
+                        "Found {} pattern-matched definition(s) for '{}'",
+                        parent_locations.len(),
+                        symbol.name
+                    );
+
+                    if parent_locations.len() == 1 {
+                        return Ok(Some(GotoDefinitionResponse::Scalar(parent_locations.into_iter().next().unwrap())));
+                    } else {
+                        return Ok(Some(GotoDefinitionResponse::Array(parent_locations)));
+                    }
+                }
+            }
+        }
+
+        // Try scope-based lookup (for variables, parameters, etc.)
+        if let Some(definition) = symbol_table.find_definition(symbol) {
+            // Map virtual range to parent range
+            let parent_range = virtual_doc.map_range_to_parent(definition.range);
+
+            debug!(
+                "Found MeTTa variable definition for '{}' at {:?}",
+                symbol.name, parent_range
+            );
+
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                uri: virtual_doc.parent_uri.clone(),
+                range: parent_range,
+            })));
+        }
+
+        debug!("No definition found for MeTTa symbol '{}'", symbol.name);
+        Ok(None)
+    }
+
+    /// Find the function call SExpr containing the given position
+    ///
+    /// Searches for the innermost SExpr that contains the position and
+    /// could represent a function call (i.e., has an atom as first element)
+    fn find_metta_call_at_position(
+        &self,
+        nodes: &[Arc<crate::ir::metta_node::MettaNode>],
+        position: &crate::ir::semantic_node::Position,
+    ) -> Option<crate::ir::metta_node::MettaNode> {
+        use crate::ir::metta_node::{MettaNode, compute_absolute_positions};
+        use crate::ir::semantic_node::SemanticNode;
+
+        debug!("Searching {} top-level IR nodes for call at position L{}:C{}",
+            nodes.len(), position.row, position.column);
+
+        // We need to compute positions for all nodes with proper prev_end tracking
+        // to get accurate ranges that account for comments and whitespace
+        use crate::ir::metta_node::compute_positions_with_prev_end;
+        let mut prev_end = crate::ir::semantic_node::Position {
+            row: 0,
+            column: 0,
+            byte: 0,
+        };
+
+        for (i, node) in nodes.iter().enumerate() {
+            let node_type = match &**node {
+                MettaNode::Definition { .. } => "Definition",
+                MettaNode::SExpr { .. } => "SExpr",
+                MettaNode::Atom { .. } => "Atom",
+                MettaNode::If { .. } => "If",
+                _ => "Other"
+            };
+
+            // Compute positions with prev_end tracking (includes comments/whitespace)
+            let (positions, new_prev_end) = compute_positions_with_prev_end(node, prev_end);
+            prev_end = new_prev_end;
+
+            let node_ptr = &**node as *const MettaNode as usize;
+            let range_info = if let Some((start, end)) = positions.get(&node_ptr) {
+                format!("L{}:C{}-L{}:C{}", start.row, start.column, end.row, end.column)
+            } else {
+                "no-position".to_string()
+            };
+
+            debug!("Checking top-level node {} (type: {}, range: {})", i, node_type, range_info);
+
+            // Use the properly computed positions for this node
+            if let Some(call) = self.find_metta_call_in_node(node, position, &positions) {
+                debug!("Found call in top-level node {}", i);
+                return Some(call);
+            }
+        }
+        debug!("No call found in any of the {} top-level nodes", nodes.len());
+        None
+    }
+
+    /// Recursively search for function call in a node
+    fn find_metta_call_in_node(
+        &self,
+        node: &Arc<crate::ir::metta_node::MettaNode>,
+        position: &crate::ir::semantic_node::Position,
+        positions: &std::collections::HashMap<usize, (crate::ir::semantic_node::Position, crate::ir::semantic_node::Position)>,
+    ) -> Option<crate::ir::metta_node::MettaNode> {
+        use crate::ir::metta_node::MettaNode;
+
+        // Use the pre-computed positions (with proper prev_end tracking)
+        let node_ptr = &**node as *const MettaNode as usize;
+        let (start, end) = match positions.get(&node_ptr) {
+            Some(pos) => pos,
+            None => {
+                debug!("No position info for node");
+                return None;
+            }
+        };
+
+        if !self.position_in_range(position, start, end) {
+            return None;
+        }
+
+        // If this is an SExpr with an atom as first element, it's a potential function call
+        match &**node {
+            MettaNode::SExpr { elements, .. } if elements.len() > 0 => {
+                debug!("Searching in SExpr with {} elements", elements.len());
+                // First check children to find the most specific match
+                for elem in elements {
+                    if let Some(call) = self.find_metta_call_in_node(elem, position, positions) {
+                        return Some(call);
+                    }
+                }
+
+                // If no child matched more specifically, check if this is a call
+                if matches!(&*elements[0], MettaNode::Atom { .. }) {
+                    debug!("Found SExpr with Atom as first element - returning as call");
+                    return Some((**node).clone());
+                }
+
+                None
+            }
+            MettaNode::Definition { pattern, body, .. } => {
+                debug!("Searching in Definition: pattern and body");
+                self.find_metta_call_in_node(pattern, position, positions)
+                    .or_else(|| self.find_metta_call_in_node(body, position, positions))
+            }
+            MettaNode::Match { scrutinee, cases, .. } => {
+                self.find_metta_call_in_node(scrutinee, position, positions)
+                    .or_else(|| {
+                        for (pat, res) in cases {
+                            if let Some(call) = self.find_metta_call_in_node(pat, position, positions) {
+                                return Some(call);
+                            }
+                            if let Some(call) = self.find_metta_call_in_node(res, position, positions) {
+                                return Some(call);
+                            }
+                        }
+                        None
+                    })
+            }
+            MettaNode::If { condition, consequence, alternative, .. } => {
+                debug!("Searching in If node: condition, consequence, alternative");
+                self.find_metta_call_in_node(condition, position, positions)
+                    .or_else(|| self.find_metta_call_in_node(consequence, position, positions))
+                    .or_else(|| {
+                        if let Some(alt) = alternative {
+                            self.find_metta_call_in_node(alt, position, positions)
+                        } else {
+                            None
+                        }
+                    })
+            }
+            MettaNode::Let { bindings, body, .. } => {
+                for (var, val) in bindings {
+                    if let Some(call) = self.find_metta_call_in_node(var, position, positions) {
+                        return Some(call);
+                    }
+                    if let Some(call) = self.find_metta_call_in_node(val, position, positions) {
+                        return Some(call);
+                    }
+                }
+                self.find_metta_call_in_node(body, position, positions)
+            }
+            MettaNode::Lambda { params, body, .. } => {
+                for param in params {
+                    if let Some(call) = self.find_metta_call_in_node(param, position, positions) {
+                        return Some(call);
+                    }
+                }
+                self.find_metta_call_in_node(body, position, positions)
+            }
+            MettaNode::TypeAnnotation { expr, type_expr, .. } => {
+                self.find_metta_call_in_node(expr, position, positions)
+                    .or_else(|| self.find_metta_call_in_node(type_expr, position, positions))
+            }
+            MettaNode::Eval { expr, .. } => {
+                self.find_metta_call_in_node(expr, position, positions)
+            }
+            _ => None,
+        }
+    }
+
+    /// Check if a position is within a range
+    fn position_in_range(
+        &self,
+        pos: &crate::ir::semantic_node::Position,
+        start: &crate::ir::semantic_node::Position,
+        end: &crate::ir::semantic_node::Position,
+    ) -> bool {
+        (pos.row > start.row || (pos.row == start.row && pos.column >= start.column))
+            && (pos.row < end.row || (pos.row == end.row && pos.column <= end.column))
+    }
+
+    /// Rename support for MeTTa symbols
+    async fn rename_metta(
+        &self,
+        virtual_doc: &Arc<crate::language_regions::VirtualDocument>,
+        virtual_position: LspPosition,
+        new_name: &str,
+    ) -> LspResult<Option<WorkspaceEdit>> {
+        use crate::ir::transforms::metta_symbol_table_builder::*;
+        use std::collections::HashMap;
+
+        // Get symbol table
+        let symbol_table = match virtual_doc.get_or_build_symbol_table() {
+            Some(table) => table,
+            None => {
+                debug!("Failed to build symbol table for MeTTa virtual document");
+                return Ok(None);
+            }
+        };
+
+        // Find symbol at position
+        let symbol = match symbol_table.find_symbol_at_position(&virtual_position) {
+            Some(sym) => sym,
+            None => {
+                debug!("No MeTTa symbol at position {:?}", virtual_position);
+                return Ok(None);
+            }
+        };
+
+        // Find all references in the same scope
+        let references = symbol_table.find_symbol_references(symbol);
+
+        // Create text edits for all occurrences
+        let edits: Vec<TextEdit> = references
+            .iter()
+            .map(|occ| {
+                let parent_range = virtual_doc.map_range_to_parent(occ.range);
+                TextEdit {
+                    range: parent_range,
+                    new_text: new_name.to_string(),
+                }
+            })
+            .collect();
+
+        if edits.is_empty() {
+            return Ok(None);
+        }
+
+        // Build workspace edit
+        let mut changes = HashMap::new();
+        changes.insert(virtual_doc.parent_uri.clone(), edits);
+
+        debug!(
+            "Renaming MeTTa symbol '{}' to '{}' ({} occurrences)",
+            symbol.name,
+            new_name,
+            changes.values().map(|v| v.len()).sum::<usize>()
+        );
+
+        Ok(Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }))
+    }
 }
 
 #[tower_lsp::async_trait]
@@ -1558,6 +2541,18 @@ impl LanguageServer for RholangBackend {
             }
         }
 
+        // Define semantic token legend
+        let token_types = vec![
+            SemanticTokenType::COMMENT,
+            SemanticTokenType::STRING,
+            SemanticTokenType::NUMBER,
+            SemanticTokenType::KEYWORD,
+            SemanticTokenType::OPERATOR,
+            SemanticTokenType::VARIABLE,
+            SemanticTokenType::FUNCTION,
+            SemanticTokenType::TYPE,
+        ];
+
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::INCREMENTAL)),
@@ -1569,6 +2564,17 @@ impl LanguageServer for RholangBackend {
                 workspace_symbol_provider: Some(tower_lsp::lsp_types::OneOf::Left(true)),
                 document_highlight_provider: Some(tower_lsp::lsp_types::OneOf::Left(true)),
                 hover_provider: Some(tower_lsp::lsp_types::HoverProviderCapability::Simple(true)),
+                semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+                    SemanticTokensOptions {
+                        legend: SemanticTokensLegend {
+                            token_types,
+                            token_modifiers: vec![],
+                        },
+                        full: Some(SemanticTokensFullOptions::Bool(true)),
+                        range: None,
+                        ..Default::default()
+                    }
+                )),
                 ..Default::default()
             },
             ..Default::default()
@@ -1646,6 +2652,8 @@ impl LanguageServer for RholangBackend {
         });
         self.documents_by_uri.write().await.insert(uri.clone(), document.clone());
         self.documents_by_id.write().await.insert(document_id, document.clone());
+
+        // Index file (will skip if content hash matches existing cached document)
         match self.index_file(&uri, &text, version, None).await {
             Ok(cached_doc) => {
                 self.workspace.write().await.documents.insert(uri.clone(), Arc::new(cached_doc));
@@ -1719,6 +2727,10 @@ impl LanguageServer for RholangBackend {
         if let Some(document) = self.documents_by_uri.write().await.remove(&uri) {
             self.documents_by_id.write().await.remove(&document.id);
             info!("Closed document: {}, id: {}", uri, document.id);
+
+            // Unregister any virtual documents associated with this parent
+            let mut virtual_docs = self.virtual_docs.write().await;
+            virtual_docs.unregister_parent(&uri);
         } else {
             warn!("Failed to find document with URI={}", uri);
         }
@@ -1732,6 +2744,25 @@ impl LanguageServer for RholangBackend {
         let new_name = params.new_name;
 
         debug!("Starting rename for {} at {:?} to '{}'", uri, position, new_name);
+
+        // Check if position is within a virtual document (embedded language)
+        {
+            let virtual_docs = self.virtual_docs.read().await;
+            if let Some((virtual_uri, virtual_position, virtual_doc)) =
+                virtual_docs.find_virtual_document_at_position(&uri, position)
+            {
+                debug!(
+                    "Position {:?} is in virtual document {} at virtual position {:?}",
+                    position, virtual_uri, virtual_position
+                );
+                drop(virtual_docs);
+
+                // Get rename from virtual document (MeTTa)
+                if virtual_doc.language == "metta" {
+                    return self.rename_metta(&virtual_doc, virtual_position, &new_name).await;
+                }
+            }
+        }
 
         let symbol = match self.get_symbol_at_position(&uri, position).await {
             Some(s) => s,
@@ -1774,10 +2805,32 @@ impl LanguageServer for RholangBackend {
 
     /// Handles going to a symbol's definition.
     async fn goto_definition(&self, params: GotoDefinitionParams) -> LspResult<Option<GotoDefinitionResponse>> {
+        let start = std::time::Instant::now();
         let uri = params.text_document_position_params.text_document.uri.clone();
         let lsp_pos = params.text_document_position_params.position;
 
         debug!("goto_definition request for {} at {:?}", uri, lsp_pos);
+
+        // Check if position is within a virtual document (embedded language)
+        {
+            let virtual_docs = self.virtual_docs.read().await;
+            if let Some((virtual_uri, virtual_position, virtual_doc)) =
+                virtual_docs.find_virtual_document_at_position(&uri, lsp_pos)
+            {
+                debug!(
+                    "Position {:?} is in virtual document {} at virtual position {:?}",
+                    lsp_pos, virtual_uri, virtual_position
+                );
+                drop(virtual_docs);
+
+                // Get goto-definition from virtual document (MeTTa)
+                if virtual_doc.language == "metta" {
+                    let result = self.goto_definition_metta(&virtual_doc, virtual_position).await;
+                    info!("goto_definition completed in {:.3}ms (MeTTa virtual document)", start.elapsed().as_secs_f64() * 1000.0);
+                    return result;
+                }
+            }
+        }
 
         let byte = {
             let workspace = self.workspace.read().await;
@@ -1785,6 +2838,7 @@ impl LanguageServer for RholangBackend {
                 let text = &doc.text;
                 Self::byte_offset_from_position(text, lsp_pos.line as usize, lsp_pos.character as usize)
             } else {
+                info!("goto_definition completed in {:.3}ms (document not found)", start.elapsed().as_secs_f64() * 1000.0);
                 debug!("Document not found in workspace: {}", uri);
                 return Ok(None);
             }
@@ -1803,14 +2857,53 @@ impl LanguageServer for RholangBackend {
             debug!("Document found in workspace: {}", uri);
             let root = &doc.ir;
             if let Some((node, path)) = find_node_at_position_with_path(root, &*doc.positions, ir_pos) {
-                debug!("Found node at position: '{}'", node.text(&doc.text, root).to_string());
+                debug!("Found node at position: '{}', type: {:?}, path length: {}",
+                    node.text(&doc.text, root).to_string(),
+                    match node.as_ref() {
+                        RholangNode::StringLiteral { .. } => "StringLiteral",
+                        RholangNode::Quote { .. } => "Quote",
+                        RholangNode::Var { .. } => "Var",
+                        RholangNode::Send { .. } => "Send",
+                        _ => "Other"
+                    },
+                    path.len()
+                );
                 if path.len() >= 2 {
                     let parent = path[path.len() - 2].clone();
-                    let is_channel = match &*parent {
+
+                    // Check if this node is directly a channel in Send/SendSync
+                    let is_direct_channel = match &*parent {
                         RholangNode::Send { channel, .. } | RholangNode::SendSync { channel, .. } => Arc::ptr_eq(channel, &node),
                         _ => false,
                     };
-                    debug!("Is channel in Send/SendSync: {}", is_channel);
+
+                    // Check if this node is inside a Quote that's the channel of Send/SendSync
+                    // For quoted contracts like @"myContract", the path is: [..., Send, Quote, StringLiteral]
+                    let is_quoted_channel = if path.len() >= 3 {
+                        match (&*parent, &*path[path.len() - 3]) {
+                            (RholangNode::Quote { quotable, .. }, RholangNode::Send { channel, .. }) |
+                            (RholangNode::Quote { quotable, .. }, RholangNode::SendSync { channel, .. }) => {
+                                // Check that the parent Quote is the channel
+                                Arc::ptr_eq(channel, &parent)
+                            }
+                            _ => false
+                        }
+                    } else {
+                        false
+                    };
+
+                    let is_channel = is_direct_channel || is_quoted_channel;
+
+                    debug!("Parent type: {:?}, is_channel: {} (direct: {}, quoted: {})",
+                        match parent.as_ref() {
+                            RholangNode::StringLiteral { .. } => "StringLiteral",
+                            RholangNode::Quote { .. } => "Quote",
+                            RholangNode::Var { .. } => "Var",
+                            RholangNode::Send { .. } => "Send",
+                            _ => "Other"
+                        },
+                        is_channel, is_direct_channel, is_quoted_channel
+                    );
                     if is_channel {
                         // Fast path: Try GlobalSymbolIndex pattern matching for O(k) lookup
                         let contract_name_opt = match node.as_ref() {
@@ -1826,6 +2919,7 @@ impl LanguageServer for RholangBackend {
 
                             if let Ok(global_index_guard) = global_index.read() {
                                 if let Ok(Some(symbol_loc)) = global_index_guard.find_contract_definition(&contract_name) {
+                                    info!("goto_definition completed in {:.3}ms (fast path via GlobalSymbolIndex)", start.elapsed().as_secs_f64() * 1000.0);
                                     debug!("Found contract '{}' via GlobalSymbolIndex at {}", contract_name, symbol_loc.uri);
                                     return Ok(Some(GotoDefinitionResponse::Scalar(symbol_loc.to_lsp_location())));
                                 } else {
@@ -1837,7 +2931,15 @@ impl LanguageServer for RholangBackend {
                         // Reacquire workspace lock for fallback (or use existing if not dropped)
                         let workspace = self.workspace.read().await;
 
-                        if let RholangNode::Send { channel, inputs, .. } | RholangNode::SendSync { channel, inputs, .. } = &*parent {
+                        // For quoted contracts, the parent is Quote and grandparent is Send
+                        // For non-quoted, parent is Send
+                        let send_node = if is_quoted_channel && path.len() >= 3 {
+                            &path[path.len() - 3]
+                        } else {
+                            &parent
+                        };
+
+                        if let RholangNode::Send { channel, inputs, .. } | RholangNode::SendSync { channel, inputs, .. } = &**send_node {
                             let matching = workspace.global_contracts.iter().filter(|(_, contract)| match_contract(channel, inputs, contract)).map(|(u, c)| {
                                 let cached_doc = workspace.documents.get(u).expect("Document not found");
                                 let positions = cached_doc.positions.clone();
@@ -1861,17 +2963,21 @@ impl LanguageServer for RholangBackend {
                             if matching.is_empty() {
                                 drop(workspace);
                                 debug!("No matching contracts; falling back to symbol lookup");
-                                if let Some(symbol) = self.get_symbol_at_position(&uri, lsp_pos).await {
+                                let result = if let Some(symbol) = self.get_symbol_at_position(&uri, lsp_pos).await {
                                     let pos = symbol.definition_location.unwrap_or(symbol.declaration_location);
                                     let range = Self::position_to_range(pos, symbol.name.len());
                                     let loc = Location { uri: symbol.declaration_uri.clone(), range };
                                     Ok(Some(GotoDefinitionResponse::Scalar(loc)))
                                 } else {
                                     Ok(None)
-                                }
+                                };
+                                info!("goto_definition completed in {:.3}ms (no matching contracts, symbol lookup fallback)", start.elapsed().as_secs_f64() * 1000.0);
+                                result
                             } else if matching.len() == 1 {
+                                info!("goto_definition completed in {:.3}ms (found 1 matching contract)", start.elapsed().as_secs_f64() * 1000.0);
                                 Ok(Some(GotoDefinitionResponse::Scalar(matching[0].clone())))
                             } else {
+                                info!("goto_definition completed in {:.3}ms (found {} matching contracts)", start.elapsed().as_secs_f64() * 1000.0, matching.len());
                                 Ok(Some(GotoDefinitionResponse::Array(matching)))
                             }
                         } else {
@@ -1880,32 +2986,38 @@ impl LanguageServer for RholangBackend {
                     } else {
                         drop(workspace);
                         debug!("Not a channel; falling back to symbol lookup");
-                        if let Some(symbol) = self.get_symbol_at_position(&uri, lsp_pos).await {
+                        let result = if let Some(symbol) = self.get_symbol_at_position(&uri, lsp_pos).await {
                             let pos = symbol.definition_location.unwrap_or(symbol.declaration_location);
                             let range = Self::position_to_range(pos, symbol.name.len());
                             let loc = Location { uri: symbol.declaration_uri.clone(), range };
                             Ok(Some(GotoDefinitionResponse::Scalar(loc)))
                         } else {
                             Ok(None)
-                        }
+                        };
+                        info!("goto_definition completed in {:.3}ms (not a channel, symbol lookup fallback)", start.elapsed().as_secs_f64() * 1000.0);
+                        result
                     }
                 } else {
                     drop(workspace);
                     debug!("Path too short; falling back to symbol lookup");
-                    if let Some(symbol) = self.get_symbol_at_position(&uri, lsp_pos).await {
+                    let result = if let Some(symbol) = self.get_symbol_at_position(&uri, lsp_pos).await {
                         let pos = symbol.definition_location.unwrap_or(symbol.declaration_location);
                         let range = Self::position_to_range(pos, symbol.name.len());
                         let loc = Location { uri: symbol.declaration_uri.clone(), range };
                         Ok(Some(GotoDefinitionResponse::Scalar(loc)))
                     } else {
                         Ok(None)
-                    }
+                    };
+                    info!("goto_definition completed in {:.3}ms (symbol lookup fallback)", start.elapsed().as_secs_f64() * 1000.0);
+                    result
                 }
             } else {
+                info!("goto_definition completed in {:.3}ms (no node found)", start.elapsed().as_secs_f64() * 1000.0);
                 debug!("No node found at position {:?} in {}", ir_pos, uri);
                 Ok(None)
             }
         } else {
+            info!("goto_definition completed in {:.3}ms (document not found in workspace)", start.elapsed().as_secs_f64() * 1000.0);
             debug!("Document {} not found in workspace for goto_definition", uri);
             Ok(None)
         }
@@ -2129,6 +3241,26 @@ impl LanguageServer for RholangBackend {
 
         debug!("documentHighlight at {}:{:?}", uri, position);
 
+        // Check if position is within a virtual document (embedded language)
+        {
+            let virtual_docs = self.virtual_docs.read().await;
+            if let Some((virtual_uri, virtual_position, virtual_doc)) =
+                virtual_docs.find_virtual_document_at_position(&uri, position)
+            {
+                debug!(
+                    "Position {:?} is in virtual document {} at virtual position {:?}",
+                    position, virtual_uri, virtual_position
+                );
+                drop(virtual_docs);
+
+                // Get highlights from virtual document (MeTTa)
+                if virtual_doc.language == "metta" {
+                    return self.document_highlight_metta(&virtual_doc, virtual_position, position).await;
+                }
+            }
+        }
+
+        // Rholang document highlighting
         let symbol = match self.get_symbol_at_position(&uri, position).await {
             Some(s) => s,
             None => {
@@ -2159,6 +3291,28 @@ impl LanguageServer for RholangBackend {
 
         debug!("Hover request at {}:{:?}", uri, position);
 
+        // Check if position is within a virtual document (embedded language)
+        let virtual_docs = self.virtual_docs.read().await;
+        if let Some((virtual_uri, virtual_position, virtual_doc)) =
+            virtual_docs.find_virtual_document_at_position(&uri, position)
+        {
+            debug!(
+                "Position {:?} is in virtual document {} at virtual position {:?}",
+                position, virtual_uri, virtual_position
+            );
+
+            // Get hover from virtual document
+            if let Some(mut hover) = virtual_doc.hover(virtual_position) {
+                // Map hover range back to parent coordinates
+                if let Some(range) = hover.range {
+                    hover.range = Some(virtual_doc.map_range_to_parent(range));
+                }
+                debug!("Returning hover from virtual document");
+                return Ok(Some(hover));
+            }
+        }
+        drop(virtual_docs); // Release the lock
+
         // Get the document
         let workspace = self.workspace.read().await;
         let doc = match workspace.documents.get(&uri) {
@@ -2182,24 +3336,27 @@ impl LanguageServer for RholangBackend {
         }
 
         // Find the node at the cursor position (Rholang)
+        let byte_offset = Self::byte_offset_from_position(&doc.text, position.line as usize, position.character as usize)
+            .unwrap_or(0);
+
         let ir_position = IrPosition {
             row: position.line as usize,
             column: position.character as usize,
-            byte: 0,
+            byte: byte_offset,
         };
 
         let node = crate::ir::rholang_node::find_node_at_position(&doc.ir, &doc.positions, ir_position)
             .ok_or_else(|| jsonrpc::Error::internal_error())?;
 
-        // Check if this is a contract name
-        if let RholangNode::Var { name: contract_name, .. } = node.as_ref() {
-            debug!("Hovering over contract name: {}", contract_name);
+        // Check if this is a variable (contract name or local variable)
+        if let RholangNode::Var { name: var_name, .. } = node.as_ref() {
+            debug!("Hovering over variable: {}", var_name);
 
             // Try to find contract definition in global index
             let global_index = workspace.global_index.clone();
 
             if let Ok(global_index_guard) = global_index.read() {
-                if let Ok(Some(symbol_loc)) = global_index_guard.find_contract_definition(contract_name) {
+                if let Ok(Some(symbol_loc)) = global_index_guard.find_contract_definition(var_name) {
                     // Build hover content with signature
                     if let Some(signature) = &symbol_loc.signature {
                         let mut hover_text = format!("```rholang\n{}\n```", signature);
@@ -2213,7 +3370,7 @@ impl LanguageServer for RholangBackend {
                         // Add location information
                         hover_text.push_str(&format!("\n\n*Defined in: {}*", symbol_loc.uri.path()));
 
-                        debug!("Returning hover for contract '{}': {}", contract_name, signature);
+                        debug!("Returning hover for contract '{}': {}", var_name, signature);
 
                         return Ok(Some(Hover {
                             contents: HoverContents::Markup(MarkupContent {
@@ -2224,16 +3381,78 @@ impl LanguageServer for RholangBackend {
                                 start: position,
                                 end: LspPosition {
                                     line: position.line,
-                                    character: position.character + contract_name.len() as u32,
+                                    character: position.character + var_name.len() as u32,
                                 },
                             }),
                         }));
                     }
                 }
             }
+
+            // Fallback: provide basic hover info for any variable
+            // This prevents VSCode from clearing document highlights when hover returns None
+            debug!("Providing basic hover for variable '{}'", var_name);
+            return Ok(Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: format!("**{}**\n\n*variable*", var_name),
+                }),
+                range: Some(Range {
+                    start: position,
+                    end: LspPosition {
+                        line: position.line,
+                        character: position.character + var_name.len() as u32,
+                    },
+                }),
+            }));
         }
 
         debug!("No hover information available");
         Ok(None)
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> LspResult<Option<SemanticTokensResult>> {
+        let uri = params.text_document.uri;
+        debug!("Semantic tokens request for: {}", uri);
+
+        // Get virtual documents for this file
+        let virtual_docs_guard = self.virtual_docs.read().await;
+        let virtual_docs_list = virtual_docs_guard.get_by_parent(&uri);
+
+        if virtual_docs_list.is_empty() {
+            debug!("No virtual documents (embedded languages) found for {}", uri);
+            return Ok(None);
+        }
+
+        // Build semantic tokens for all embedded language regions
+        let mut tokens_builder = SemanticTokensBuilder::new();
+
+        for virtual_doc in virtual_docs_list {
+            debug!(
+                "Processing {} virtual document at line {} (bytes {})",
+                virtual_doc.language, virtual_doc.parent_start.line, virtual_doc.byte_offset
+            );
+
+            // Only process MeTTa regions for now
+            if virtual_doc.language == "metta" {
+                // Use VirtualDocument directly - it now caches parsed trees
+                self.add_metta_semantic_tokens(&mut tokens_builder, &virtual_doc).await;
+            }
+        }
+        drop(virtual_docs_guard);
+
+        let tokens_data = tokens_builder.build();
+
+        debug!("Generated {} semantic tokens", tokens_data.len());
+
+        Ok(Some(SemanticTokensResult::Tokens(
+            tower_lsp::lsp_types::SemanticTokens {
+                result_id: None,
+                data: tokens_data,
+            }
+        )))
     }
 }

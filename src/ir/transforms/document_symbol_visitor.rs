@@ -8,7 +8,7 @@ use archery::ArcK;
 use tower_lsp::lsp_types::{DocumentSymbol, Range, SymbolKind, SymbolInformation, Location, Url};
 use tracing::debug;
 
-use crate::ir::rholang_node::{Metadata, RholangNode, NodeBase, Position as IrPosition};
+use crate::ir::rholang_node::{Metadata, RholangNode, RholangNodeVector, NodeBase, Position as IrPosition};
 use crate::ir::symbol_table::{Symbol, SymbolTable, SymbolType};
 use crate::ir::visitor::Visitor;
 
@@ -506,6 +506,21 @@ impl<'a> Visitor for DocumentSymbolVisitor<'a> {
         let visitor = DocumentSymbolVisitor::new(self.positions);
         visitor.visit_node(left);
         visitor.visit_node(right);
+        self.symbols.borrow_mut().extend(visitor.into_symbols());
+        node.clone()
+    }
+
+    fn visit_par_nary(
+        &self,
+        node: &Arc<RholangNode>,
+        _base: &NodeBase,
+        processes: &RholangNodeVector,
+        _metadata: &Option<Arc<Metadata>>,
+    ) -> Arc<RholangNode> {
+        let visitor = DocumentSymbolVisitor::new(self.positions);
+        for proc in processes.iter() {
+            visitor.visit_node(proc);
+        }
         self.symbols.borrow_mut().extend(visitor.into_symbols());
         node.clone()
     }

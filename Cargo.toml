@@ -16,6 +16,7 @@ mork = { path = "../MORK/kernel", features = ["interning"] }
 mork-expr = { path = "../MORK/expr" }
 mork-frontend = { path = "../MORK/frontend" }
 mettatron = { path = "../MeTTa-Compiler" }
+tree-sitter-metta = { path = "../MeTTa-Compiler/tree-sitter-metta" }
 notify = "5.0"
 pathmap = { path = "../PathMap", features = ["jemalloc", "arena_compact"] }
 petgraph = "0.8.2"

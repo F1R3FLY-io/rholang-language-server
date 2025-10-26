@@ -175,7 +175,7 @@ fn write_rholang_node(
         }
 
         // Par: (par <left> <right>)
-        RholangNode::Par { left, right, .. } => {
+        RholangNode::Par { left: Some(left), right: Some(right), .. } => {
             ez.write_arity(3);
             ez.loc += 1;
 
@@ -265,7 +265,7 @@ pub fn rholang_to_mork_string(node: &Arc<RholangNode>) -> String {
             let proc_str = rholang_to_mork_string(proc);
             format!("(new {} {})", decls_str, proc_str)
         }
-        RholangNode::Par { left, right, .. } => {
+        RholangNode::Par { left: Some(left), right: Some(right), .. } => {
             let left_str = rholang_to_mork_string(left);
             let right_str = rholang_to_mork_string(right);
             format!("(par {} {})", left_str, right_str)
@@ -492,8 +492,9 @@ mod tests {
         });
 
         let par_node = Arc::new(RholangNode::Par {
-            left,
-            right,
+                processes: None,
+            left: Some(left),
+            right: Some(right),
             base: create_base(),
             metadata: None,
         });
@@ -670,8 +671,9 @@ mod tests {
         });
 
         let par = Arc::new(RholangNode::Par {
-            left: var1,
-            right: var2,
+                processes: None,
+            left: Some(var1),
+            right: Some(var2),
             base: create_base(),
             metadata: None,
         });
