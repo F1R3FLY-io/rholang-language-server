@@ -53,110 +53,13 @@ use rholang_parser::RholangParser;
 use rholang_parser::parser::errors::ParsingError;
 use validated::Validated;
 
-/// Document change event for debouncing
-#[derive(Debug, Clone)]
-struct DocumentChangeEvent {
-    uri: Url,
-    version: i32,
-    document: Arc<LspDocument>,
-    text: Arc<String>,
-}
+// Import types from backend submodules
+mod state;
+mod utils;
 
-/// Workspace indexing task for progressive indexing
-#[derive(Debug, Clone, Eq, PartialEq)]
-struct IndexingTask {
-    uri: Url,
-    text: String,
-    priority: u8,  // 0 = high (current file), 1 = normal
-}
-
-/// The Rholang language server backend, managing state and handling LSP requests.
-#[derive(Clone)]
-pub struct RholangBackend {
-    client: Client,
-    documents_by_uri: Arc<RwLock<HashMap<Url, Arc<LspDocument>>>>,
-    documents_by_id: Arc<RwLock<HashMap<u32, Arc<LspDocument>>>>,
-    serial_document_id: Arc<AtomicU32>,
-    /// Pluggable diagnostic provider (Rust interpreter or gRPC to RNode)
-    diagnostic_provider: Arc<Box<dyn DiagnosticProvider>>,
-    /// Direct access to SemanticValidator for validate_parsed optimization (if using Rust backend)
-    semantic_validator: Option<SemanticValidator>,
-    client_process_id: Arc<Mutex<Option<u32>>>,
-    pid_channel: Option<tokio::sync::mpsc::Sender<u32>>,
-    // Reactive channels
-    doc_change_tx: tokio::sync::mpsc::Sender<DocumentChangeEvent>,
-    validation_cancel: Arc<Mutex<HashMap<Url, tokio::sync::oneshot::Sender<()>>>>,
-    indexing_tx: tokio::sync::mpsc::Sender<IndexingTask>,
-    workspace: Arc<RwLock<WorkspaceState>>,
-    file_watcher: Arc<Mutex<Option<RecommendedWatcher>>>,
-    file_events: Arc<Mutex<Receiver<notify::Result<notify::Event>>>>,
-    file_sender: Arc<Mutex<Sender<notify::Result<notify::Event>>>>,
-    version_counter: Arc<AtomicI32>,
-    root_dir: Arc<RwLock<Option<PathBuf>>>,
-    shutdown_tx: Arc<tokio::sync::broadcast::Sender<()>>,
-    /// Virtual document registry for embedded language regions
-    virtual_docs: Arc<RwLock<VirtualDocumentRegistry>>,
-}
-
-// Manual Debug implementation since DiagnosticProvider doesn't implement Debug
-impl std::fmt::Debug for RholangBackend {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RholangBackend")
-            .field("backend", &self.diagnostic_provider.backend_name())
-            .field("documents_count", &"<HashMap>")
-            .finish()
-    }
-}
-
-/// Helper for building semantic tokens using delta encoding
-struct SemanticTokensBuilder {
-    tokens: Vec<SemanticToken>,
-    prev_line: u32,
-    prev_start: u32,
-}
-
-impl SemanticTokensBuilder {
-    fn new() -> Self {
-        Self {
-            tokens: Vec::new(),
-            prev_line: 0,
-            prev_start: 0,
-        }
-    }
-
-    fn push(&mut self, line: u32, start: u32, length: u32, token_type: u32) {
-        let delta_line = if line >= self.prev_line {
-            line - self.prev_line
-        } else {
-            // Should not happen in well-formed code
-            0
-        };
-
-        let delta_start = if delta_line == 0 && start >= self.prev_start {
-            start - self.prev_start
-        } else if delta_line == 0 {
-            // Should not happen - tokens on same line should be in order
-            0
-        } else {
-            start
-        };
-
-        self.tokens.push(SemanticToken {
-            delta_line,
-            delta_start,
-            length,
-            token_type,
-            token_modifiers_bitset: 0,
-        });
-
-        self.prev_line = line;
-        self.prev_start = start;
-    }
-
-    fn build(self) -> Vec<SemanticToken> {
-        self.tokens
-    }
-}
+pub use state::RholangBackend;
+use state::{DocumentChangeEvent, IndexingTask};
+use utils::SemanticTokensBuilder;
 
 impl RholangBackend {
     /// Creates a new instance of the Rholang backend with the given client and connections.
