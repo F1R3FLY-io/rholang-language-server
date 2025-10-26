@@ -8,6 +8,7 @@
 !/build.rs
 !/Cargo.toml
 !/.config/nextest.toml
+!/docs/**/*.md
 !/.github/**/*.yml
 !/.gitignore
 !/LICENSE.txt
