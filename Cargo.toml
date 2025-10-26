@@ -10,6 +10,7 @@ archery = "1.2.1"  # Matches rpds 1.1.1's dependency
 async-trait = "0.1"
 clap = { version = "4.5", features = ["derive"] }
 dirs = "5.0"
+futures = "0.3"
 futures-util = "0.3"
 lsp-types = "0.97"
 mork = { path = "../MORK/kernel", features = ["interning"] }
@@ -35,6 +36,7 @@ thiserror = "1.0"
 time = { version = "0.3", features = ["macros", "formatting"] }
 tokio-tungstenite = { version = "0.23", optional = true }  # WebSocket support
 tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["time", "sync"] }
 tonic = "0.13"
 tower-lsp = "0.20"
 tracing = "0.1"

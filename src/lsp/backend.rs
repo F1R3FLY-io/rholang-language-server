@@ -56,6 +56,8 @@ use validated::Validated;
 // Import types from backend submodules
 mod state;
 mod utils;
+mod streams;
+mod reactive;
 
 pub use state::RholangBackend;
 use state::{DocumentChangeEvent, IndexingTask};
@@ -148,11 +150,11 @@ impl RholangBackend {
             virtual_docs: Arc::new(RwLock::new(VirtualDocumentRegistry::new())),
         };
 
-        // Spawn document change debouncer
-        Self::spawn_document_debouncer(backend.clone(), doc_change_rx);
+        // Spawn reactive document change debouncer
+        Self::spawn_reactive_document_debouncer(backend.clone(), doc_change_rx);
 
-        // Spawn progressive indexer
-        Self::spawn_progressive_indexer(backend.clone(), indexing_rx);
+        // Spawn reactive progressive indexer
+        Self::spawn_reactive_progressive_indexer(backend.clone(), indexing_rx);
 
         Ok(backend)
     }
@@ -2437,8 +2439,8 @@ impl LanguageServer for RholangBackend {
                 watcher.watch(&root_path, RecursiveMode::Recursive).map_err(|_| jsonrpc::Error::internal_error())?;
                 *self.file_watcher.lock().unwrap() = Some(watcher);
 
-                // Spawn file watcher event batcher
-                Self::spawn_file_watcher(self.clone(), self.file_events.clone());
+                // Spawn reactive file watcher event batcher
+                Self::spawn_reactive_file_watcher(self.clone(), self.file_events.clone());
             } else {
                 warn!("Failed to convert root_uri to path: {}. Skipping workspace indexing and file watching.", root_uri);
             }
@@ -2527,8 +2529,8 @@ impl LanguageServer for RholangBackend {
                     }
                     *self.file_watcher.lock().unwrap() = Some(watcher);
 
-                    // Spawn file watcher event batcher
-                    Self::spawn_file_watcher(self.clone(), self.file_events.clone());
+                    // Spawn reactive file watcher event batcher
+                    Self::spawn_reactive_file_watcher(self.clone(), self.file_events.clone());
                 }
             }
         } else {
