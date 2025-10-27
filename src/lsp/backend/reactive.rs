@@ -152,14 +152,14 @@ impl RholangBackend {
                             uri_debouncers.remove(&uri);
                             if let Some(event) = pending_events.remove(&uri) {
                                 // Cancel previous validation for this URI
-                                if let Some(cancel_tx) = backend.validation_cancel.lock().unwrap().remove(&uri) {
+                                if let Some(cancel_tx) = backend.validation_cancel.lock().await.remove(&uri) {
                                     let _ = cancel_tx.send(());
                                     trace!("Cancelled previous validation for {}", uri);
                                 }
 
                                 // Create new cancellation token
                                 let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
-                                backend.validation_cancel.lock().unwrap().insert(uri.clone(), cancel_tx);
+                                backend.validation_cancel.lock().await.insert(uri.clone(), cancel_tx);
 
                                 // Spawn validation with timeout
                                 let backend_clone = backend.clone();

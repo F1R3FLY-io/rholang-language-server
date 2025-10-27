@@ -118,7 +118,7 @@ impl RholangBackend {
         // Create reactive channels
         let (doc_change_tx, doc_change_rx) = tokio::sync::mpsc::channel::<DocumentChangeEvent>(100);
         let (indexing_tx, indexing_rx) = tokio::sync::mpsc::channel::<IndexingTask>(100);
-        let validation_cancel = Arc::new(Mutex::new(HashMap::new()));
+        let validation_cancel = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
 
         // Create hot observable for workspace changes (ReactiveX Phase 2)
@@ -135,7 +135,7 @@ impl RholangBackend {
             serial_document_id: Arc::new(AtomicU32::new(0)),
             diagnostic_provider,
             semantic_validator,
-            client_process_id: Arc::new(Mutex::new(client_process_id)),
+            client_process_id: Arc::new(tokio::sync::Mutex::new(client_process_id)),
             pid_channel,
             doc_change_tx: doc_change_tx.clone(),
             validation_cancel: validation_cancel.clone(),
@@ -193,14 +193,14 @@ impl RholangBackend {
                         // Timeout reached, process all pending changes
                         for (uri, event) in pending_changes.drain() {
                             // Cancel any in-flight validation for this URI
-                            if let Some(cancel_tx) = backend.validation_cancel.lock().unwrap().remove(&uri) {
+                            if let Some(cancel_tx) = backend.validation_cancel.lock().await.remove(&uri) {
                                 let _ = cancel_tx.send(());
                                 trace!("Cancelled previous validation for {}", uri);
                             }
 
                             // Create cancellation token for this validation
                             let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
-                            backend.validation_cancel.lock().unwrap().insert(uri.clone(), cancel_tx);
+                            backend.validation_cancel.lock().await.insert(uri.clone(), cancel_tx);
 
                             // Spawn validation with cancellation
                             let backend_clone = backend.clone();
@@ -222,7 +222,7 @@ impl RholangBackend {
                                                     ).await;
                                                 }
                                                 // Remove cancellation token
-                                                backend_clone.validation_cancel.lock().unwrap().remove(&uri_clone);
+                                                backend_clone.validation_cancel.lock().await.remove(&uri_clone);
                                             }
                                             Err(e) => error!("Validation failed for {}: {}", uri_clone, e),
                                         }

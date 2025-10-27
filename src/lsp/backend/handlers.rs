@@ -53,14 +53,14 @@ impl LanguageServer for RholangBackend {
 
         if let Some(client_pid) = params.process_id {
             {
-                let mut locked_pid = self.client_process_id.lock().unwrap();
+                let mut locked_pid = self.client_process_id.lock().await;
                 if let Some(cmdline_pid) = *locked_pid {
                     if cmdline_pid != client_pid {
                         warn!("Client PID mismatch: command line ({}) vs LSP ({})", cmdline_pid, client_pid);
                     }
                 }
                 *locked_pid = Some(client_pid);
-            } // Drop the lock here before await
+            } // Drop the lock here before next await
 
             // Send PID through reactive channel to trigger monitoring
             if let Some(ref tx) = self.pid_channel {

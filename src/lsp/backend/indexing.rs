@@ -35,8 +35,11 @@ impl RholangBackend {
     /// Processes a parsed IR node through the transformation pipeline to build symbols and metadata.
     pub(super) async fn process_document(&self, ir: Arc<RholangNode>, uri: &Url, text: &Rope, content_hash: u64) -> Result<CachedDocument, String> {
         let mut pipeline = Pipeline::new();
-        let global_table = self.workspace.read().await.global_table.clone();
-        let global_index = self.workspace.read().await.global_index.clone();
+        // Optimization: Acquire lock once instead of twice
+        let (global_table, global_index) = {
+            let ws = self.workspace.read().await;
+            (ws.global_table.clone(), ws.global_index.clone())
+        };
 
         // Symbol table builder for local symbol tracking
         let builder = Arc::new(SymbolTableBuilder::new(ir.clone(), uri.clone(), global_table.clone()));

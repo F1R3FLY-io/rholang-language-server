@@ -71,11 +71,11 @@ pub struct RholangBackend {
     pub(super) diagnostic_provider: Arc<Box<dyn DiagnosticProvider>>,
     /// Direct access to SemanticValidator for validate_parsed optimization (if using Rust backend)
     pub(super) semantic_validator: Option<SemanticValidator>,
-    pub(super) client_process_id: Arc<Mutex<Option<u32>>>,
+    pub(super) client_process_id: Arc<tokio::sync::Mutex<Option<u32>>>,
     pub(super) pid_channel: Option<tokio::sync::mpsc::Sender<u32>>,
     // Reactive channels
     pub(super) doc_change_tx: tokio::sync::mpsc::Sender<DocumentChangeEvent>,
-    pub(super) validation_cancel: Arc<Mutex<HashMap<Url, tokio::sync::oneshot::Sender<()>>>>,
+    pub(super) validation_cancel: Arc<tokio::sync::Mutex<HashMap<Url, tokio::sync::oneshot::Sender<()>>>>,
     pub(super) indexing_tx: tokio::sync::mpsc::Sender<IndexingTask>,
     pub(super) workspace: Arc<RwLock<WorkspaceState>>,
     pub(super) file_watcher: Arc<Mutex<Option<RecommendedWatcher>>>,
