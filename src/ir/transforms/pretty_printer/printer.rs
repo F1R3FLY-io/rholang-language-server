@@ -1,12 +1,10 @@
-use std::any::Any;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use rpds::Vector;
 use archery::ArcK;
 
-use tracing::debug;
 
 use crate::ir::rholang_node::{
     BinOperator, RholangBundleType, CommentKind, RholangNode, NodeBase, Metadata, RholangSendType, UnaryOperator,
@@ -14,7 +12,7 @@ use crate::ir::rholang_node::{
 };
 use crate::ir::visitor::Visitor;
 
-use super::json_formatters::{JsonStringFormatter, format_json_string};
+use super::json_formatters::format_json_string;
 
 /// A visitor that constructs a JSON-like string representation of the IR tree.
 /// Configurable for compact or pretty-printed output.

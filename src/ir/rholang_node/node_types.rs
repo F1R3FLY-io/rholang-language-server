@@ -1,14 +1,9 @@
-use std::any::Any;
-use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use rpds::Vector;
 use archery::ArcK;
 
-use ropey::{Rope, RopeSlice};
 
-use tracing::{debug, trace, warn};
 
 pub use super::super::semantic_node::{Metadata, NodeBase, Position, RelativePosition};
 

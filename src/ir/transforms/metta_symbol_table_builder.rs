@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tower_lsp::lsp_types::{Location, Position as LspPosition, Range, Url};
 
-use crate::ir::metta_node::{MettaNode, compute_absolute_positions};
+use crate::ir::metta_node::MettaNode;
 use crate::ir::metta_pattern_matching::MettaPatternMatcher;
-use crate::ir::semantic_node::{Position, SemanticNode};
+use crate::ir::semantic_node::Position;
 
 /// Type of symbol in MeTTa
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

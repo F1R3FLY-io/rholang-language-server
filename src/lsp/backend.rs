@@ -2,13 +2,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Receiver;
 
-use tokio::sync::{Mutex as AsyncMutex, RwLock};
+use tokio::sync::RwLock;
 use tokio::task;
 
-use tonic::Request;
-use tonic::transport::Channel;
 
 use tower_lsp::{Client, LanguageServer, jsonrpc};
 use tower_lsp::lsp_types::{
@@ -21,8 +19,8 @@ use tower_lsp::lsp_types::{
     RenameParams, ServerCapabilities, TextDocumentSyncCapability,
     TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit, DocumentSymbolParams,
     DocumentSymbolResponse, WorkspaceSymbolParams, WorkspaceSymbol,
-    SymbolInformation, SymbolKind, Hover, HoverContents, HoverParams, MarkupContent, MarkupKind,
-    SemanticTokensParams, SemanticTokensResult, SemanticToken, SemanticTokensLegend,
+    SymbolInformation, Hover, HoverContents, HoverParams, MarkupContent, MarkupKind,
+    SemanticTokensParams, SemanticTokensResult, SemanticTokensLegend,
     SemanticTokenType, SemanticTokensFullOptions, SemanticTokensServerCapabilities,
     SemanticTokensOptions,
 };
@@ -41,12 +39,11 @@ use crate::ir::rholang_node::{RholangNode, Position as IrPosition, compute_absol
 use crate::ir::symbol_table::{Symbol, SymbolTable, SymbolType};
 use crate::ir::transforms::symbol_table_builder::{SymbolTableBuilder, InvertedIndex};
 use crate::ir::transforms::symbol_index_builder::SymbolIndexBuilder;
-use crate::ir::transforms::document_symbol_visitor::{collect_document_symbols, collect_workspace_symbols};
+use crate::ir::transforms::document_symbol_visitor::collect_document_symbols;
 use crate::language_regions::{ChannelFlowAnalyzer, DirectiveParser, SemanticDetector, VirtualDocumentRegistry};
 use crate::lsp::models::{CachedDocument, LspDocument, LspDocumentHistory, LspDocumentState, WorkspaceState};
 use crate::lsp::semantic_validator::SemanticValidator;
 use crate::lsp::diagnostic_provider::{BackendConfig, DiagnosticProvider, create_provider};
-use crate::lsp::rust_validator::RustSemanticValidator;
 use crate::tree_sitter::{parse_code, parse_to_ir};
 
 use rholang_parser::RholangParser;
@@ -1448,8 +1445,8 @@ impl LanguageServer for RholangBackend {
                     // For quoted contracts like @"myContract", the path is: [..., Send, Quote, StringLiteral]
                     let is_quoted_channel = if path.len() >= 3 {
                         match (&*parent, &*path[path.len() - 3]) {
-                            (RholangNode::Quote { quotable, .. }, RholangNode::Send { channel, .. }) |
-                            (RholangNode::Quote { quotable, .. }, RholangNode::SendSync { channel, .. }) => {
+                            (RholangNode::Quote { quotable: _, .. }, RholangNode::Send { channel, .. }) |
+                            (RholangNode::Quote { quotable: _, .. }, RholangNode::SendSync { channel, .. }) => {
                                 // Check that the parent Quote is the channel
                                 Arc::ptr_eq(channel, &parent)
                             }

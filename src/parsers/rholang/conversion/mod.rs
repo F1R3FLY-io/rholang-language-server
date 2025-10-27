@@ -15,7 +15,7 @@ use ropey::Rope;
 
 use crate::ir::rholang_node::{
     BinOperator, RholangBundleType, RholangNode, NodeBase, RholangSendType,
-    UnaryOperator, RholangVarRefKind, Metadata, Position, RelativePosition,
+    UnaryOperator, RholangVarRefKind, Position, RelativePosition,
 };
 
 use super::helpers::{
@@ -428,7 +428,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
         "block" => {
             // A block contains '{', multiple children (including comments), and '}'
             // Collect all named children and reduce them into a Par tree (like source_file)
-            let (all_nodes, nodes_end) = collect_named_descendants(ts_node, rope, absolute_start);
+            let (all_nodes, _nodes_end) = collect_named_descendants(ts_node, rope, absolute_start);
 
             // Comments are already skipped during collect_named_descendants,
             // so all_nodes already contains only process nodes

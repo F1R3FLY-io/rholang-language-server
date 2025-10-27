@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use ropey::{Rope, RopeSlice};
 
-use tracing::{debug, trace, warn};
+use tracing::{debug, warn};
 
 use super::node_types::*;
 use super::position_tracking::compute_absolute_positions;

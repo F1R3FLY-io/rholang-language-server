@@ -7,13 +7,10 @@
 
 use std::sync::Arc;
 use std::collections::HashMap;
-use tower_lsp::lsp_types::{Location, Position, Range, Url};
+use tower_lsp::lsp_types::Location;
 use mork::space::Space;
-use mork_expr::Expr;
-use mork_frontend::bytestring_parser::{Parser, Context};
 
 use crate::ir::metta_node::MettaNode;
-use crate::ir::mork_convert::{ConversionContext, rholang_to_mork_bytes};
 
 /// A MeTTa function definition with its pattern
 #[derive(Debug, Clone)]

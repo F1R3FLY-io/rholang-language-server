@@ -25,7 +25,7 @@ pub fn collect_metta_document_symbols(nodes: &[Arc<MettaNode>]) -> Vec<DocumentS
 fn collect_symbol_from_node(node: &Arc<MettaNode>, index: usize) -> Option<DocumentSymbol> {
     match &**node {
         // Definitions: (= name body)
-        MettaNode::Definition { pattern, body, .. } => {
+        MettaNode::Definition { pattern, body: _, .. } => {
             let name = extract_name(pattern).unwrap_or_else(|| format!("definition_{}", index));
             let range = node_to_range(node);
 

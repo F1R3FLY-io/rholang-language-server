@@ -4,7 +4,6 @@
 //! without requiring comment directives. For example, strings sent to the
 //! MeTTa compiler are automatically detected as MeTTa code.
 
-use std::sync::Arc;
 use tree_sitter::{Node as TSNode, Tree};
 use ropey::Rope;
 use tracing::{debug, trace};
@@ -28,7 +27,7 @@ impl SemanticDetector {
     ///
     /// # Returns
     /// Vector of detected language regions
-    pub fn detect_regions(source: &str, tree: &Tree, rope: &Rope) -> Vec<LanguageRegion> {
+    pub fn detect_regions(source: &str, tree: &Tree, _rope: &Rope) -> Vec<LanguageRegion> {
         let mut regions = Vec::new();
         let root = tree.root_node();
 

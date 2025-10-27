@@ -502,7 +502,7 @@ pub trait TransformVisitor {
     ///
     /// This method is called BEFORE transforming children, allowing
     /// early exit for optimizations.
-    fn transform_node(&mut self, node: &dyn SemanticNode) -> Option<Arc<dyn SemanticNode>> {
+    fn transform_node(&mut self, _node: &dyn SemanticNode) -> Option<Arc<dyn SemanticNode>> {
         None  // Default: use recursive transformation
     }
 
@@ -806,7 +806,7 @@ pub trait TransformVisitor {
 
             // Match (expression + cases)
             RholangNode::Match { base, metadata, cases, .. } if transformed_children.len() > 0 => {
-                let expression = to_rholang(&transformed_children[0]);
+                let _expression = to_rholang(&transformed_children[0]);
                 // Cases are pairs - complex to reconstruct
                 // For now, wrap original
                 self.wrap_node_in_arc(node as &dyn SemanticNode)

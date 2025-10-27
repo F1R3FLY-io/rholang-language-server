@@ -808,7 +808,7 @@ impl RholangBackend {
         virtual_position: LspPosition,
         new_name: &str,
     ) -> LspResult<Option<WorkspaceEdit>> {
-        use crate::ir::transforms::metta_symbol_table_builder::*;
+        
         use std::collections::HashMap;
 
         // Get symbol table

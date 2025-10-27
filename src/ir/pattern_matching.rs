@@ -12,7 +12,7 @@ use mork_expr::{Expr, ExprZipper};
 use mork_frontend::bytestring_parser::{Parser, Context};
 use pathmap::zipper::*;  // Import zipper traits for to_next_val() and other methods
 use crate::ir::rholang_node::RholangNode;
-use crate::ir::mork_convert::{ConversionContext, rholang_to_mork_bytes, mork_bindings_to_rholang, rholang_to_mork_string};
+use crate::ir::mork_convert::rholang_to_mork_string;
 
 /// Result of pattern matching: (matched_node, variable_bindings)
 pub type MatchResult = Vec<(Arc<RholangNode>, HashMap<String, Arc<RholangNode>>)>;
@@ -349,7 +349,7 @@ impl RholangPatternMatcher {
         use mork_expr::{ExprEnv, unify};
 
         // Extract the concrete prefix to filter entries
-        let (prefix_bytes, has_variables) = Self::extract_concrete_prefix(pattern_expr)?;
+        let (prefix_bytes, _has_variables) = Self::extract_concrete_prefix(pattern_expr)?;
 
         // Navigate to the prefix in the trie
         // This positions us at the subtree containing all potential matches

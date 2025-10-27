@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use super::semantic_node::{NodeBase, Metadata, SemanticNode, SemanticCategory};
 use super::rholang_node::RholangNode;
-use super::metta_node::{MettaNode, MettaVariableType};
+use super::metta_node::MettaNode;
 
 /// Common literal types across languages
 #[derive(Debug, Clone, PartialEq)]

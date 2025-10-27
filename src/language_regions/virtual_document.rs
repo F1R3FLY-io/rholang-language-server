@@ -498,7 +498,7 @@ impl VirtualDocument {
     /// # Returns
     /// Hover information with ranges in virtual coordinates
     pub fn hover(&self, position: LspPosition) -> Option<tower_lsp::lsp_types::Hover> {
-        use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind};
+        
 
         match self.language.as_str() {
             "metta" => self.hover_metta(position),
@@ -766,11 +766,11 @@ impl VirtualDocumentRegistry {
     /// # Returns
     /// Aggregated diagnostics mapped to parent coordinates
     pub fn validate_all(&mut self, parent_uri: &Url) -> Vec<Diagnostic> {
-        let mut all_diagnostics = Vec::new();
+        let all_diagnostics = Vec::new();
 
         if let Some(virtual_uris) = self.parent_to_virtual.get(parent_uri) {
             for uri in virtual_uris {
-                if let Some(doc) = self.documents.get_mut(uri) {
+                if let Some(_doc) = self.documents.get_mut(uri) {
                     // VirtualDocument is wrapped in Arc, so we need to get a mutable reference
                     // We'll need to update this to use Arc::make_mut or similar
                     // For now, let's create a workaround

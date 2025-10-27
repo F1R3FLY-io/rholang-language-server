@@ -4,7 +4,6 @@ use std::sync::Arc;
 use rpds::Vector;
 use archery::ArcK;
 
-use tracing::{debug, trace};
 
 use super::node_types::*;
 

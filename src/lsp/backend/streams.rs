@@ -5,16 +5,13 @@
 
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures::Stream;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tower_lsp::lsp_types::Url;
 
-use crate::lsp::models::LspDocument;
 
 use super::state::{DocumentChangeEvent, IndexingTask};
 

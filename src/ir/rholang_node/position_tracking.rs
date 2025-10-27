@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ropey::{Rope, RopeSlice};
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace};
 
 use super::node_types::*;
 pub use super::node_types::{Position, RelativePosition};

@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 use mettatron::TreeSitterMettaParser;
-use mettatron::ir::{SExpr, Span as MettaSpan, Position as MettaPosition};
+use mettatron::ir::{SExpr, Span as MettaSpan};
 
 use crate::ir::metta_node::{MettaNode, MettaVariableType};
 use crate::ir::semantic_node::{NodeBase, Position};

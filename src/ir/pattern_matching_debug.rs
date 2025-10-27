@@ -76,7 +76,7 @@ pub fn test_metta_format() -> Result<(), String> {
     // Try query_multi
     eprintln!("\nCalling query_multi...");
     let mut matches = 0;
-    let result = Space::query_multi(&space.btm, pattern_expr, |result, matched_expr| {
+    let result = Space::query_multi(&space.btm, pattern_expr, |result, _matched_expr| {
         eprintln!("  Callback invoked!");
         if let Err(bindings) = result {
             eprintln!("    Match found! Bindings: {}", bindings.len());
@@ -150,7 +150,7 @@ pub fn test_our_format() -> Result<(), String> {
     // Try query_multi
     eprintln!("\nCalling query_multi...");
     let mut matches = 0;
-    let result = Space::query_multi(&space.btm, pattern_expr, |result, matched_expr| {
+    let result = Space::query_multi(&space.btm, pattern_expr, |result, _matched_expr| {
         eprintln!("  Callback invoked!");
         if let Err(bindings) = result {
             eprintln!("    Match found! Bindings: {}", bindings.len());
@@ -191,7 +191,7 @@ pub fn test_manual_unification() -> Result<(), String> {
     let mut context1 = Context::new(stored_pattern.as_bytes());
     pdp1.sexpr(&mut context1, &mut ez1)
         .map_err(|e| format!("Parse stored error: {:?}", e))?;
-    let stored_expr_from_parse = Expr { ptr: parse_buffer1.as_ptr().cast_mut() };
+    let _stored_expr_from_parse = Expr { ptr: parse_buffer1.as_ptr().cast_mut() };
 
     // Parse the query pattern: (= (double 5) $rhs)
     let query_pattern = "(= (double 5) $rhs)";
@@ -224,7 +224,7 @@ pub fn test_manual_unification() -> Result<(), String> {
         Ok(bindings) => {
             eprintln!("  ✅ Unification succeeded!");
             eprintln!("  Bindings: {}", bindings.len());
-            for ((space_id, var_id), bound_expr) in &bindings {
+            for ((space_id, var_id), _bound_expr) in &bindings {
                 eprintln!("    ({}, {}) -> bound value exists", space_id, var_id);
             }
             Ok(())

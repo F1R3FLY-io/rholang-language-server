@@ -1,10 +1,9 @@
 use std::sync::Arc;
-use std::collections::HashMap;
 
 use tracing::debug;
 use ropey::Rope;
 
-use crate::ir::rholang_node::{RholangNode, Position, compute_absolute_positions};
+use crate::ir::rholang_node::{RholangNode, compute_absolute_positions};
 use crate::ir::visitor::Visitor;
 
 pub mod printer;

@@ -10,14 +10,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tower_lsp::lsp_types::{
-    GotoDefinitionParams, GotoDefinitionResponse, Location, Position as LspPosition,
-    Range, ReferenceParams, RenameParams, Url, WorkspaceEdit,
+    Position as LspPosition, Url,
 };
 use tracing::{debug, info, trace};
 
 use crate::ir::rholang_node::{RholangNode, Position as IrPosition, find_node_at_position_with_path};
 use crate::ir::symbol_table::{Symbol, SymbolTable, SymbolType};
-use crate::lsp::models::WorkspaceState;
 
 use super::state::{RholangBackend, WorkspaceChangeEvent, WorkspaceChangeType};
 

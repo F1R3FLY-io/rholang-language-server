@@ -283,7 +283,7 @@ impl RholangBackend {
         let mut shutdown_rx = backend.shutdown_tx.subscribe();
 
         tokio::spawn(async move {
-            use futures::stream::{self, select_all};
+            use futures::stream::select_all;
 
             // Create individual event streams
             let doc_stream = ReceiverStream::new(doc_change_rx)

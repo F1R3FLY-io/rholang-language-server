@@ -12,9 +12,7 @@
 //! }
 //! ```
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use tree_sitter::{Node as TSNode, Tree, TreeCursor};
+use tree_sitter::{Node as TSNode, Tree};
 use ropey::Rope;
 use tracing::{debug, trace};
 
