@@ -603,6 +603,7 @@ impl RholangBackend {
         let workspace_docs = self.workspace.read().await.documents.keys().cloned().collect::<Vec<_>>();
 
         // Phase 2: Parse and process files in parallel using Rayon
+        // CRITICAL: Wrap Rayon work in spawn_blocking to prevent blocking Tokio runtime
         let (global_table, global_index, version_counter) = {
             let ws = self.workspace.read().await;
             (
@@ -612,44 +613,48 @@ impl RholangBackend {
             )
         };
 
-        let results: Vec<(Url, Result<CachedDocument, String>)> = paths
-            .par_iter()
-            .filter_map(|path| {
-                // Skip if already indexed
-                if let Ok(uri) = Url::from_file_path(path) {
-                    if existing_docs.contains(&uri) || workspace_docs.contains(&uri) {
-                        debug!("Skipping already indexed file: {}", uri);
-                        return None;
+        let results: Vec<(Url, Result<CachedDocument, String>)> = tokio::task::spawn_blocking(move || {
+            paths
+                .par_iter()
+                .filter_map(|path| {
+                    // Skip if already indexed
+                    if let Ok(uri) = Url::from_file_path(path) {
+                        if existing_docs.contains(&uri) || workspace_docs.contains(&uri) {
+                            debug!("Skipping already indexed file: {}", uri);
+                            return None;
+                        }
+
+                        // Read file and parse/index on Rayon thread pool
+                        if let Ok(text) = std::fs::read_to_string(path) {
+                            let rope = Rope::from_str(&text);
+                            let tree = Arc::new(parse_code(&text));
+                            let ir = parse_to_ir(&tree, &rope);
+
+                            use std::collections::hash_map::DefaultHasher;
+                            let mut hasher = DefaultHasher::new();
+                            text.hash(&mut hasher);
+                            let content_hash = hasher.finish();
+
+                            // CPU-intensive work happens here in parallel
+                            let result = Self::process_document_blocking(
+                                ir,
+                                &uri,
+                                &rope,
+                                content_hash,
+                                global_table.clone(),
+                                global_index.clone(),
+                                &version_counter,
+                            );
+
+                            return Some((uri, result));
+                        }
                     }
-
-                    // Read file and parse/index on Rayon thread pool
-                    if let Ok(text) = std::fs::read_to_string(path) {
-                        let rope = Rope::from_str(&text);
-                        let tree = Arc::new(parse_code(&text));
-                        let ir = parse_to_ir(&tree, &rope);
-
-                        use std::collections::hash_map::DefaultHasher;
-                        let mut hasher = DefaultHasher::new();
-                        text.hash(&mut hasher);
-                        let content_hash = hasher.finish();
-
-                        // CPU-intensive work happens here in parallel
-                        let result = Self::process_document_blocking(
-                            ir,
-                            &uri,
-                            &rope,
-                            content_hash,
-                            global_table.clone(),
-                            global_index.clone(),
-                            &version_counter,
-                        );
-
-                        return Some((uri, result));
-                    }
-                }
-                None
-            })
-            .collect();
+                    None
+                })
+                .collect()
+        })
+        .await
+        .expect("Rayon parallel indexing task panicked");
 
         let elapsed = start.elapsed();
         info!("Parallel indexing of {} files completed in {:?} ({:.1} files/sec)",
