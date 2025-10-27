@@ -30,18 +30,8 @@ impl RholangBackend {
         let mut shutdown_rx = backend.shutdown_tx.subscribe();
 
         tokio::spawn(async move {
-            // Create file system event stream
-            let file_stream = streams::file_system_stream(
-                // Move receiver out of Arc<Mutex<>> for stream consumption
-                Arc::try_unwrap(file_events)
-                    .unwrap_or_else(|arc| {
-                        // If Arc has multiple owners, we need to clone the receiver
-                        // This shouldn't happen in practice
-                        panic!("File events receiver has multiple owners")
-                    })
-                    .into_inner()
-                    .expect("Mutex poisoned")
-            );
+            // Create file system event stream by polling the Arc<Mutex<Receiver>>
+            let file_stream = streams::file_system_stream_from_arc(file_events);
 
             // Apply reactive operators
             let mut reactive_stream = Box::pin(
@@ -118,7 +108,7 @@ impl RholangBackend {
             // Per-URI debounce state
             let mut uri_debouncers: HashMap<tower_lsp::lsp_types::Url, tokio::time::Instant> =
                 HashMap::new();
-            let debounce_duration = Duration::from_millis(300);
+            let debounce_duration = Duration::from_millis(100);
 
             // Manual debounce implementation with per-URI tracking
             // (tokio-stream doesn't have group_by + debounce built-in)
@@ -284,12 +274,8 @@ impl RholangBackend {
             let indexing_stream = ReceiverStream::new(indexing_rx)
                 .map(BackendEvent::IndexingTask);
 
-            let file_stream = streams::file_system_stream(
-                Arc::try_unwrap(file_events)
-                    .unwrap_or_else(|_| panic!("File events receiver has multiple owners"))
-                    .into_inner()
-                    .expect("Mutex poisoned")
-            ).map(BackendEvent::FileSystemChange);
+            let file_stream = streams::file_system_stream_from_arc(file_events)
+                .map(BackendEvent::FileSystemChange);
 
             // Merge all streams into unified pipeline
             let mut unified_stream = Box::pin(

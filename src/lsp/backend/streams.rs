@@ -298,6 +298,47 @@ pub fn file_system_stream(
     }))
 }
 
+/// Creates a file system event stream from an Arc<Mutex<Receiver>>
+///
+/// This variant works with shared receivers wrapped in Arc<Mutex<>> to support
+/// multiple potential readers. It polls the receiver from within the Mutex lock.
+pub fn file_system_stream_from_arc(
+    rx: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<notify::Result<notify::Event>>>>,
+) -> Pin<Box<dyn Stream<Item = Vec<PathBuf>> + Send>> {
+    use futures::stream::{self, StreamExt};
+
+    // Convert Arc<Mutex<Receiver>> to async stream by polling inside locks
+    Box::pin(stream::unfold(rx, |rx| async move {
+        // Try to receive from the shared receiver
+        let recv_result = {
+            let guard = rx.lock().ok()?;
+            guard.recv().ok()?
+        };
+
+        match recv_result {
+            Ok(event) => {
+                let paths: Vec<PathBuf> = event
+                    .paths
+                    .into_iter()
+                    .filter(|p| p.extension().map_or(false, |ext| ext == "rho"))
+                    .collect();
+
+                if !paths.is_empty() {
+                    Some((paths, rx))
+                } else {
+                    // Continue receiving until we get .rho files
+                    Some((vec![], rx))
+                }
+            }
+            Err(e) => {
+                tracing::warn!("File watcher error: {}", e);
+                Some((vec![], rx))
+            }
+        }
+    })
+    .filter(|paths| futures::future::ready(!paths.is_empty())))
+}
+
 /// Switch map stream operator
 ///
 /// Maps each item to a future, automatically canceling previous futures when new items arrive.
