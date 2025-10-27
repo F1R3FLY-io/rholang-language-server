@@ -48,6 +48,19 @@ pub trait StreamExt: Stream {
     {
         ChunkTimeoutStream::new(self, max_size, duration)
     }
+
+    /// Maps each item to a future, canceling previous futures when new items arrive
+    ///
+    /// This is useful for operations like validation where only the latest request matters.
+    /// Previous operations are automatically canceled when a new item arrives.
+    fn switch_map<F, Fut, T>(self, f: F) -> SwitchMapStream<Self, F, Fut>
+    where
+        Self: Sized,
+        F: FnMut(Self::Item) -> Fut,
+        Fut: std::future::Future<Output = T>,
+    {
+        SwitchMapStream::new(self, f)
+    }
 }
 
 impl<T: Stream> StreamExt for T {}
@@ -257,6 +270,92 @@ pub fn file_system_stream(
     }))
 }
 
+/// Switch map stream operator
+///
+/// Maps each item to a future, automatically canceling previous futures when new items arrive.
+/// This implements the ReactiveX `switchMap` operator pattern for automatic cancellation.
+///
+/// Note: Futures are canceled by dropping them when a new item arrives. The future must be Send
+/// to allow safe cancellation across thread boundaries.
+pub struct SwitchMapStream<S, F, Fut>
+where
+    S: Stream,
+    F: FnMut(S::Item) -> Fut,
+    Fut: std::future::Future,
+{
+    stream: Pin<Box<S>>,
+    f: F,
+    current_future: Option<Pin<Box<Fut>>>,
+}
+
+impl<S, F, Fut> SwitchMapStream<S, F, Fut>
+where
+    S: Stream,
+    F: FnMut(S::Item) -> Fut,
+    Fut: std::future::Future,
+{
+    pub fn new(stream: S, f: F) -> Self {
+        Self {
+            stream: Box::pin(stream),
+            f,
+            current_future: None,
+        }
+    }
+}
+
+impl<S, F, Fut> Stream for SwitchMapStream<S, F, Fut>
+where
+    S: Stream,
+    F: FnMut(S::Item) -> Fut + Unpin,
+    Fut: std::future::Future,
+{
+    type Item = Fut::Output;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+
+        // Poll the source stream for new items
+        match this.stream.as_mut().poll_next(cx) {
+            Poll::Ready(Some(item)) => {
+                // New item arrived - cancel previous future and start new one
+                let fut = (this.f)(item);
+                this.current_future = Some(Box::pin(fut));
+                // Don't return yet - poll the new future below
+            }
+            Poll::Ready(None) => {
+                // Source stream ended
+                if this.current_future.is_none() {
+                    return Poll::Ready(None);
+                }
+                // Fall through to poll current future one last time
+            }
+            Poll::Pending => {
+                // No new items, continue with current future
+            }
+        }
+
+        // Poll the current future if we have one
+        if let Some(fut) = this.current_future.as_mut() {
+            match fut.as_mut().poll(cx) {
+                Poll::Ready(output) => {
+                    this.current_future = None;
+                    return Poll::Ready(Some(output));
+                }
+                Poll::Pending => {
+                    return Poll::Pending;
+                }
+            }
+        }
+
+        // Stream ended and no current future
+        if this.current_future.is_none() {
+            Poll::Ready(None)
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,5 +408,43 @@ mod tests {
         // Should emit after timeout
         let chunk = stream.next().await.unwrap();
         assert_eq!(chunk, vec![1, 2]);
+    }
+
+    #[tokio::test]
+    async fn test_switch_map_cancellation() {
+        use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
+        use futures::stream::StreamExt as FutStreamExt;
+
+        let (tx, rx) = mpsc::channel(10);
+        let counter = Arc::new(AtomicU32::new(0));
+
+        let counter_clone = counter.clone();
+        let mut stream = ReceiverStream::new(rx).switch_map(move |value: i32| {
+            let counter = counter_clone.clone();
+            async move {
+                // Simulate async work
+                sleep(Duration::from_millis(50)).await;
+                counter.fetch_add(1, Ordering::SeqCst);
+                value * 10
+            }
+        });
+
+        // Send multiple rapid items
+        tx.send(1).await.unwrap();
+        sleep(Duration::from_millis(10)).await;  // Send before first completes
+        tx.send(2).await.unwrap();
+        sleep(Duration::from_millis(10)).await;  // Send before second completes
+        tx.send(3).await.unwrap();
+        drop(tx);
+
+        // Only the last value should complete (30)
+        let result = stream.next().await.unwrap();
+        assert_eq!(result, 30);
+
+        // Should be no more results (earlier futures were canceled)
+        assert!(stream.next().await.is_none());
+
+        // Counter should only increment once (for the completed future)
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 }
