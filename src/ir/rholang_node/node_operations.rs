@@ -236,6 +236,8 @@ fn contract_names_equal(a: &Arc<RholangNode>, b: &Arc<RholangNode>) -> bool {
         _ if Arc::ptr_eq(a, b) => true,
         // Var nodes: compare names by reference (cheap since names are strings in Arc)
         (RholangNode::Var { name: a_name, .. }, RholangNode::Var { name: b_name, .. }) => a_name == b_name,
+        // StringLiteral nodes: compare values (for quoted contract names like @"myContract")
+        (RholangNode::StringLiteral { value: a_val, .. }, RholangNode::StringLiteral { value: b_val, .. }) => a_val == b_val,
         // Quote nodes: recursively check quotable
         (RholangNode::Quote { quotable: a_q, .. }, RholangNode::Quote { quotable: b_q, .. }) => contract_names_equal(a_q, b_q),
         // Eval nodes: recursively check name
