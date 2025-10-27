@@ -24,7 +24,8 @@ use tower_lsp::lsp_types::{
     SymbolInformation, Hover, HoverContents, HoverParams, MarkupContent, MarkupKind,
     SemanticTokensParams, SemanticTokensResult, SemanticTokensLegend,
     SemanticTokenType, SemanticTokensFullOptions, SemanticTokensServerCapabilities,
-    SemanticTokensOptions,
+    SemanticTokensOptions, SignatureHelp, SignatureHelpParams, SignatureInformation,
+    ParameterInformation, ParameterLabel, SignatureHelpOptions,
 };
 use tower_lsp::lsp_types::request::{GotoDeclarationParams, GotoDeclarationResponse};
 use tower_lsp::jsonrpc::Result as LspResult;
@@ -140,6 +141,11 @@ impl LanguageServer for RholangBackend {
                 workspace_symbol_provider: Some(tower_lsp::lsp_types::OneOf::Left(true)),
                 document_highlight_provider: Some(tower_lsp::lsp_types::OneOf::Left(true)),
                 hover_provider: Some(tower_lsp::lsp_types::HoverProviderCapability::Simple(true)),
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["!".to_string(), "(".to_string(), ",".to_string()]),
+                    retrigger_characters: None,
+                    work_done_progress_options: Default::default(),
+                }),
                 semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
                     SemanticTokensOptions {
                         legend: SemanticTokensLegend {
@@ -1155,6 +1161,169 @@ impl LanguageServer for RholangBackend {
         }
 
         debug!("No hover information available");
+        Ok(None)
+    }
+
+    /// Provides signature help for contract calls
+    async fn signature_help(&self, params: SignatureHelpParams) -> LspResult<Option<SignatureHelp>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        debug!("Signature help request at {}:{:?}", uri, position);
+
+        // Get the document
+        let workspace = self.workspace.read().await;
+        let doc = match workspace.documents.get(&uri) {
+            Some(doc) => doc,
+            None => {
+                debug!("Document not found: {}", uri);
+                return Ok(None);
+            }
+        };
+
+        // Convert LSP position to byte offset
+        let byte_offset = match Self::byte_offset_from_position(
+            &doc.text,
+            position.line as usize,
+            position.character as usize,
+        ) {
+            Some(offset) => offset,
+            None => {
+                debug!("Invalid position");
+                return Ok(None);
+            }
+        };
+
+        let ir_pos = IrPosition {
+            row: position.line as usize,
+            column: position.character as usize,
+            byte: byte_offset,
+        };
+
+        // Find the node at cursor position with path for context
+        let (node, path) = match find_node_at_position_with_path(&doc.ir, &*doc.positions, ir_pos) {
+            Some(result) => result,
+            None => {
+                debug!("No node found at position");
+                return Ok(None);
+            }
+        };
+
+        // Look for Send/SendSync nodes in the path (contract calls)
+        for ancestor in path.iter().rev() {
+            match &**ancestor {
+                RholangNode::Send { channel, inputs, .. } | RholangNode::SendSync { channel, inputs, .. } => {
+                    // Extract contract name
+                    let contract_name = match Self::extract_contract_name(channel) {
+                        Some(name) => name,
+                        None => continue,
+                    };
+
+                    debug!("Found contract call '{}' with {} arguments", contract_name, inputs.len());
+
+                    // Get all matching overloads using pattern-based lookup
+                    let global_table = workspace.global_table.clone();
+                    let arg_count = inputs.len();
+
+                    // Get matching overloads for this call
+                    let overloads = global_table.get_matching_overloads(&contract_name, arg_count);
+
+                    if overloads.is_empty() {
+                        // Fallback: try to get all overloads regardless of arity
+                        let all_overloads = global_table.lookup_all_contract_overloads(&contract_name);
+                        if all_overloads.is_empty() {
+                            debug!("No contract overloads found for '{}'", contract_name);
+                            return Ok(None);
+                        }
+
+                        // Build signatures from all overloads
+                        let signatures = all_overloads.iter().map(|symbol| {
+                            let arity = symbol.arity().unwrap_or(0);
+                            let variadic_suffix = if symbol.is_variadic() { "..." } else { "" };
+
+                            // Build parameter list
+                            let parameters: Vec<ParameterInformation> = (0..arity)
+                                .map(|i| ParameterInformation {
+                                    label: ParameterLabel::Simple(format!("param{}", i + 1)),
+                                    documentation: None,
+                                })
+                                .collect();
+
+                            SignatureInformation {
+                                label: format!("{}({}){}", contract_name, arity, variadic_suffix),
+                                documentation: None,
+                                parameters: Some(parameters),
+                                active_parameter: None,
+                            }
+                        }).collect();
+
+                        return Ok(Some(SignatureHelp {
+                            signatures,
+                            active_signature: None,
+                            active_parameter: None,
+                        }));
+                    }
+
+                    // Build signatures from matching overloads
+                    let signatures: Vec<SignatureInformation> = overloads.iter().map(|symbol| {
+                        let arity = symbol.arity().unwrap_or(0);
+                        let variadic_suffix = if symbol.is_variadic() { "..." } else { "" };
+
+                        // Build parameter list
+                        let parameters: Vec<ParameterInformation> = (0..arity)
+                            .map(|i| ParameterInformation {
+                                label: ParameterLabel::Simple(format!("param{}", i + 1)),
+                                documentation: None,
+                            })
+                            .collect();
+
+                        SignatureInformation {
+                            label: format!("{}({}){}", contract_name, arity, variadic_suffix),
+                            documentation: Some(tower_lsp::lsp_types::Documentation::String(
+                                format!("Contract with {} parameter{}", arity, if arity == 1 { "" } else { "s" })
+                            )),
+                            parameters: Some(parameters),
+                            active_parameter: None,
+                        }
+                    }).collect();
+
+                    // Determine active signature (prefer exact match, then variadic)
+                    let active_signature = if let Some(exact_idx) = overloads.iter().position(|s| {
+                        s.arity() == Some(arg_count) && !s.is_variadic()
+                    }) {
+                        Some(exact_idx as u32)
+                    } else if let Some(variadic_idx) = overloads.iter().position(|s| s.is_variadic()) {
+                        Some(variadic_idx as u32)
+                    } else {
+                        Some(0)
+                    };
+
+                    // Determine active parameter (current argument being typed)
+                    let active_parameter = if arg_count > 0 {
+                        Some((arg_count - 1).min(9) as u32) // Cap at 9 for safety
+                    } else {
+                        Some(0)
+                    };
+
+                    debug!(
+                        "Returning {} signatures for '{}', active: {:?}, param: {:?}",
+                        signatures.len(),
+                        contract_name,
+                        active_signature,
+                        active_parameter
+                    );
+
+                    return Ok(Some(SignatureHelp {
+                        signatures,
+                        active_signature,
+                        active_parameter,
+                    }));
+                }
+                _ => continue,
+            }
+        }
+
+        debug!("Not in a contract call context");
         Ok(None)
     }
 
