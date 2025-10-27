@@ -25,7 +25,9 @@ use tower_lsp::lsp_types::{
     SemanticTokensParams, SemanticTokensResult, SemanticTokensLegend,
     SemanticTokenType, SemanticTokensFullOptions, SemanticTokensServerCapabilities,
     SemanticTokensOptions, SignatureHelp, SignatureHelpParams, SignatureInformation,
-    ParameterInformation, ParameterLabel, SignatureHelpOptions,
+    ParameterInformation, ParameterLabel, SignatureHelpOptions, CompletionParams,
+    CompletionResponse, CompletionItem, CompletionItemKind, CompletionOptions,
+    CompletionOptionsCompletionItem,
 };
 use tower_lsp::lsp_types::request::{GotoDeclarationParams, GotoDeclarationResponse};
 use tower_lsp::jsonrpc::Result as LspResult;
@@ -144,6 +146,15 @@ impl LanguageServer for RholangBackend {
                 signature_help_provider: Some(SignatureHelpOptions {
                     trigger_characters: Some(vec!["!".to_string(), "(".to_string(), ",".to_string()]),
                     retrigger_characters: None,
+                    work_done_progress_options: Default::default(),
+                }),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec![".".to_string(), "@".to_string()]),
+                    all_commit_characters: None,
+                    resolve_provider: Some(false),
+                    completion_item: Some(CompletionOptionsCompletionItem {
+                        label_details_support: Some(true),
+                    }),
                     work_done_progress_options: Default::default(),
                 }),
                 semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
@@ -1325,6 +1336,136 @@ impl LanguageServer for RholangBackend {
 
         debug!("Not in a contract call context");
         Ok(None)
+    }
+
+    /// Provides code completion suggestions
+    async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+
+        debug!("Completion request at {}:{:?}", uri, position);
+
+        let workspace = self.workspace.read().await;
+
+        // Get document
+        let doc = match workspace.documents.get(&uri) {
+            Some(doc) => doc,
+            None => {
+                debug!("Document not found: {}", uri);
+                return Ok(None);
+            }
+        };
+
+        let mut completions = Vec::new();
+
+        // Get all contract symbols from global table using pattern-based lookup
+        // This is O(1) for accessing the entire contract index
+        let global_table = workspace.global_table.clone();
+
+        // Collect all unique contract names from the pattern index
+        // This gives us O(1) access to all contracts
+        let all_symbols = global_table.collect_all_symbols();
+
+        let mut contract_names_seen = std::collections::HashSet::new();
+
+        for symbol in all_symbols {
+            if matches!(symbol.symbol_type, SymbolType::Contract) {
+                // Only add each contract name once, even if it has multiple overloads
+                if contract_names_seen.insert(symbol.name.clone()) {
+                    // Get all overloads for this contract name
+                    let overloads = global_table.lookup_all_contract_overloads(&symbol.name);
+
+                    // Create detail string showing all arities
+                    let arities: Vec<String> = overloads.iter()
+                        .map(|s| {
+                            let arity = s.arity().unwrap_or(0);
+                            let variadic = if s.is_variadic() { "..." } else { "" };
+                            format!("({}){}", arity, variadic)
+                        })
+                        .collect();
+
+                    let detail = if arities.len() > 1 {
+                        format!("contract - overloads: {}", arities.join(", "))
+                    } else {
+                        format!("contract {}", arities.first().unwrap_or(&"".to_string()))
+                    };
+
+                    completions.push(CompletionItem {
+                        label: symbol.name.clone(),
+                        kind: Some(CompletionItemKind::FUNCTION),
+                        detail: Some(detail),
+                        documentation: Some(tower_lsp::lsp_types::Documentation::String(
+                            format!("Contract with {} overload{}",
+                                overloads.len(),
+                                if overloads.len() == 1 { "" } else { "s" }
+                            )
+                        )),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+
+        // Also add symbols from local scope (variables, parameters)
+        let symbol_table = doc.symbol_table.clone();
+        let local_symbols = symbol_table.current_symbols();
+
+        for symbol in local_symbols {
+            let kind = match symbol.symbol_type {
+                SymbolType::Variable => CompletionItemKind::VARIABLE,
+                SymbolType::Contract => CompletionItemKind::FUNCTION,
+                SymbolType::Parameter => CompletionItemKind::VARIABLE,
+            };
+
+            let type_str = match symbol.symbol_type {
+                SymbolType::Variable => "variable",
+                SymbolType::Contract => "contract",
+                SymbolType::Parameter => "parameter",
+            };
+
+            // Skip contracts we've already added from global scope
+            if matches!(symbol.symbol_type, SymbolType::Contract) && contract_names_seen.contains(&symbol.name) {
+                continue;
+            }
+
+            completions.push(CompletionItem {
+                label: symbol.name.clone(),
+                kind: Some(kind),
+                detail: Some(type_str.to_string()),
+                documentation: None,
+                ..Default::default()
+            });
+        }
+
+        // Add Rholang keywords
+        let keywords = vec![
+            ("new", "Declare new channels"),
+            ("contract", "Define a contract"),
+            ("for", "Input guarded process"),
+            ("match", "Pattern matching"),
+            ("Nil", "Empty process"),
+            ("bundle", "Bundle channels"),
+            ("true", "Boolean true"),
+            ("false", "Boolean false"),
+        ];
+
+        for (keyword, doc) in keywords {
+            completions.push(CompletionItem {
+                label: keyword.to_string(),
+                kind: Some(CompletionItemKind::KEYWORD),
+                detail: Some("keyword".to_string()),
+                documentation: Some(tower_lsp::lsp_types::Documentation::String(doc.to_string())),
+                ..Default::default()
+            });
+        }
+
+        debug!("Returning {} completion items", completions.len());
+
+        if completions.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(CompletionResponse::Array(completions)))
+        }
     }
 
     async fn semantic_tokens_full(
