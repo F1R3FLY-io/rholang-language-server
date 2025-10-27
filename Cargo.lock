@@ -3941,6 +3941,7 @@ dependencies = [
  "petgraph 0.8.2",
  "prost 0.13.5",
  "quickcheck",
+ "rayon",
  "rholang",
  "rholang-parser 0.1.0",
  "rholang-tree-sitter 0.1.2",

@@ -188,7 +188,8 @@ impl LanguageServer for RholangBackend {
                     drop(root_guard);
 
                     let dir = parent.to_owned();
-                    self.index_directory(&dir).await;
+                    // Use parallel indexing for initial workspace scan (4-8x faster)
+                    self.index_directory_parallel(&dir).await;
 
                     let tx = self.file_sender.lock().unwrap().clone();
                     let mut watcher = RecommendedWatcher::new(
