@@ -227,8 +227,9 @@ impl LanguageServer for RholangBackend {
                 },
             }),
         });
-        self.documents_by_uri.write().await.insert(uri.clone(), document.clone());
-        self.documents_by_id.write().await.insert(document_id, document.clone());
+        // DashMap provides lock-free concurrent access (Phase 3 optimization)
+        self.documents_by_uri.insert(uri.clone(), document.clone());
+        self.documents_by_id.insert(document_id, document.clone());
 
         // Index file (will skip if content hash matches existing cached document)
         match self.index_file(&uri, &text, version, None).await {
@@ -261,7 +262,8 @@ impl LanguageServer for RholangBackend {
         info!("textDocument/didChange: {:?}", params);
         let uri = params.text_document.uri.clone();
         let version = params.text_document.version;
-        if let Some(document) = self.documents_by_uri.read().await.get(&uri) {
+        // DashMap::get returns a guard that dereferences to the value
+        if let Some(document) = self.documents_by_uri.get(&uri).map(|r| r.value().clone()) {
             if let Some((text, tree)) = document.apply(params.content_changes, version).await {
                 match self.index_file(&uri, &text, version, Some(tree)).await {
                     Ok(cached_doc) => {
@@ -301,8 +303,9 @@ impl LanguageServer for RholangBackend {
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         info!("textDocument/didClose: {:?}", params);
         let uri = params.text_document.uri;
-        if let Some(document) = self.documents_by_uri.write().await.remove(&uri) {
-            self.documents_by_id.write().await.remove(&document.id);
+        // DashMap::remove returns Option<(K, V)>
+        if let Some((_key, document)) = self.documents_by_uri.remove(&uri) {
+            self.documents_by_id.remove(&document.id);
             info!("Closed document: {}, id: {}", uri, document.id);
 
             // Unregister any virtual documents associated with this parent

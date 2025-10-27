@@ -130,8 +130,8 @@ impl RholangBackend {
 
         let backend = Self {
             client: client.clone(),
-            documents_by_uri: Arc::new(RwLock::new(HashMap::new())),
-            documents_by_id: Arc::new(RwLock::new(HashMap::new())),
+            documents_by_uri: Arc::new(DashMap::new()),
+            documents_by_id: Arc::new(DashMap::new()),
             serial_document_id: Arc::new(AtomicU32::new(0)),
             diagnostic_provider,
             semantic_validator,

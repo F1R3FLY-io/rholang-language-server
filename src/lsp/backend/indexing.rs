@@ -517,7 +517,8 @@ impl RholangBackend {
     pub(super) async fn handle_file_change(&self, path: PathBuf) {
         if path.extension().map_or(false, |ext| ext == "rho") {
             if let Ok(uri) = Url::from_file_path(&path) {
-                if self.documents_by_uri.read().await.contains_key(&uri) {
+                // DashMap::contains_key is lock-free
+                if self.documents_by_uri.contains_key(&uri) {
                     debug!("Skipping update for opened document: {}", uri);
                     return;
                 }
@@ -544,7 +545,8 @@ impl RholangBackend {
                 Ok(entry) => {
                     if entry.file_type().is_file() && entry.path().extension().map_or(false, |ext| ext == "rho") {
                         let uri = Url::from_file_path(entry.path()).expect("Failed to create URI from path");
-                        if !self.documents_by_uri.read().await.contains_key(&uri)
+                        // DashMap::contains_key is lock-free
+                        if !self.documents_by_uri.contains_key(&uri)
                             && !self.workspace.read().await.documents.contains_key(&uri) {
                             if let Ok(text) = std::fs::read_to_string(entry.path()) {
                                 match self.index_file(&uri, &text, 0, None).await {
@@ -596,7 +598,8 @@ impl RholangBackend {
         info!("Found {} .rho files to index in {:?}", paths.len(), dir);
 
         // Get workspace state snapshot for filtering
-        let existing_docs = self.documents_by_uri.read().await.keys().cloned().collect::<Vec<_>>();
+        // DashMap::iter() provides lock-free iteration
+        let existing_docs: Vec<Url> = self.documents_by_uri.iter().map(|entry| entry.key().clone()).collect();
         let workspace_docs = self.workspace.read().await.documents.keys().cloned().collect::<Vec<_>>();
 
         // Phase 2: Parse and process files in parallel using Rayon

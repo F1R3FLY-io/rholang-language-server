@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicI32, AtomicU32};
 use std::sync::mpsc::{Receiver, Sender};
 
+use dashmap::DashMap;
 use tokio::sync::RwLock;
 use tower_lsp::Client;
 use tower_lsp::lsp_types::Url;
@@ -64,8 +65,10 @@ pub(super) enum WorkspaceChangeType {
 #[derive(Clone)]
 pub struct RholangBackend {
     pub(super) client: Client,
-    pub(super) documents_by_uri: Arc<RwLock<HashMap<Url, Arc<LspDocument>>>>,
-    pub(super) documents_by_id: Arc<RwLock<HashMap<u32, Arc<LspDocument>>>>,
+    /// Lock-free concurrent document cache by URI (Phase 3 optimization)
+    pub(super) documents_by_uri: Arc<DashMap<Url, Arc<LspDocument>>>,
+    /// Lock-free concurrent document cache by ID (Phase 3 optimization)
+    pub(super) documents_by_id: Arc<DashMap<u32, Arc<LspDocument>>>,
     pub(super) serial_document_id: Arc<AtomicU32>,
     /// Pluggable diagnostic provider (Rust interpreter or gRPC to RNode)
     pub(super) diagnostic_provider: Arc<Box<dyn DiagnosticProvider>>,
