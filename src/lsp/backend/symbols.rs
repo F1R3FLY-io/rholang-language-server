@@ -29,11 +29,14 @@ impl RholangBackend {
     /// 4. Updates the global inverted index for cross-file navigation
     /// 5. Broadcasts workspace change event via hot observable
     pub(crate) async fn link_symbols(&self) {
-        let mut workspace = self.workspace.write().await;
-        let mut global_symbols = HashMap::new();
-        let documents = workspace.documents.clone();
+        // Clone documents first, then release write lock immediately to avoid blocking readers
+        let documents = {
+            let workspace = self.workspace.read().await;
+            workspace.documents.clone()
+        };
 
-        // Collect all contract symbols
+        // Collect all contract symbols (without holding any lock)
+        let mut global_symbols = HashMap::new();
         for (_uri, doc) in &documents {
             for symbol in doc.symbol_table.collect_all_symbols() {
                 if matches!(symbol.symbol_type, SymbolType::Contract) {
@@ -45,14 +48,13 @@ impl RholangBackend {
             }
         }
 
-        workspace.global_symbols = global_symbols;
         info!("Linked symbols across {} files", documents.len());
 
-        // Resolve potential global references
+        // Resolve potential global references (without holding any lock)
         let mut resolutions = Vec::new();
         for (doc_uri, doc) in &documents {
             for (name, use_pos) in &doc.potential_global_refs {
-                if let Some((def_uri, def_pos)) = workspace.global_symbols.get(name).cloned() {
+                if let Some((def_uri, def_pos)) = global_symbols.get(name).cloned() {
                     // Skip self-references
                     if (doc_uri.clone(), *use_pos) != (def_uri.clone(), def_pos) {
                         resolutions.push(((def_uri, def_pos), (doc_uri.clone(), *use_pos)));
@@ -67,20 +69,24 @@ impl RholangBackend {
             }
         }
 
-        // Update global inverted index
+        // Build global inverted index (without holding any lock)
+        let mut global_inverted_index = HashMap::new();
         for ((def_uri, def_pos), (use_uri, use_pos)) in resolutions {
-            workspace
-                .global_inverted_index
+            global_inverted_index
                 .entry((def_uri, def_pos))
                 .or_insert_with(Vec::new)
                 .push((use_uri, use_pos));
         }
 
-        // Broadcast workspace change event (ReactiveX Phase 2)
-        let file_count = workspace.documents.len();
-        let symbol_count = workspace.global_symbols.len();
-        drop(workspace); // Release lock before broadcasting
+        // Now acquire write lock only to update workspace (minimal lock duration)
+        let (file_count, symbol_count) = {
+            let mut workspace = self.workspace.write().await;
+            workspace.global_symbols = global_symbols;
+            workspace.global_inverted_index = global_inverted_index;
+            (workspace.documents.len(), workspace.global_symbols.len())
+        };
 
+        // Broadcast workspace change event (ReactiveX Phase 2)
         let _ = self.workspace_changes.send(WorkspaceChangeEvent {
             file_count,
             symbol_count,
