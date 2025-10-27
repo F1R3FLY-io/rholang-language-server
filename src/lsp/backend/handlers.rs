@@ -1060,7 +1060,50 @@ impl LanguageServer for RholangBackend {
             // This prevents VSCode from clearing document highlights when hover returns None
             debug!("Looking up symbol information for variable '{}'", var_name);
 
+            // Check if this is a contract with overloads
+            let global_table = workspace.global_table.clone();
+            let overloads = global_table.lookup_all_contract_overloads(var_name);
+
             drop(workspace); // Release workspace lock before get_symbol_at_position
+
+            if !overloads.is_empty() {
+                // Show contract overload information
+                let mut hover_text = format!("**{}**\n\n*contract*", var_name);
+
+                // Add all overload signatures
+                hover_text.push_str("\n\n**Overloads:**");
+                for (idx, symbol) in overloads.iter().enumerate() {
+                    let arity = symbol.arity().unwrap_or(0);
+                    let variadic = if symbol.is_variadic() { "..." } else { "" };
+                    hover_text.push_str(&format!("\n{}. `{}({}){}`",
+                        idx + 1, var_name, arity, variadic));
+                }
+
+                // Add location for first overload
+                let first = &overloads[0];
+                hover_text.push_str(&format!("\n\nDeclared at line {}, column {}",
+                    first.declaration_location.row + 1,
+                    first.declaration_location.column + 1));
+
+                if overloads.len() > 1 {
+                    hover_text.push_str(&format!(" (+{} more)", overloads.len() - 1));
+                }
+
+                debug!("Providing overload hover for contract '{}' with {} overloads", var_name, overloads.len());
+                return Ok(Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: hover_text,
+                    }),
+                    range: Some(Range {
+                        start: position,
+                        end: LspPosition {
+                            line: position.line,
+                            character: position.character + var_name.len() as u32,
+                        },
+                    }),
+                }));
+            }
 
             if let Some(symbol) = self.get_symbol_at_position(&uri, position).await {
                 let mut hover_text = format!("**{}**", var_name);
