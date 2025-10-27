@@ -365,26 +365,45 @@ impl Visitor for SymbolTableBuilder {
             trace!("Declaring contract '{}' at {:?} with {} parameters",
                 contract_name, contract_pos, formals.len());
 
-            // Create contract symbol with pattern information
-            let symbol = Arc::new(Symbol::new_contract(
-                contract_name.clone(),
-                self.current_uri.clone(),
-                contract_pos,
-                formals.clone(),
-                formals_remainder.clone(),
-                proc.clone(),
-            ));
-
             // Determine which table to insert into (global vs current scope)
             let current_table_guard = self.current_table.read().unwrap();
             let is_top_level = current_table_guard.parent().as_ref().map_or(false, |p| p.parent().is_none());
-            drop(current_table_guard);
 
             let insert_table = if is_top_level {
                 self.global_table.clone()
             } else {
-                self.current_table.read().unwrap().clone()
+                current_table_guard.clone()
             };
+
+            // Check if there's already a 'new' binding with this name in current scope
+            // If so, preserve its declaration location (for goto_declaration)
+            // while using the contract position as the definition location (for goto_definition)
+            let (decl_location, decl_uri) = if let Some(existing_symbol) = insert_table.lookup(&contract_name) {
+                if matches!(existing_symbol.symbol_type, SymbolType::Variable) {
+                    trace!("Contract '{}' has existing 'new' binding at {:?}, preserving declaration location",
+                        contract_name, existing_symbol.declaration_location);
+                    (existing_symbol.declaration_location, existing_symbol.declaration_uri.clone())
+                } else {
+                    (contract_pos, self.current_uri.clone())
+                }
+            } else {
+                (contract_pos, self.current_uri.clone())
+            };
+            drop(current_table_guard);
+
+            // Create contract symbol with pattern information
+            let mut symbol = Symbol::new_contract(
+                contract_name.clone(),
+                decl_uri,
+                decl_location,
+                formals.clone(),
+                formals_remainder.clone(),
+                proc.clone(),
+            );
+
+            // Set definition location to the contract position
+            symbol.definition_location = Some(contract_pos);
+            let symbol = Arc::new(symbol);
 
             // Insert into symbol table (automatically updates pattern index)
             insert_table.insert(symbol.clone());
