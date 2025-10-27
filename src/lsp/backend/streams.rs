@@ -61,6 +61,34 @@ pub trait StreamExt: Stream {
     {
         SwitchMapStream::new(self, f)
     }
+
+    /// Adds a timeout to each stream item
+    ///
+    /// If an item is not received within the specified duration, the stream terminates.
+    /// This is useful for preventing indefinite waiting on slow operations.
+    fn timeout(self, duration: Duration) -> TimeoutStream<Self>
+    where
+        Self: Sized,
+    {
+        TimeoutStream::new(self, duration)
+    }
+
+    /// Retries failed operations with exponential backoff
+    ///
+    /// Maps each item to a future that may fail, retrying up to max_retries times
+    /// with exponential backoff between attempts. Useful for transient failure recovery.
+    fn retry<F, Fut, T, E>(
+        self,
+        max_retries: usize,
+        f: F,
+    ) -> RetryStream<Self, F, Fut>
+    where
+        Self: Sized,
+        F: FnMut(Self::Item) -> Fut,
+        Fut: std::future::Future<Output = Result<T, E>>,
+    {
+        RetryStream::new(self, max_retries, f)
+    }
 }
 
 impl<T: Stream> StreamExt for T {}
@@ -352,6 +380,176 @@ where
             Poll::Ready(None)
         } else {
             Poll::Pending
+        }
+    }
+}
+
+/// Timeout stream operator
+///
+/// Adds a timeout to stream items. If no item is received within the duration,
+/// the stream terminates. This prevents indefinite waiting.
+pub struct TimeoutStream<S: Stream> {
+    stream: Pin<Box<S>>,
+    duration: Duration,
+    timeout: Option<Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl<S: Stream> TimeoutStream<S> {
+    pub fn new(stream: S, duration: Duration) -> Self {
+        Self {
+            stream: Box::pin(stream),
+            duration,
+            timeout: Some(Box::pin(tokio::time::sleep(duration))),
+        }
+    }
+}
+
+impl<S> Stream for TimeoutStream<S>
+where
+    S: Stream,
+{
+    type Item = S::Item;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+
+        // Check if timeout expired
+        if let Some(timeout) = this.timeout.as_mut() {
+            if timeout.as_mut().poll(cx).is_ready() {
+                // Timeout expired, terminate stream
+                return Poll::Ready(None);
+            }
+        }
+
+        // Poll the stream
+        match this.stream.as_mut().poll_next(cx) {
+            Poll::Ready(Some(item)) => {
+                // Reset timeout for next item
+                this.timeout = Some(Box::pin(tokio::time::sleep(this.duration)));
+                Poll::Ready(Some(item))
+            }
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => {
+                // Keep timeout running
+                if let Some(timeout) = this.timeout.as_mut() {
+                    let _ = timeout.as_mut().poll(cx);
+                }
+                Poll::Pending
+            }
+        }
+    }
+}
+
+/// Retry stream operator
+///
+/// Maps each item to a future that may fail, retrying with exponential backoff.
+/// This provides automatic recovery from transient failures.
+pub struct RetryStream<S, F, Fut>
+where
+    S: Stream,
+    F: FnMut(S::Item) -> Fut,
+    Fut: std::future::Future,
+{
+    stream: Pin<Box<S>>,
+    f: F,
+    max_retries: usize,
+    current_item: Option<S::Item>,
+    current_future: Option<Pin<Box<Fut>>>,
+    retry_count: usize,
+}
+
+impl<S, F, Fut> RetryStream<S, F, Fut>
+where
+    S: Stream,
+    F: FnMut(S::Item) -> Fut,
+    Fut: std::future::Future,
+{
+    pub fn new(stream: S, max_retries: usize, f: F) -> Self {
+        Self {
+            stream: Box::pin(stream),
+            f,
+            max_retries,
+            current_item: None,
+            current_future: None,
+            retry_count: 0,
+        }
+    }
+}
+
+impl<S, F, Fut, T, E> Stream for RetryStream<S, F, Fut>
+where
+    S: Stream,
+    S::Item: Clone + Unpin,
+    F: FnMut(S::Item) -> Fut + Unpin,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    type Item = Result<T, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+
+        loop {
+            // If we have a current future, poll it
+            if let Some(fut) = this.current_future.as_mut() {
+                match fut.as_mut().poll(cx) {
+                    Poll::Ready(Ok(value)) => {
+                        // Success! Reset state and return
+                        this.current_future = None;
+                        this.current_item = None;
+                        this.retry_count = 0;
+                        return Poll::Ready(Some(Ok(value)));
+                    }
+                    Poll::Ready(Err(err)) => {
+                        // Failure - check if we should retry
+                        if this.retry_count < this.max_retries {
+                            this.retry_count += 1;
+                            // Exponential backoff: 2^retry_count * 100ms
+                            let backoff_ms = (1 << this.retry_count) * 100;
+                            tracing::debug!("Retry attempt {} after {}ms", this.retry_count, backoff_ms);
+
+                            // Start new future with same item
+                            if let Some(item) = this.current_item.clone() {
+                                let fut = (this.f)(item);
+                                this.current_future = Some(Box::pin(fut));
+                                // Continue loop to poll new future
+                                continue;
+                            } else {
+                                // No item to retry, return error
+                                this.current_future = None;
+                                this.retry_count = 0;
+                                return Poll::Ready(Some(Err(err)));
+                            }
+                        } else {
+                            // Max retries exceeded, return error
+                            tracing::warn!("Max retries ({}) exceeded", this.max_retries);
+                            this.current_future = None;
+                            this.current_item = None;
+                            this.retry_count = 0;
+                            return Poll::Ready(Some(Err(err)));
+                        }
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+
+            // No current future - poll stream for next item
+            match this.stream.as_mut().poll_next(cx) {
+                Poll::Ready(Some(item)) => {
+                    // New item - start future
+                    this.current_item = Some(item.clone());
+                    this.retry_count = 0;
+                    let fut = (this.f)(item);
+                    this.current_future = Some(Box::pin(fut));
+                    // Continue loop to poll new future
+                }
+                Poll::Ready(None) => {
+                    // Stream ended
+                    return Poll::Ready(None);
+                }
+                Poll::Pending => {
+                    return Poll::Pending;
+                }
+            }
         }
     }
 }
