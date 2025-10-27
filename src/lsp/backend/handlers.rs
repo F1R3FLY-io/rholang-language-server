@@ -774,36 +774,31 @@ impl LanguageServer for RholangBackend {
                         if let RholangNode::Contract { name: contract_name_node, formals, .. } = &*parent {
                             let contract = parent.clone();
 
-                            // Extract contract name and arity for pattern-based lookup
+                            // Extract contract name for logging
                             let contract_name = Self::extract_contract_name(contract_name_node);
                             let arg_count = formals.len();
 
-                            // Use pattern-based filtering for O(1) lookup
-                            let candidates = if let Some(name) = &contract_name {
-                                Self::filter_contracts_by_pattern(
-                                    &workspace.global_calls,
-                                    &workspace.global_table,
-                                    name,
-                                    arg_count
-                                )
-                            } else {
-                                // Fallback: no name extraction possible, check all calls
-                                debug!("Could not extract contract name, checking all calls");
-                                workspace.global_calls.iter().collect()
-                            };
+                            // Check all calls - the match_contract function below does the actual filtering
+                            // Note: We don't use filter_contracts_by_pattern here because global_calls
+                            // contains Send/SendSync nodes, not Contract nodes
+                            let candidates = workspace.global_calls.iter().collect::<Vec<_>>();
 
-                            debug!("Pattern-based filtering returned {} candidate calls (from {} total)",
-                                   candidates.len(), workspace.global_calls.len());
+                            debug!("Checking {} candidate calls for contract {:?} with arity {}",
+                                   candidates.len(), contract_name, arg_count);
 
-                            let matching_calls = candidates.iter().filter(|(_, call)| {
+                            let matching_calls = candidates.iter().filter_map(|(uri, call)| {
                                 use crate::ir::rholang_node::match_contract;
                                 match &**call {
                                     RholangNode::Send { channel, inputs, .. } | RholangNode::SendSync { channel, inputs, .. } => {
-                                        match_contract(channel, inputs, &contract)
+                                        if match_contract(channel, inputs, &contract) {
+                                            Some((uri.clone(), call.clone()))
+                                        } else {
+                                            None
+                                        }
                                     }
-                                    _ => false,
+                                    _ => None,
                                 }
-                            }).map(|(u, c)| (u.clone(), c.clone())).collect::<Vec<_>>();
+                            }).collect::<Vec<_>>();
                             debug!("Found {} matching calls for contract", matching_calls.len());
                             let mut locations = matching_calls.iter().map(|(call_uri, call)| {
                                 let call_doc = workspace.documents.get(call_uri).expect("Document not found");
