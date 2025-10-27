@@ -12,7 +12,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, info, trace};
 
 use super::state::{DocumentChangeEvent, IndexingTask, RholangBackend};
-use super::streams::{self, StreamExt as CustomStreamExt};
+use super::streams::{self, BackendEvent, StreamExt as CustomStreamExt};
 
 impl RholangBackend {
     /// Spawns a reactive file watcher using stream operators
@@ -253,6 +253,85 @@ impl RholangBackend {
             }
 
             info!("Reactive progressive indexer task terminated");
+        });
+    }
+
+    /// Creates a unified event stream pipeline that merges all backend event sources
+    ///
+    /// This is the ReactiveX Phase 2 unified pipeline that:
+    /// - Merges file system, document, and indexing events
+    /// - Handles priority-based event processing
+    /// - Provides centralized event coordination
+    /// - Automatically shuts down on signal
+    ///
+    /// Note: This is currently unused but demonstrates the pattern for future unified event handling
+    #[allow(dead_code)]
+    pub(super) fn spawn_unified_event_pipeline(
+        backend: RholangBackend,
+        doc_change_rx: tokio::sync::mpsc::Receiver<DocumentChangeEvent>,
+        indexing_rx: tokio::sync::mpsc::Receiver<IndexingTask>,
+        file_events: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<notify::Result<notify::Event>>>>,
+    ) {
+        let mut shutdown_rx = backend.shutdown_tx.subscribe();
+
+        tokio::spawn(async move {
+            use futures::stream::{self, select_all};
+
+            // Create individual event streams
+            let doc_stream = ReceiverStream::new(doc_change_rx)
+                .map(BackendEvent::DocumentChange);
+
+            let indexing_stream = ReceiverStream::new(indexing_rx)
+                .map(BackendEvent::IndexingTask);
+
+            let file_stream = streams::file_system_stream(
+                Arc::try_unwrap(file_events)
+                    .unwrap_or_else(|_| panic!("File events receiver has multiple owners"))
+                    .into_inner()
+                    .expect("Mutex poisoned")
+            ).map(BackendEvent::FileSystemChange);
+
+            // Merge all streams into unified pipeline
+            let mut unified_stream = Box::pin(
+                select_all::<Vec<std::pin::Pin<Box<dyn futures::Stream<Item = BackendEvent> + Send>>>>(vec![
+                    Box::pin(doc_stream),
+                    Box::pin(indexing_stream),
+                    Box::pin(file_stream),
+                ])
+                .take_until(async move {
+                    let _ = shutdown_rx.recv().await;
+                    info!("Unified event pipeline received shutdown signal");
+                })
+            );
+
+            // Process unified event stream
+            while let Some(event) = unified_stream.next().await {
+                match event {
+                    BackendEvent::DocumentChange(change_event) => {
+                        debug!("Processing document change: {}", change_event.uri);
+                        // Handle document change with debouncing
+                        // (In practice, this would integrate with existing debouncer logic)
+                    }
+                    BackendEvent::IndexingTask(task) => {
+                        debug!("Processing indexing task: {}", task.uri);
+                        if let Err(e) = backend.index_file(&task.uri, &task.text, 0, None).await {
+                            error!("Failed to index {}: {}", task.uri, e);
+                        }
+                    }
+                    BackendEvent::FileSystemChange(paths) => {
+                        debug!("Processing {} file system changes", paths.len());
+                        for path in paths {
+                            backend.handle_file_change(path).await;
+                        }
+                    }
+                    BackendEvent::Shutdown => {
+                        info!("Shutdown event received");
+                        break;
+                    }
+                }
+            }
+
+            info!("Unified event pipeline task terminated");
         });
     }
 }
