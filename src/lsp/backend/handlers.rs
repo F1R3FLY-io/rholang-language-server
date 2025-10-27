@@ -520,9 +520,33 @@ impl LanguageServer for RholangBackend {
                         };
 
                         if let RholangNode::Send { channel, inputs, .. } | RholangNode::SendSync { channel, inputs, .. } = &**send_node {
-                            let matching = workspace.global_contracts.iter().filter(|(_, contract)| {
+                            debug!("Checking {} global contracts for match with channel: {:?}", workspace.global_contracts.len(), channel);
+
+                            // Extract contract name and arity for pattern-based lookup
+                            let contract_name = Self::extract_contract_name(channel);
+                            let arg_count = inputs.len();
+
+                            // Use pattern-based filtering for O(1) lookup
+                            let candidates = if let Some(name) = &contract_name {
+                                Self::filter_contracts_by_pattern(
+                                    &workspace.global_contracts,
+                                    &workspace.global_table,
+                                    name,
+                                    arg_count
+                                )
+                            } else {
+                                // Fallback: no name extraction possible, check all contracts
+                                debug!("Could not extract contract name from channel, checking all contracts");
+                                workspace.global_contracts.iter().collect()
+                            };
+
+                            debug!("Pattern-based filtering returned {} candidate contracts", candidates.len());
+
+                            let matching = candidates.iter().filter(|(_, contract)| {
                                 use crate::ir::rholang_node::match_contract;
-                                match_contract(channel, inputs, contract)
+                                let result = match_contract(channel, inputs, contract);
+                                debug!("match_contract(channel, inputs, contract) = {} for contract: {:?}", result, contract);
+                                result
                             }).map(|(u, c)| {
                                 let cached_doc = workspace.documents.get(u).expect("Document not found");
                                 let positions = cached_doc.positions.clone();
@@ -567,17 +591,43 @@ impl LanguageServer for RholangBackend {
                             unreachable!()
                         }
                     } else {
+                        debug!("Not a channel; checking if contract definition click");
+                        // Check if clicking on a contract name in its definition
+                        if let RholangNode::Contract { name, .. } = &*parent {
+                            debug!("Parent is Contract node");
+                            if std::sync::Arc::ptr_eq(name, &node) {
+                                debug!("Node is contract name - returning contract location");
+                                // Clicking on contract name - return the contract's location
+                                let contract_doc = workspace.documents.get(&uri).expect("Document not found");
+                                let positions = contract_doc.positions.clone();
+                                let key = &**name as *const RholangNode as usize;
+                                if let Some((start_pos, _)) = (*positions).get(&key) {
+                                    let range = Self::position_to_range(*start_pos, name.text(&contract_doc.text, &contract_doc.ir).len_chars());
+                                    let loc = Location { uri: uri.clone(), range };
+                                    info!("goto_definition completed in {:.3}ms (contract definition)", start.elapsed().as_secs_f64() * 1000.0);
+                                    return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
+                                } else {
+                                    debug!("Position not found in positions map for contract name");
+                                }
+                            } else {
+                                debug!("Node is not the contract name (ptr_eq failed)");
+                            }
+                        } else {
+                            debug!("Parent is not Contract node, parent type: {:?}", std::mem::discriminant(&*parent));
+                        }
+
                         drop(workspace);
-                        debug!("Not a channel; falling back to symbol lookup");
+                        debug!("Falling back to symbol lookup");
                         let result = if let Some(symbol) = self.get_symbol_at_position(&uri, lsp_pos).await {
                             let pos = symbol.definition_location.unwrap_or(symbol.declaration_location);
                             let range = Self::position_to_range(pos, symbol.name.len());
                             let loc = Location { uri: symbol.declaration_uri.clone(), range };
                             Ok(Some(GotoDefinitionResponse::Scalar(loc)))
                         } else {
+                            debug!("No symbol found at position");
                             Ok(None)
                         };
-                        info!("goto_definition completed in {:.3}ms (not a channel, symbol lookup fallback)", start.elapsed().as_secs_f64() * 1000.0);
+                        info!("goto_definition completed in {:.3}ms (symbol lookup fallback)", start.elapsed().as_secs_f64() * 1000.0);
                         result
                     }
                 } else {
@@ -595,9 +645,20 @@ impl LanguageServer for RholangBackend {
                     result
                 }
             } else {
-                info!("goto_definition completed in {:.3}ms (no node found)", start.elapsed().as_secs_f64() * 1000.0);
-                debug!("No node found at position {:?} in {}", ir_pos, uri);
-                Ok(None)
+                debug!("No node found at position {:?} in find_node_at_position", ir_pos);
+                // Try symbol lookup as fallback
+                drop(workspace);
+                let result = if let Some(symbol) = self.get_symbol_at_position(&uri, lsp_pos).await {
+                    let pos = symbol.definition_location.unwrap_or(symbol.declaration_location);
+                    let range = Self::position_to_range(pos, symbol.name.len());
+                    let loc = Location { uri: symbol.declaration_uri.clone(), range };
+                    Ok(Some(GotoDefinitionResponse::Scalar(loc)))
+                } else {
+                    debug!("No symbol found at position");
+                    Ok(None)
+                };
+                info!("goto_definition completed in {:.3}ms (symbol lookup for missing node)", start.elapsed().as_secs_f64() * 1000.0);
+                result
             }
         } else {
             info!("goto_definition completed in {:.3}ms (document not found in workspace)", start.elapsed().as_secs_f64() * 1000.0);
@@ -693,9 +754,31 @@ impl LanguageServer for RholangBackend {
                             }
                         }
 
-                        if let RholangNode::Contract { .. } = &*parent {
+                        if let RholangNode::Contract { name: contract_name_node, formals, .. } = &*parent {
                             let contract = parent.clone();
-                            let matching_calls = workspace.global_calls.iter().filter(|(_, call)| {
+
+                            // Extract contract name and arity for pattern-based lookup
+                            let contract_name = Self::extract_contract_name(contract_name_node);
+                            let arg_count = formals.len();
+
+                            // Use pattern-based filtering for O(1) lookup
+                            let candidates = if let Some(name) = &contract_name {
+                                Self::filter_contracts_by_pattern(
+                                    &workspace.global_calls,
+                                    &workspace.global_table,
+                                    name,
+                                    arg_count
+                                )
+                            } else {
+                                // Fallback: no name extraction possible, check all calls
+                                debug!("Could not extract contract name, checking all calls");
+                                workspace.global_calls.iter().collect()
+                            };
+
+                            debug!("Pattern-based filtering returned {} candidate calls (from {} total)",
+                                   candidates.len(), workspace.global_calls.len());
+
+                            let matching_calls = candidates.iter().filter(|(_, call)| {
                                 use crate::ir::rholang_node::match_contract;
                                 match &**call {
                                     RholangNode::Send { channel, inputs, .. } | RholangNode::SendSync { channel, inputs, .. } => {
@@ -703,7 +786,7 @@ impl LanguageServer for RholangBackend {
                                     }
                                     _ => false,
                                 }
-                            }).cloned().collect::<Vec<_>>();
+                            }).map(|(u, c)| (u.clone(), c.clone())).collect::<Vec<_>>();
                             debug!("Found {} matching calls for contract", matching_calls.len());
                             let mut locations = matching_calls.iter().map(|(call_uri, call)| {
                                 let call_doc = workspace.documents.get(call_uri).expect("Document not found");
@@ -1075,5 +1158,103 @@ impl LanguageServer for RholangBackend {
                 data: tokens_data,
             }
         )))
+    }
+}
+
+// ========================================================================
+// Pattern-Based Lookup Helper Functions
+// ========================================================================
+
+impl RholangBackend {
+    /// Extracts contract name from a channel node (Var or Quote)
+    fn extract_contract_name(channel: &RholangNode) -> Option<String> {
+        match channel {
+            RholangNode::Var { name, .. } => Some(name.clone()),
+            RholangNode::Quote { quotable, .. } => {
+                if let RholangNode::Var { name, .. } = &**quotable {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Filters global contracts using pattern-based lookup for better performance.
+    /// Returns (Url, Arc<RholangNode>) tuples for contracts matching the pattern.
+    ///
+    /// This provides O(1) lookup by (name, arity) instead of O(n) iteration.
+    /// Falls back to full scan if pattern lookup yields no results for safety.
+    fn filter_contracts_by_pattern<'a>(
+        global_contracts: &'a [(Url, std::sync::Arc<RholangNode>)],
+        global_table: &std::sync::Arc<crate::ir::symbol_table::SymbolTable>,
+        contract_name: &str,
+        arg_count: usize,
+    ) -> Vec<&'a (Url, std::sync::Arc<RholangNode>)> {
+        use crate::ir::symbol_table::SymbolType;
+
+        // Try pattern-based O(1) lookup first
+        let pattern_matches = global_table.lookup_contracts_by_pattern(contract_name, arg_count);
+
+        if !pattern_matches.is_empty() {
+            debug!(
+                "Pattern index found {} candidate contracts for '{}' with arity {}",
+                pattern_matches.len(),
+                contract_name,
+                arg_count
+            );
+
+            // Filter global_contracts to only those matching the pattern index results
+            let candidate_uris: std::collections::HashSet<_> = pattern_matches
+                .iter()
+                .map(|s| s.declaration_uri.clone())
+                .collect();
+
+            let filtered: Vec<_> = global_contracts
+                .iter()
+                .filter(|(uri, contract)| {
+                    // Check if URI matches and contract name matches
+                    if !candidate_uris.contains(uri) {
+                        return false;
+                    }
+
+                    // Verify contract name matches
+                    if let RholangNode::Contract { name, .. } = &**contract {
+                        if let Some(name_str) = Self::extract_contract_name(name) {
+                            return name_str == contract_name;
+                        }
+                    }
+                    false
+                })
+                .collect();
+
+            if !filtered.is_empty() {
+                debug!(
+                    "Pattern-based filtering reduced search space from {} to {} contracts",
+                    global_contracts.len(),
+                    filtered.len()
+                );
+                return filtered;
+            }
+        }
+
+        // Fallback: filter by name only if pattern lookup found nothing
+        debug!(
+            "Pattern index returned no results for '{}', falling back to name-based filtering",
+            contract_name
+        );
+
+        global_contracts
+            .iter()
+            .filter(|(_, contract)| {
+                if let RholangNode::Contract { name, .. } = &**contract {
+                    if let Some(name_str) = Self::extract_contract_name(name) {
+                        return name_str == contract_name;
+                    }
+                }
+                false
+            })
+            .collect()
     }
 }

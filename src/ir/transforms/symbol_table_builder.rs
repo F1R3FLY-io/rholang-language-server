@@ -277,6 +277,7 @@ impl Visitor for SymbolTableBuilder {
                                 declaration_uri: self.current_uri.clone(),
                                 declaration_location: decl_loc,
                                 definition_location: Some(def_loc),
+                                contract_pattern: None,
                             });
                             new_table.insert(symbol);
                             trace!("Declared variable '{}' in let scope at {:?}", var_name, decl_loc);
@@ -361,43 +362,34 @@ impl Visitor for SymbolTableBuilder {
         };
 
         let symbol = if !contract_name.is_empty() {
-            #[allow(unused_assignments)]
-            let mut symbol_opt: Option<Arc<Symbol>> = None;
-            {
-                let current_table_guard = self.current_table.read().unwrap();
-                // let is_top_level = current_table_guard.parent().as_ref().map_or(false, |p| p.parent().is_none());
-                if let Some(existing) = current_table_guard.lookup(&contract_name) {
-                    trace!("Updating variable '{}' to contract at {:?}", contract_name, contract_pos);
-                    let updated = Arc::new(Symbol {
-                        name: existing.name.clone(),
-                        symbol_type: SymbolType::Contract,
-                        declaration_uri: existing.declaration_uri.clone(),
-                        declaration_location: existing.declaration_location,
-                        definition_location: Some(contract_pos),
-                    });
-                    symbol_opt = Some(updated);
-                } else {
-                    trace!("Declaring new contract '{}' at {:?}", contract_name, contract_pos);
-                    let symbol = Arc::new(Symbol {
-                        name: contract_name.clone(),
-                        symbol_type: SymbolType::Contract,
-                        declaration_uri: self.current_uri.clone(),
-                        declaration_location: contract_pos,
-                        definition_location: Some(contract_pos),
-                    });
-                    symbol_opt = Some(symbol);
-                }
-            }
-            if let Some(symbol) = symbol_opt {
-                let current_table_guard = self.current_table.read().unwrap();
-                let is_top_level = current_table_guard.parent().as_ref().map_or(false, |p| p.parent().is_none());
-                drop(current_table_guard);
-                let insert_table = if is_top_level { self.global_table.clone() } else { self.current_table.read().unwrap().clone() };
-                insert_table.symbols.write().unwrap().insert(contract_name.clone(), symbol.clone());
-                Some(symbol)
+            trace!("Declaring contract '{}' at {:?} with {} parameters",
+                contract_name, contract_pos, formals.len());
+
+            // Create contract symbol with pattern information
+            let symbol = Arc::new(Symbol::new_contract(
+                contract_name.clone(),
+                self.current_uri.clone(),
+                contract_pos,
+                formals.clone(),
+                formals_remainder.clone(),
+                proc.clone(),
+            ));
+
+            // Determine which table to insert into (global vs current scope)
+            let current_table_guard = self.current_table.read().unwrap();
+            let is_top_level = current_table_guard.parent().as_ref().map_or(false, |p| p.parent().is_none());
+            drop(current_table_guard);
+
+            let insert_table = if is_top_level {
+                self.global_table.clone()
             } else {
-                None
-            }
+                self.current_table.read().unwrap().clone()
+            };
+
+            // Insert into symbol table (automatically updates pattern index)
+            insert_table.insert(symbol.clone());
+
+            Some(symbol)
         } else {
             trace!("Skipped empty contract name at {:?}", contract_pos);
             None

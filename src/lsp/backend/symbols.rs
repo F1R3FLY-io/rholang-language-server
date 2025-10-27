@@ -216,6 +216,7 @@ impl RholangBackend {
                                 declaration_uri: def_uri.clone(),
                                 declaration_location: def_pos,
                                 definition_location: Some(def_pos),
+                                contract_pattern: None,
                             }));
                         }
                     }
@@ -245,6 +246,7 @@ impl RholangBackend {
                 declaration_uri: def_uri.clone(),
                 declaration_location: def_pos,
                 definition_location: Some(def_pos),
+                contract_pattern: None,
             }));
         }
 
@@ -281,6 +283,7 @@ impl RholangBackend {
                 declaration_uri: def_uri.clone(),
                 declaration_location: def_pos,
                 definition_location: Some(def_pos),
+                contract_pattern: None,
             }));
         }
 
@@ -322,6 +325,7 @@ impl RholangBackend {
                         declaration_uri: def_uri.clone(),
                         declaration_location: def_pos,
                         definition_location: Some(def_pos),
+                        contract_pattern: None,
                     }));
                 }
             }
@@ -363,6 +367,7 @@ impl RholangBackend {
                         declaration_uri: def_uri.clone(),
                         declaration_location: def_pos,
                         definition_location: Some(def_pos),
+                        contract_pattern: None,
                     }));
                 }
             }
