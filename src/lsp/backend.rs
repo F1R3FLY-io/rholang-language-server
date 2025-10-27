@@ -61,7 +61,7 @@ mod reactive;
 mod metta;
 
 pub use state::RholangBackend;
-use state::{DocumentChangeEvent, IndexingTask};
+use state::{DocumentChangeEvent, IndexingTask, WorkspaceChangeEvent, WorkspaceChangeType};
 use utils::SemanticTokensBuilder;
 
 impl RholangBackend {
@@ -121,6 +121,13 @@ impl RholangBackend {
         let validation_cancel = Arc::new(Mutex::new(HashMap::new()));
         let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
 
+        // Create hot observable for workspace changes (ReactiveX Phase 2)
+        let (workspace_tx, _workspace_rx) = tokio::sync::watch::channel(WorkspaceChangeEvent {
+            file_count: 0,
+            symbol_count: 0,
+            change_type: WorkspaceChangeType::Initialized,
+        });
+
         let backend = Self {
             client: client.clone(),
             documents_by_uri: Arc::new(RwLock::new(HashMap::new())),
@@ -149,6 +156,7 @@ impl RholangBackend {
             root_dir: Arc::new(RwLock::new(None)),
             shutdown_tx: Arc::new(shutdown_tx),
             virtual_docs: Arc::new(RwLock::new(VirtualDocumentRegistry::new())),
+            workspace_changes: Arc::new(workspace_tx),
         };
 
         // Spawn reactive document change debouncer
@@ -594,6 +602,18 @@ impl RholangBackend {
                 collect_calls(&cached.ir, &mut calls);
                 workspace.global_contracts.extend(contracts.into_iter().map(|c| (uri.clone(), c)));
                 workspace.global_calls.extend(calls.into_iter().map(|c| (uri.clone(), c)));
+
+                // Broadcast workspace change event (ReactiveX Phase 2)
+                let file_count = workspace.documents.len();
+                let symbol_count = workspace.global_symbols.len();
+                drop(workspace); // Release lock before broadcasting
+
+                let _ = self.workspace_changes.send(WorkspaceChangeEvent {
+                    file_count,
+                    symbol_count,
+                    change_type: WorkspaceChangeType::FileIndexed,
+                });
+
                 Ok(cached)
             }
         }
@@ -669,7 +689,7 @@ impl RholangBackend {
         let rope = Rope::from_str(text);
         let positions = Arc::new(std::collections::HashMap::new());
 
-        Ok(CachedDocument {
+        let cached_doc = CachedDocument {
             ir: placeholder_ir,
             metta_ir: Some(metta_nodes),
             unified_ir,
@@ -683,7 +703,21 @@ impl RholangBackend {
             potential_global_refs,
             symbol_index,
             content_hash,
-        })
+        };
+
+        // Broadcast workspace change event (ReactiveX Phase 2)
+        let workspace = self.workspace.read().await;
+        let file_count = workspace.documents.len();
+        let symbol_count = workspace.global_symbols.len();
+        drop(workspace); // Release lock before broadcasting
+
+        let _ = self.workspace_changes.send(WorkspaceChangeEvent {
+            file_count,
+            symbol_count,
+            change_type: WorkspaceChangeType::FileIndexed,
+        });
+
+        Ok(cached_doc)
     }
 
     /// Links contract symbols across all documents in the workspace for cross-file resolution.
@@ -723,6 +757,17 @@ impl RholangBackend {
         }
 
         // No additional linking for contracts/calls, as linear match is used
+
+        // Broadcast workspace change event (ReactiveX Phase 2)
+        let file_count = workspace.documents.len();
+        let symbol_count = workspace.global_symbols.len();
+        drop(workspace); // Release lock before broadcasting
+
+        let _ = self.workspace_changes.send(WorkspaceChangeEvent {
+            file_count,
+            symbol_count,
+            change_type: WorkspaceChangeType::SymbolsLinked,
+        });
     }
 
     /// Handles file system events by re-indexing changed .rho files that are not open.

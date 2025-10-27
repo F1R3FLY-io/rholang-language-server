@@ -36,6 +36,30 @@ pub(super) struct IndexingTask {
     pub(super) priority: u8,  // 0 = high (current file), 1 = normal
 }
 
+/// Workspace change event for hot observable pattern
+///
+/// Broadcast to all subscribers when workspace state changes (file indexed, symbols linked, etc.)
+#[derive(Debug, Clone)]
+pub(super) struct WorkspaceChangeEvent {
+    /// Number of indexed files
+    pub(super) file_count: usize,
+    /// Number of global symbols
+    pub(super) symbol_count: usize,
+    /// Most recent change type
+    pub(super) change_type: WorkspaceChangeType,
+}
+
+/// Type of workspace change
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WorkspaceChangeType {
+    /// File was indexed/re-indexed
+    FileIndexed,
+    /// Symbols were linked across files
+    SymbolsLinked,
+    /// Workspace initialized
+    Initialized,
+}
+
 /// The Rholang language server backend, managing state and handling LSP requests.
 #[derive(Clone)]
 pub struct RholangBackend {
@@ -62,6 +86,9 @@ pub struct RholangBackend {
     pub(super) shutdown_tx: Arc<tokio::sync::broadcast::Sender<()>>,
     /// Virtual document registry for embedded language regions
     pub(super) virtual_docs: Arc<RwLock<VirtualDocumentRegistry>>,
+    /// Hot observable for workspace changes (ReactiveX Phase 2)
+    /// Multiple subscribers can watch for workspace state updates
+    pub(super) workspace_changes: Arc<tokio::sync::watch::Sender<WorkspaceChangeEvent>>,
 }
 
 // Manual Debug implementation since DiagnosticProvider doesn't implement Debug
