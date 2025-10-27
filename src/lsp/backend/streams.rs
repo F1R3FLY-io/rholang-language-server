@@ -298,24 +298,30 @@ pub fn file_system_stream(
 /// Creates a file system event stream from an Arc<Mutex<Receiver>>
 ///
 /// This variant works with shared receivers wrapped in Arc<Mutex<>> to support
-/// multiple potential readers. It polls the receiver from within the Mutex lock.
-///
-/// Uses try_recv() to avoid blocking, allowing the stream to be cancellable via
-/// take_until or other shutdown mechanisms. Returns Poll::Pending if no events
-/// are available, allowing the async runtime to process other tasks including
-/// shutdown signals.
+/// multiple potential readers. It polls the receiver using an interval-based approach
+/// that properly yields to allow shutdown signals and other tasks to run.
 pub fn file_system_stream_from_arc(
     rx: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<notify::Result<notify::Event>>>>,
 ) -> Pin<Box<dyn Stream<Item = Vec<PathBuf>> + Send>> {
     use futures::stream::{self, StreamExt};
-    use std::time::Duration;
+    use tokio::time::{interval, Duration};
 
-    // Convert Arc<Mutex<Receiver>> to async stream with non-blocking polling
-    Box::pin(stream::unfold(rx, |rx| async move {
+    // Use an interval stream to poll the receiver periodically
+    // This ensures we yield to the async runtime between polls, allowing
+    // shutdown signals to be processed
+    let mut interval_stream = interval(Duration::from_millis(10));
+
+    Box::pin(stream::unfold((rx, interval_stream), |(rx, mut interval)| async move {
         loop {
+            // Wait for next tick - this yields to the runtime
+            interval.tick().await;
+
             // Try to receive from the shared receiver (non-blocking)
             let recv_result = {
-                let guard = rx.lock().ok()?;
+                let guard = match rx.lock() {
+                    Ok(g) => g,
+                    Err(_) => return None,  // Lock poisoned, terminate stream
+                };
                 guard.try_recv()
             };
 
@@ -328,7 +334,7 @@ pub fn file_system_stream_from_arc(
                         .collect();
 
                     if !paths.is_empty() {
-                        return Some((paths, rx));
+                        return Some((paths, (rx, interval)));
                     }
                     // Continue loop to try next event if no .rho files
                 }
@@ -337,10 +343,9 @@ pub fn file_system_stream_from_arc(
                     // Continue to next event
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    // No events available, sleep briefly to avoid busy loop
-                    // Keep this short (10ms) for responsive shutdown
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                    return Some((vec![], rx));
+                    // No events available, continue loop to wait for next tick
+                    // This will yield back to the async runtime
+                    continue;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     // Channel closed, terminate stream
@@ -348,8 +353,7 @@ pub fn file_system_stream_from_arc(
                 }
             }
         }
-    })
-    .filter(|paths| futures::future::ready(!paths.is_empty())))
+    }))
 }
 
 /// Switch map stream operator
