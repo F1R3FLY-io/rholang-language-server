@@ -16,7 +16,7 @@ pub mod node_impl;
 // Re-export all public items for backward compatibility
 pub use node_types::*;
 pub use position_tracking::{compute_absolute_positions, compute_end_position, find_node_at_position, find_node_at_position_with_path};
-pub use node_operations::{match_pat, match_contract, collect_contracts, collect_calls};
+pub use node_operations::{match_pat, match_contract, collect_contracts, collect_calls, contract_names_equal};
 
 // Note: node_impl provides trait implementations and doesn't need explicit re-exports
 // as the traits are implemented on types from node_types

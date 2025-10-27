@@ -230,7 +230,7 @@ pub fn match_pat(pat: &Arc<RholangNode>, concrete: &Arc<RholangNode>, subst: &mu
 
 /// Matches a contract against a call's channel and inputs.
 /// Check if two nodes are equal for contract name matching (avoids pattern matching's Var unification)
-fn contract_names_equal(a: &Arc<RholangNode>, b: &Arc<RholangNode>) -> bool {
+pub fn contract_names_equal(a: &Arc<RholangNode>, b: &Arc<RholangNode>) -> bool {
     match (&**a, &**b) {
         // Fast path: pointer equality
         _ if Arc::ptr_eq(a, b) => true,

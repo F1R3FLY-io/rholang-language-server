@@ -299,37 +299,53 @@ pub fn file_system_stream(
 ///
 /// This variant works with shared receivers wrapped in Arc<Mutex<>> to support
 /// multiple potential readers. It polls the receiver from within the Mutex lock.
+///
+/// Uses try_recv() to avoid blocking, allowing the stream to be cancellable via
+/// take_until or other shutdown mechanisms. Returns Poll::Pending if no events
+/// are available, allowing the async runtime to process other tasks including
+/// shutdown signals.
 pub fn file_system_stream_from_arc(
     rx: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<notify::Result<notify::Event>>>>,
 ) -> Pin<Box<dyn Stream<Item = Vec<PathBuf>> + Send>> {
     use futures::stream::{self, StreamExt};
+    use std::time::Duration;
 
-    // Convert Arc<Mutex<Receiver>> to async stream by polling inside locks
+    // Convert Arc<Mutex<Receiver>> to async stream with non-blocking polling
     Box::pin(stream::unfold(rx, |rx| async move {
-        // Try to receive from the shared receiver
-        let recv_result = {
-            let guard = rx.lock().ok()?;
-            guard.recv().ok()?
-        };
+        loop {
+            // Try to receive from the shared receiver (non-blocking)
+            let recv_result = {
+                let guard = rx.lock().ok()?;
+                guard.try_recv()
+            };
 
-        match recv_result {
-            Ok(event) => {
-                let paths: Vec<PathBuf> = event
-                    .paths
-                    .into_iter()
-                    .filter(|p| p.extension().map_or(false, |ext| ext == "rho"))
-                    .collect();
+            match recv_result {
+                Ok(Ok(event)) => {
+                    let paths: Vec<PathBuf> = event
+                        .paths
+                        .into_iter()
+                        .filter(|p| p.extension().map_or(false, |ext| ext == "rho"))
+                        .collect();
 
-                if !paths.is_empty() {
-                    Some((paths, rx))
-                } else {
-                    // Continue receiving until we get .rho files
-                    Some((vec![], rx))
+                    if !paths.is_empty() {
+                        return Some((paths, rx));
+                    }
+                    // Continue loop to try next event if no .rho files
                 }
-            }
-            Err(e) => {
-                tracing::warn!("File watcher error: {}", e);
-                Some((vec![], rx))
+                Ok(Err(e)) => {
+                    tracing::warn!("File watcher error: {}", e);
+                    // Continue to next event
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    // No events available, sleep briefly to avoid busy loop
+                    // Keep this short (10ms) for responsive shutdown
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    return Some((vec![], rx));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // Channel closed, terminate stream
+                    return None;
+                }
             }
         }
     })
