@@ -666,7 +666,10 @@ impl RholangBackend {
     /// 3. Collects and inserts new contracts and calls
     /// 4. Broadcasts workspace change event
     ///
-    /// This minimizes lock contention by reducing multiple sequential write locks to one.
+    /// This minimizes lock contention by:
+    /// - Reducing multiple sequential write locks to one
+    /// - Performing all CPU-bound work (collecting contracts/calls) before acquiring lock
+    /// - Using in-place mutations to avoid cloning large HashMaps
     pub(super) async fn update_workspace_document(&self, uri: &Url, cached_doc: Arc<CachedDocument>) {
         // Collect contracts and calls outside the lock (CPU-bound work)
         let mut contracts = Vec::new();
@@ -674,15 +677,21 @@ impl RholangBackend {
         let mut calls = Vec::new();
         collect_calls(&cached_doc.ir, &mut calls);
 
-        // Single write lock for all workspace mutations
+        // Prepare new data to insert (outside lock)
+        let new_contracts: Vec<_> = contracts.into_iter().map(|c| (uri.clone(), c)).collect();
+        let new_calls: Vec<_> = calls.into_iter().map(|c| (uri.clone(), c)).collect();
+
+        // Single write lock for all workspace mutations (minimized duration)
         let (file_count, symbol_count) = {
             let mut workspace = self.workspace.write().await;
 
-            // Clear old data for this URI
+            // Clear old data for this URI using in-place retain (no cloning)
+            // Note: global_table.symbols uses interior mutability (RwLock), but we minimize
+            // the nested lock duration by doing it first
             workspace.global_table.symbols.write().unwrap().retain(|_, s| &s.declaration_uri != uri);
-            let mut global_symbols = workspace.global_symbols.clone();
-            global_symbols.retain(|_, (u, _)| u != uri);
-            workspace.global_symbols = global_symbols;
+
+            // Use in-place retain instead of clone-modify-replace
+            workspace.global_symbols.retain(|_, (u, _)| u != uri);
             workspace.global_inverted_index.retain(|(d_uri, _), us| {
                 if d_uri == uri {
                     false
@@ -696,8 +705,8 @@ impl RholangBackend {
 
             // Insert new data
             workspace.documents.insert(uri.clone(), cached_doc);
-            workspace.global_contracts.extend(contracts.into_iter().map(|c| (uri.clone(), c)));
-            workspace.global_calls.extend(calls.into_iter().map(|c| (uri.clone(), c)));
+            workspace.global_contracts.extend(new_contracts);
+            workspace.global_calls.extend(new_calls);
 
             (workspace.documents.len(), workspace.global_symbols.len())
         };
