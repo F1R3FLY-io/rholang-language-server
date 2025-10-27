@@ -21,7 +21,8 @@ impl RholangBackend {
     /// reactive stream that:
     /// - Filters .rho files
     /// - Batches events with 100ms timeout
-    /// - Processes batches concurrently
+    /// - Processes batches concurrently with 5-second timeout per file
+    /// - Provides timeout protection against stuck file processing
     /// - Automatically shuts down on signal
     pub(super) fn spawn_reactive_file_watcher(
         backend: RholangBackend,
@@ -55,13 +56,25 @@ impl RholangBackend {
             while let Some(paths) = reactive_stream.next().await {
                 info!("Processing batch of {} file changes", paths.len());
 
-                // Process files concurrently
+                // Process files concurrently with timeout
                 let handles: Vec<_> = paths
                     .into_iter()
                     .map(|path| {
                         let backend = backend.clone();
+                        let path_clone = path.clone();
                         tokio::spawn(async move {
-                            backend.handle_file_change(path).await;
+                            // Add 5-second timeout to file processing
+                            match tokio::time::timeout(
+                                Duration::from_secs(5),
+                                backend.handle_file_change(path)
+                            ).await {
+                                Ok(_) => {
+                                    trace!("Successfully processed file change: {:?}", path_clone);
+                                }
+                                Err(_) => {
+                                    error!("Timeout processing file change: {:?}", path_clone);
+                                }
+                            }
                         })
                     })
                     .collect();
@@ -80,9 +93,10 @@ impl RholangBackend {
     ///
     /// This replaces the imperative debouncer with a declarative stream that:
     /// - Groups events by URI
-    /// - Debounces each URI independently with 300ms
-    /// - Automatically cancels previous validations (via switch_map semantics)
-    /// - Processes validations concurrently
+    /// - Debounces each URI independently with 100ms
+    /// - Automatically cancels previous validations (via manual cancellation tokens)
+    /// - Processes validations concurrently with 10-second timeout
+    /// - Provides timeout protection against stuck validations
     pub(super) fn spawn_reactive_document_debouncer(
         backend: RholangBackend,
         doc_change_rx: tokio::sync::mpsc::Receiver<DocumentChangeEvent>,
@@ -147,16 +161,20 @@ impl RholangBackend {
                                 let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
                                 backend.validation_cancel.lock().unwrap().insert(uri.clone(), cancel_tx);
 
-                                // Spawn validation
+                                // Spawn validation with timeout
                                 let backend_clone = backend.clone();
                                 let uri_clone = uri.clone();
                                 let text_clone = event.text.clone();
                                 tokio::spawn(async move {
                                     tokio::select! {
-                                        result = backend_clone.validate(event.document, &text_clone, event.version) => {
+                                        result = tokio::time::timeout(
+                                            Duration::from_secs(10),
+                                            backend_clone.validate(event.document, &text_clone, event.version)
+                                        ) => {
                                             match result {
-                                                Ok(_) => trace!("Validation completed for {}", uri_clone),
-                                                Err(e) => error!("Validation failed for {}: {}", uri_clone, e),
+                                                Ok(Ok(_)) => trace!("Validation completed for {}", uri_clone),
+                                                Ok(Err(e)) => error!("Validation failed for {}: {}", uri_clone, e),
+                                                Err(_) => error!("Validation timeout for {}", uri_clone),
                                             }
                                         }
                                         _ = cancel_rx => {
