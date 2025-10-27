@@ -1,2 +1,7 @@
 [profile.default]
 slow-timeout = { period = "30s", terminate-after = 10, grace-period = "5s" }
+
+# Performance tests should run serially to avoid CPU contention affecting timing measurements
+[[profile.default.overrides]]
+filter = 'test(test_hash_lookup_vs_linear_search_simulation)'
+threads-required = 'num-cpus'

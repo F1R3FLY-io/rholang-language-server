@@ -248,10 +248,10 @@ impl LanguageServer for RholangBackend {
         self.documents_by_uri.insert(uri.clone(), document.clone());
         self.documents_by_id.insert(document_id, document.clone());
 
-        // Index file (will skip if content hash matches existing cached document)
+        // Index file and update workspace in a single batched write lock
         match self.index_file(&uri, &text, version, None).await {
             Ok(cached_doc) => {
-                self.workspace.write().await.documents.insert(uri.clone(), std::sync::Arc::new(cached_doc));
+                self.update_workspace_document(&uri, std::sync::Arc::new(cached_doc)).await;
                 self.link_symbols().await;
             }
             Err(e) => error!("Failed to index file: {}", e),
@@ -284,7 +284,7 @@ impl LanguageServer for RholangBackend {
             if let Some((text, tree)) = document.apply(params.content_changes, version).await {
                 match self.index_file(&uri, &text, version, Some(tree)).await {
                     Ok(cached_doc) => {
-                        self.workspace.write().await.documents.insert(uri.clone(), std::sync::Arc::new(cached_doc));
+                        self.update_workspace_document(&uri, std::sync::Arc::new(cached_doc)).await;
                         self.link_symbols().await;
                     }
                     Err(e) => warn!("Failed to update {}: {}", uri, e),

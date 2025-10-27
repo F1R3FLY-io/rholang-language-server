@@ -311,23 +311,8 @@ impl RholangBackend {
             }
             DocumentLanguage::Rholang | DocumentLanguage::Unknown => {
                 // Handle Rholang files (existing logic)
-                let uri_clone = uri.clone();
-                let mut workspace = self.workspace.write().await;
-                workspace.global_table.symbols.write().unwrap().retain(|_, s| &s.declaration_uri != &uri_clone);
-                let mut global_symbols = workspace.global_symbols.clone();
-                global_symbols.retain(|_, (u, _)| u != &uri_clone);
-                workspace.global_symbols = global_symbols;
-                workspace.global_inverted_index.retain(|(d_uri, _), us| {
-                    if d_uri == &uri_clone {
-                        false
-                    } else {
-                        us.retain(|(u_uri, _)| u_uri != &uri_clone);
-                        !us.is_empty()
-                    }
-                });
-                workspace.global_contracts.retain(|(u, _)| u != &uri_clone);
-                workspace.global_calls.retain(|(u, _)| u != &uri_clone);
-                drop(workspace);
+                // Note: We intentionally do NOT clear old symbols here - that will be done
+                // in a single batched workspace update by the caller to minimize lock duration
 
                 let tree = Arc::new(tree.unwrap_or_else(|| parse_code(text)));
                 let rope = Rope::from_str(text);
@@ -389,24 +374,15 @@ impl RholangBackend {
                     debug!("Validated {} virtual documents for {}", all_regions.len(), uri);
                 }
 
-                let mut workspace = self.workspace.write().await;
+                // Collect contracts and calls (CPU-bound work without holding lock)
                 let mut contracts = Vec::new();
                 collect_contracts(&cached.ir, &mut contracts);
                 let mut calls = Vec::new();
                 collect_calls(&cached.ir, &mut calls);
-                workspace.global_contracts.extend(contracts.into_iter().map(|c| (uri.clone(), c)));
-                workspace.global_calls.extend(calls.into_iter().map(|c| (uri.clone(), c)));
 
-                // Broadcast workspace change event (ReactiveX Phase 2)
-                let file_count = workspace.documents.len();
-                let symbol_count = workspace.global_symbols.len();
-                drop(workspace); // Release lock before broadcasting
-
-                let _ = self.workspace_changes.send(WorkspaceChangeEvent {
-                    file_count,
-                    symbol_count,
-                    change_type: WorkspaceChangeType::FileIndexed,
-                });
+                // Note: We intentionally do NOT update workspace here to minimize lock duration.
+                // Caller is responsible for batching workspace updates (documents, contracts, calls)
+                // into a single write lock and calling link_symbols() afterward.
 
                 Ok(cached)
             }
@@ -525,7 +501,7 @@ impl RholangBackend {
                 let text = std::fs::read_to_string(&path).unwrap_or_default();
                 match self.index_file(&uri, &text, 0, None).await {
                     Ok(cached_doc) => {
-                        self.workspace.write().await.documents.insert(uri.clone(), Arc::new(cached_doc));
+                        self.update_workspace_document(&uri, Arc::new(cached_doc)).await;
                         self.link_symbols().await;
                         info!("Updated cache for file: {}", uri);
                     }
@@ -551,7 +527,7 @@ impl RholangBackend {
                             if let Ok(text) = std::fs::read_to_string(entry.path()) {
                                 match self.index_file(&uri, &text, 0, None).await {
                                     Ok(cached_doc) => {
-                                        self.workspace.write().await.documents.insert(uri.clone(), Arc::new(cached_doc));
+                                        self.update_workspace_document(&uri, Arc::new(cached_doc)).await;
                                         debug!("Indexed file: {}", uri);
                                     }
                                     Err(e) => warn!("Failed to index file {}: {}", uri, e),
@@ -660,18 +636,16 @@ impl RholangBackend {
         info!("Parallel indexing of {} files completed in {:?} ({:.1} files/sec)",
             results.len(), elapsed, results.len() as f64 / elapsed.as_secs_f64());
 
-        // Phase 3: Batch insert into workspace (single write lock)
-        let mut workspace = self.workspace.write().await;
+        // Phase 3: Batch insert into workspace using batched updates
         for (uri, result) in results {
             match result {
                 Ok(cached_doc) => {
-                    workspace.documents.insert(uri.clone(), Arc::new(cached_doc));
+                    self.update_workspace_document(&uri, Arc::new(cached_doc)).await;
                     debug!("Indexed file: {}", uri);
                 }
                 Err(e) => warn!("Failed to index file {}: {}", uri, e),
             }
         }
-        drop(workspace);
 
         // Phase 4: Link symbols across all indexed files
         self.link_symbols().await;
@@ -682,5 +656,57 @@ impl RholangBackend {
     /// Generates the next unique document ID.
     pub(super) fn next_document_id(&self) -> u32 {
         self.serial_document_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// Updates workspace with a newly indexed document in a single batched write lock.
+    ///
+    /// This function performs all workspace mutations in one atomic operation:
+    /// 1. Removes old symbols, contracts, and calls for the URI
+    /// 2. Inserts the new cached document
+    /// 3. Collects and inserts new contracts and calls
+    /// 4. Broadcasts workspace change event
+    ///
+    /// This minimizes lock contention by reducing multiple sequential write locks to one.
+    pub(super) async fn update_workspace_document(&self, uri: &Url, cached_doc: Arc<CachedDocument>) {
+        // Collect contracts and calls outside the lock (CPU-bound work)
+        let mut contracts = Vec::new();
+        collect_contracts(&cached_doc.ir, &mut contracts);
+        let mut calls = Vec::new();
+        collect_calls(&cached_doc.ir, &mut calls);
+
+        // Single write lock for all workspace mutations
+        let (file_count, symbol_count) = {
+            let mut workspace = self.workspace.write().await;
+
+            // Clear old data for this URI
+            workspace.global_table.symbols.write().unwrap().retain(|_, s| &s.declaration_uri != uri);
+            let mut global_symbols = workspace.global_symbols.clone();
+            global_symbols.retain(|_, (u, _)| u != uri);
+            workspace.global_symbols = global_symbols;
+            workspace.global_inverted_index.retain(|(d_uri, _), us| {
+                if d_uri == uri {
+                    false
+                } else {
+                    us.retain(|(u_uri, _)| u_uri != uri);
+                    !us.is_empty()
+                }
+            });
+            workspace.global_contracts.retain(|(u, _)| u != uri);
+            workspace.global_calls.retain(|(u, _)| u != uri);
+
+            // Insert new data
+            workspace.documents.insert(uri.clone(), cached_doc);
+            workspace.global_contracts.extend(contracts.into_iter().map(|c| (uri.clone(), c)));
+            workspace.global_calls.extend(calls.into_iter().map(|c| (uri.clone(), c)));
+
+            (workspace.documents.len(), workspace.global_symbols.len())
+        };
+
+        // Broadcast workspace change event (outside lock)
+        let _ = self.workspace_changes.send(WorkspaceChangeEvent {
+            file_count,
+            symbol_count,
+            change_type: WorkspaceChangeType::FileIndexed,
+        });
     }
 }

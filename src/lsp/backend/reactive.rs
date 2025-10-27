@@ -258,8 +258,11 @@ impl RholangBackend {
 
                 // Process each task
                 while let Some(PrioritizedTask(_, task)) = queue.pop() {
-                    if let Err(e) = backend.index_file(&task.uri, &task.text, 0, None).await {
-                        error!("Failed to index {}: {}", task.uri, e);
+                    match backend.index_file(&task.uri, &task.text, 0, None).await {
+                        Ok(cached_doc) => {
+                            backend.update_workspace_document(&task.uri, std::sync::Arc::new(cached_doc)).await;
+                        }
+                        Err(e) => error!("Failed to index {}: {}", task.uri, e),
                     }
                 }
 
