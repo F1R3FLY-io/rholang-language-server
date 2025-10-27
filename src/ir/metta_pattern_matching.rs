@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 use std::collections::HashMap;
-use tower_lsp::lsp_types::Location;
+use tower_lsp::lsp_types::{Location, Url, Range, Position};
 use mork::space::Space;
 
 use crate::ir::metta_node::MettaNode;

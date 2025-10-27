@@ -12,6 +12,8 @@ use mork_expr::{Expr, ExprEnv, ExprZipper};
 use mork_frontend::bytestring_parser::Parser;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use archery::ArcK;
+use rpds::Vector;
 
 /// Context for tracking variables during RholangNode → Expr conversion
 ///
