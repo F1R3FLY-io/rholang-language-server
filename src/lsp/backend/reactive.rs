@@ -165,14 +165,21 @@ impl RholangBackend {
                                 let backend_clone = backend.clone();
                                 let uri_clone = uri.clone();
                                 let text_clone = event.text.clone();
+                                let version_clone = event.version;
                                 tokio::spawn(async move {
                                     tokio::select! {
                                         result = tokio::time::timeout(
                                             Duration::from_secs(10),
-                                            backend_clone.validate(event.document, &text_clone, event.version)
+                                            backend_clone.validate(event.document.clone(), &text_clone, event.version)
                                         ) => {
                                             match result {
-                                                Ok(Ok(_)) => trace!("Validation completed for {}", uri_clone),
+                                                Ok(Ok(diagnostics)) => {
+                                                    trace!("Validation completed for {}", uri_clone);
+                                                    // Publish diagnostics to client
+                                                    if event.document.version().await == version_clone {
+                                                        backend_clone.client.publish_diagnostics(uri_clone.clone(), diagnostics, Some(version_clone)).await;
+                                                    }
+                                                }
                                                 Ok(Err(e)) => error!("Validation failed for {}: {}", uri_clone, e),
                                                 Err(_) => error!("Validation timeout for {}", uri_clone),
                                             }
