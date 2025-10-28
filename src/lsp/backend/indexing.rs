@@ -52,6 +52,10 @@ impl RholangBackend {
         global_index: Arc<std::sync::RwLock<crate::ir::global_index::GlobalSymbolIndex>>,
         version_counter: &Arc<std::sync::atomic::AtomicI32>,
     ) -> Result<CachedDocument, String> {
+        // Clear old symbols for this URI from global_table BEFORE indexing
+        // This ensures we don't have stale symbols from previous versions of the file
+        global_table.symbols.write().unwrap().retain(|_, s| &s.declaration_uri != uri);
+
         let mut pipeline = Pipeline::new();
 
         // Symbol table builder for local symbol tracking
@@ -685,10 +689,11 @@ impl RholangBackend {
         let (file_count, symbol_count) = {
             let mut workspace = self.workspace.write().await;
 
-            // Clear old data for this URI using in-place retain (no cloning)
-            // Note: global_table.symbols uses interior mutability (RwLock), but we minimize
-            // the nested lock duration by doing it first
-            workspace.global_table.symbols.write().unwrap().retain(|_, s| &s.declaration_uri != uri);
+            // NOTE: We do NOT clear symbols from global_table here because:
+            // 1. global_table is shared across all documents via Arc<SymbolTable>
+            // 2. SymbolTableBuilder already manages inserting/updating symbols during indexing
+            // 3. Clearing here would delete symbols that were just added by SymbolTableBuilder
+            // 4. global_table uses interior mutability, so changes are visible across all Arc clones
 
             // Use in-place retain instead of clone-modify-replace
             workspace.global_symbols.retain(|_, (u, _)| u != uri);

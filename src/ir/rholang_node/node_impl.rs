@@ -359,6 +359,17 @@ impl RholangNode {
                 remainder: remainder.clone(),
                 metadata: metadata.clone(),
             }),
+            RholangNode::Pathmap {
+                elements,
+                remainder,
+                metadata,
+                ..
+            } => Arc::new(RholangNode::Pathmap {
+                base: new_base,
+                elements: elements.clone(),
+                remainder: remainder.clone(),
+                metadata: metadata.clone(),
+            }),
             RholangNode::Map {
                 pairs,
                 remainder,
@@ -997,6 +1008,17 @@ impl RholangNode {
                 remainder: remainder.clone(),
                 metadata: new_metadata,
             }),
+            RholangNode::Pathmap {
+                base,
+                elements,
+                remainder,
+                ..
+            } => Arc::new(RholangNode::Pathmap {
+                base: base.clone(),
+                elements: elements.clone(),
+                remainder: remainder.clone(),
+                metadata: new_metadata,
+            }),
             RholangNode::Map {
                 base,
                 pairs,
@@ -1193,7 +1215,7 @@ impl RholangNode {
         text
     }
 
-    /// Returns a reference to the node’s NodeBase.
+    /// Returns a reference to the node's NodeBase.
     pub fn base(&self) -> &NodeBase {
         match self {
             RholangNode::Par { base, .. } => base,
@@ -1222,6 +1244,7 @@ impl RholangNode {
             RholangNode::Nil { base, .. } => base,
             RholangNode::List { base, .. } => base,
             RholangNode::Set { base, .. } => base,
+            RholangNode::Pathmap { base, .. } => base,
             RholangNode::Map { base, .. } => base,
             RholangNode::Tuple { base, .. } => base,
             RholangNode::Var { base, .. } => base,
@@ -1243,7 +1266,7 @@ impl RholangNode {
         }
     }
 
-    /// Returns an optional reference to the node’s metadata.
+    /// Returns an optional reference to the node's metadata.
     pub fn metadata(&self) -> Option<&Arc<Metadata>> {
         match self {
             RholangNode::Par { metadata, .. } => metadata.as_ref(),
@@ -1272,6 +1295,7 @@ impl RholangNode {
             RholangNode::Nil { metadata, .. } => metadata.as_ref(),
             RholangNode::List { metadata, .. } => metadata.as_ref(),
             RholangNode::Set { metadata, .. } => metadata.as_ref(),
+            RholangNode::Pathmap { metadata, .. } => metadata.as_ref(),
             RholangNode::Map { metadata, .. } => metadata.as_ref(),
             RholangNode::Tuple { metadata, .. } => metadata.as_ref(),
             RholangNode::Var { metadata, .. } => metadata.as_ref(),
@@ -1425,24 +1449,25 @@ impl RholangNode {
             RholangNode::Nil { .. } => 23,
             RholangNode::List { .. } => 24,
             RholangNode::Set { .. } => 25,
-            RholangNode::Map { .. } => 26,
-            RholangNode::Tuple { .. } => 27,
-            RholangNode::Var { .. } => 28,
-            RholangNode::NameDecl { .. } => 29,
-            RholangNode::Decl { .. } => 30,
-            RholangNode::LinearBind { .. } => 31,
-            RholangNode::RepeatedBind { .. } => 32,
-            RholangNode::PeekBind { .. } => 33,
-            RholangNode::Comment { .. } => 34,
-            RholangNode::Wildcard { .. } => 35,
-            RholangNode::SimpleType { .. } => 36,
-            RholangNode::ReceiveSendSource { .. } => 37,
-            RholangNode::SendReceiveSource { .. } => 38,
-            RholangNode::Error { .. } => 39,
-            RholangNode::Disjunction { .. } => 40,
-            RholangNode::Conjunction { .. } => 41,
-            RholangNode::Negation { .. } => 42,
-            RholangNode::Unit { .. } => 43,
+            RholangNode::Pathmap { .. } => 26,
+            RholangNode::Map { .. } => 27,
+            RholangNode::Tuple { .. } => 28,
+            RholangNode::Var { .. } => 29,
+            RholangNode::NameDecl { .. } => 30,
+            RholangNode::Decl { .. } => 31,
+            RholangNode::LinearBind { .. } => 32,
+            RholangNode::RepeatedBind { .. } => 33,
+            RholangNode::PeekBind { .. } => 34,
+            RholangNode::Comment { .. } => 35,
+            RholangNode::Wildcard { .. } => 36,
+            RholangNode::SimpleType { .. } => 37,
+            RholangNode::ReceiveSendSource { .. } => 38,
+            RholangNode::SendReceiveSource { .. } => 39,
+            RholangNode::Error { .. } => 40,
+            RholangNode::Disjunction { .. } => 41,
+            RholangNode::Conjunction { .. } => 42,
+            RholangNode::Negation { .. } => 43,
+            RholangNode::Unit { .. } => 44,
         }
     }
 
@@ -2301,6 +2326,7 @@ impl super::super::semantic_node::SemanticNode for RholangNode {
             RholangNode::Nil { base, .. } => base,
             RholangNode::List { base, .. } => base,
             RholangNode::Set { base, .. } => base,
+            RholangNode::Pathmap { base, .. } => base,
             RholangNode::Map { base, .. } => base,
             RholangNode::Tuple { base, .. } => base,
             RholangNode::Var { base, .. } => base,
@@ -2350,6 +2376,7 @@ impl super::super::semantic_node::SemanticNode for RholangNode {
             RholangNode::Nil { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
             RholangNode::List { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
             RholangNode::Set { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
+            RholangNode::Pathmap { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
             RholangNode::Map { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
             RholangNode::Tuple { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
             RholangNode::Var { metadata, .. } => metadata.as_ref().map(|m| m.as_ref()),
@@ -2399,7 +2426,7 @@ impl super::super::semantic_node::SemanticNode for RholangNode {
             RholangNode::BoolLiteral { .. } | RholangNode::LongLiteral { .. }
             | RholangNode::StringLiteral { .. } | RholangNode::UriLiteral { .. } => SemanticCategory::Literal,
             RholangNode::Nil { .. } | RholangNode::Wildcard { .. } | RholangNode::Unit { .. } => SemanticCategory::Literal,
-            RholangNode::List { .. } | RholangNode::Set { .. } | RholangNode::Map { .. } | RholangNode::Tuple { .. } => SemanticCategory::Collection,
+            RholangNode::List { .. } | RholangNode::Set { .. } | RholangNode::Pathmap { .. } | RholangNode::Map { .. } | RholangNode::Tuple { .. } => SemanticCategory::Collection,
             RholangNode::NameDecl { .. } | RholangNode::Decl { .. } => SemanticCategory::Binding,
             RholangNode::LinearBind { .. } | RholangNode::RepeatedBind { .. } | RholangNode::PeekBind { .. } => SemanticCategory::Binding,
             RholangNode::Comment { .. } => SemanticCategory::Unknown,
@@ -2441,6 +2468,7 @@ impl super::super::semantic_node::SemanticNode for RholangNode {
             RholangNode::Unit { .. } => "Rholang::Unit",
             RholangNode::List { .. } => "Rholang::List",
             RholangNode::Set { .. } => "Rholang::Set",
+            RholangNode::Pathmap { .. } => "Rholang::Pathmap",
             RholangNode::Map { .. } => "Rholang::Map",
             RholangNode::Tuple { .. } => "Rholang::Tuple",
             RholangNode::NameDecl { .. } => "Rholang::NameDecl",
@@ -2563,6 +2591,7 @@ impl super::super::semantic_node::SemanticNode for RholangNode {
                 }
             }
             RholangNode::Set { elements, .. } => elements.len(),
+            RholangNode::Pathmap { elements, .. } => elements.len(),
             RholangNode::Map { pairs, .. } => pairs.len() * 2, // key + value for each pair
             RholangNode::Tuple { elements, .. } => elements.len(),
 
@@ -2728,6 +2757,9 @@ impl super::super::semantic_node::SemanticNode for RholangNode {
                 }
             }
             RholangNode::Set { elements, .. } => {
+                elements.get(index).map(|e| &**e as &dyn super::super::semantic_node::SemanticNode)
+            }
+            RholangNode::Pathmap { elements, .. } => {
                 elements.get(index).map(|e| &**e as &dyn super::super::semantic_node::SemanticNode)
             }
             RholangNode::Map { pairs, .. } => {

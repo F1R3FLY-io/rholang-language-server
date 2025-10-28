@@ -29,6 +29,14 @@ pub(super) struct DocumentChangeEvent {
     pub(super) text: Arc<String>,
 }
 
+/// Diagnostic update event for debounced publishing
+#[derive(Debug, Clone)]
+pub(super) struct DiagnosticUpdate {
+    pub(super) uri: Url,
+    pub(super) diagnostics: Vec<tower_lsp::lsp_types::Diagnostic>,
+    pub(super) version: Option<i32>,
+}
+
 /// Workspace indexing task for progressive indexing
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(super) struct IndexingTask {
@@ -59,6 +67,17 @@ pub(super) enum WorkspaceChangeType {
     SymbolsLinked,
     /// Workspace initialized
     Initialized,
+}
+
+/// Event broadcast when diagnostics are published for a document
+#[derive(Debug, Clone)]
+pub struct DiagnosticPublished {
+    /// URI of the document
+    pub uri: Url,
+    /// Version of the document
+    pub version: Option<i32>,
+    /// Number of diagnostics
+    pub diagnostic_count: usize,
 }
 
 /// The Rholang language server backend, managing state and handling LSP requests.
@@ -92,6 +111,15 @@ pub struct RholangBackend {
     /// Hot observable for workspace changes (ReactiveX Phase 2)
     /// Multiple subscribers can watch for workspace state updates
     pub(super) workspace_changes: Arc<tokio::sync::watch::Sender<WorkspaceChangeEvent>>,
+    /// Broadcast channel for diagnostic completion events
+    /// Tests can subscribe to this to know when diagnostics have been published for a document
+    pub(super) diagnostics_published: Arc<tokio::sync::broadcast::Sender<DiagnosticPublished>>,
+    /// Channel to request debounced symbol linking
+    /// Sending to this channel queues a link_symbols request, which will be batched
+    pub(super) link_symbols_tx: tokio::sync::mpsc::Sender<()>,
+    /// Channel to request debounced diagnostic publishing
+    /// Sending diagnostics to this channel batches them before publishing to the client
+    pub(super) diagnostics_tx: tokio::sync::mpsc::Sender<DiagnosticUpdate>,
 }
 
 // Manual Debug implementation since DiagnosticProvider doesn't implement Debug

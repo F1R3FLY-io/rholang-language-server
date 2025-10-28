@@ -63,11 +63,15 @@ trait JoinHandleExt {
 impl JoinHandleExt for JoinHandle<()> {
     fn join_timeout(self, timeout: Duration) -> Result<(), Box<dyn std::any::Any + Send>> {
         let start = Instant::now();
+        // Use exponential backoff for more responsive joins (necessary - no event-driven alternative)
+        let mut wait_time = Duration::from_millis(1);
         while start.elapsed() < timeout {
             if self.is_finished() {
                 return self.join();
             }
-            thread::sleep(Duration::from_millis(100));
+            thread::sleep(wait_time);
+            // Exponential backoff: 1ms, 2ms, 4ms, 8ms, ... up to 50ms
+            wait_time = (wait_time * 2).min(Duration::from_millis(50));
         }
         Err(Box::new("Thread join timeout"))
     }
@@ -172,8 +176,31 @@ impl LspClient {
                         .stderr(Stdio::piped())
                         .spawn()?;
                     let logger = Box::new(server.stderr.take().expect("Failed to open server stderr")) as Box<dyn LspStream>;
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    let stream = TcpStream::connect(format!("127.0.0.1:{}", port)).await?;
+
+                    // Retry connection with exponential backoff (necessary - waiting for server to bind port)
+                    let stream = {
+                        let mut wait_time = Duration::from_millis(10);
+                        let max_attempts = 10;
+                        let mut result = None;
+
+                        for attempt in 0..max_attempts {
+                            match TcpStream::connect(format!("127.0.0.1:{}", port)).await {
+                                Ok(s) => {
+                                    result = Some(Ok(s));
+                                    break;
+                                }
+                                Err(e) => {
+                                    result = Some(Err(e));
+                                    if attempt < max_attempts - 1 {
+                                        tokio::time::sleep(wait_time).await;
+                                        wait_time = (wait_time * 2).min(Duration::from_millis(100));
+                                    }
+                                }
+                            }
+                        }
+
+                        result.unwrap()?
+                    };
                     stream.set_nodelay(true)?;
                     let (read_half, write_half) = split(stream);
                     let write_stream = Arc::new(Mutex::new(write_half));
@@ -567,7 +594,7 @@ impl LspClient {
                     debug!("Terminated server process successfully");
                 }
             }
-            // Wait briefly to allow server to start terminating
+            // Wait briefly to allow server to start terminating gracefully
             thread::sleep(Duration::from_millis(200));
         }
 
@@ -576,15 +603,18 @@ impl LspClient {
             if server.try_wait()?.is_none() {
                 debug!("Server process still running, attempting to kill");
                 server.kill()?;
-                // Poll for server to exit with timeout
+                // Poll for server to exit with exponential backoff (necessary - no event-driven alternative for process termination)
                 let start = Instant::now();
                 let timeout = Duration::from_secs(2);
+                let mut wait_time = Duration::from_millis(10);
                 while start.elapsed() < timeout {
                     if server.try_wait()?.is_some() {
                         debug!("Server process terminated successfully");
                         break;
                     }
-                    thread::sleep(Duration::from_millis(100));
+                    thread::sleep(wait_time);
+                    // Exponential backoff: 10ms, 20ms, 40ms, 80ms, 100ms (capped)
+                    wait_time = (wait_time * 2).min(Duration::from_millis(100));
                 }
                 if server.try_wait()?.is_none() {
                     error!("Server did not terminate after kill within 2 seconds");

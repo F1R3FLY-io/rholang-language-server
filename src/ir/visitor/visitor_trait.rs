@@ -50,6 +50,7 @@ pub trait Visitor {
             RholangNode::Nil { base, metadata } => self.visit_nil(node, base, metadata),
             RholangNode::List { base, elements, remainder, metadata } => self.visit_list(node, base, elements, remainder, metadata),
             RholangNode::Set { base, elements, remainder, metadata } => self.visit_set(node, base, elements, remainder, metadata),
+            RholangNode::Pathmap { base, elements, remainder, metadata } => self.visit_set(node, base, elements, remainder, metadata),
             RholangNode::Map { base, pairs, remainder, metadata } => self.visit_map(node, base, pairs, remainder, metadata),
             RholangNode::Tuple { base, elements, metadata } => self.visit_tuple(node, base, elements, metadata),
             RholangNode::Var { base, name, metadata } => self.visit_var(node, base, name, metadata),

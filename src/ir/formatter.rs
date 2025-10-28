@@ -244,6 +244,11 @@ fn format_node_helper(node: &Arc<RholangNode>, level: usize, indent_size: usize,
             let remainder_str = remainder.as_ref().map(|r| format!("...{}", format_node_helper(r, level, indent_size, rope, root))).unwrap_or_default();
             format!("{{{}{}}}", pairs_str, if remainder.is_some() { format!(",{}", remainder_str) } else { String::new() })
         }
+        RholangNode::Pathmap { elements, remainder, .. } => {
+            let elements_str = elements.iter().map(|e| format_node_helper(e, level, indent_size, rope, root)).collect::<Vec<_>>().join(", ");
+            let remainder_str = remainder.as_ref().map(|r| format!("...{}", format_node_helper(r, level, indent_size, rope, root))).unwrap_or_default();
+            format!("{{| {}{}|}}", elements_str, if remainder.is_some() { format!(",{}", remainder_str) } else { String::new() })
+        }
         RholangNode::Tuple { elements, .. } => {
             let elements_str = elements.iter().map(|e| format_node_helper(e, level, indent_size, rope, root)).collect::<Vec<_>>().join(", ");
             format!("({})", elements_str)

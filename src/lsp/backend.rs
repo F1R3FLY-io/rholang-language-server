@@ -117,8 +117,11 @@ impl RholangBackend {
         let (tx, rx) = std::sync::mpsc::channel();
 
         // Create reactive channels
-        let (doc_change_tx, doc_change_rx) = tokio::sync::mpsc::channel::<DocumentChangeEvent>(100);
-        let (indexing_tx, indexing_rx) = tokio::sync::mpsc::channel::<IndexingTask>(100);
+        // Much larger buffers to handle concurrent test load (343 tests * multiple requests each)
+        let (doc_change_tx, doc_change_rx) = tokio::sync::mpsc::channel::<DocumentChangeEvent>(500);
+        let (indexing_tx, indexing_rx) = tokio::sync::mpsc::channel::<IndexingTask>(500);
+        let (link_symbols_tx, link_symbols_rx) = tokio::sync::mpsc::channel::<()>(5000);
+        let (diagnostics_tx, diagnostics_rx) = tokio::sync::mpsc::channel::<state::DiagnosticUpdate>(5000);
         let validation_cancel = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
 
@@ -128,6 +131,10 @@ impl RholangBackend {
             symbol_count: 0,
             change_type: WorkspaceChangeType::Initialized,
         });
+
+        // Create broadcast channel for diagnostic completion events
+        // Large buffer to handle concurrent tests - each test waits for diagnostics
+        let (diagnostics_published_tx, _) = tokio::sync::broadcast::channel::<state::DiagnosticPublished>(1000);
 
         let backend = Self {
             client: client.clone(),
@@ -158,6 +165,9 @@ impl RholangBackend {
             shutdown_tx: Arc::new(shutdown_tx),
             virtual_docs: Arc::new(RwLock::new(VirtualDocumentRegistry::new())),
             workspace_changes: Arc::new(workspace_tx),
+            diagnostics_published: Arc::new(diagnostics_published_tx),
+            link_symbols_tx: link_symbols_tx.clone(),
+            diagnostics_tx: diagnostics_tx.clone(),
         };
 
         // Spawn reactive document change debouncer
@@ -165,6 +175,12 @@ impl RholangBackend {
 
         // Spawn reactive progressive indexer
         Self::spawn_reactive_progressive_indexer(backend.clone(), indexing_rx);
+
+        // Spawn debounced symbol linker
+        Self::spawn_debounced_symbol_linker(backend.clone(), link_symbols_rx);
+
+        // Spawn debounced diagnostics publisher
+        Self::spawn_debounced_diagnostics_publisher(backend.clone(), diagnostics_rx);
 
         Ok(backend)
     }

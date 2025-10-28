@@ -54,9 +54,24 @@ struct ServerConfig {
 
 impl ServerConfig {
     fn from_args() -> io::Result<Self> {
+        // Build detailed version string with metadata using const concatenation
+        // Note: env!() is a compile-time macro - these values are embedded in the binary, not read from runtime environment
+        const VERSION_STR: &str = const_format::concatcp!(
+            env!("CARGO_PKG_VERSION"),
+            "\nBuild: ",
+            env!("BUILD_GIT_HASH"),
+            " (",
+            env!("BUILD_GIT_BRANCH"),
+            env!("BUILD_GIT_DIRTY"),  // Already includes "-dirty" or "" from build.rs
+            ") built at ",
+            env!("BUILD_TIMESTAMP"),
+            "\nBuild ID: ",
+            env!("BUILD_ID")
+        );
+
         #[derive(Parser, Debug)]
         #[command(
-            version = "1.0",
+            version = VERSION_STR,
             about = "Rholang Language Server",
             long_about = "LSP-based language server for Rholang."
         )]
@@ -722,7 +737,17 @@ async fn run_named_pipe_server(
 
 async fn run_server(config: ServerConfig, conn_manager: ConnectionManager) -> io::Result<()> {
     let _log_guard = init_logger(config.no_color, Some(&config.log_level), true)?;
+
+    // Log build metadata for version tracking
+    let git_hash = env!("BUILD_GIT_HASH");
+    let git_branch = env!("BUILD_GIT_BRANCH");
+    let git_dirty = env!("BUILD_GIT_DIRTY");  // Already includes "-dirty" or ""
+    let build_timestamp = env!("BUILD_TIMESTAMP");
+    let build_id = env!("BUILD_ID");
+
     info!("Initializing rholang-language-server with log level {} ...", config.log_level);
+    info!("Build: {} ({}{}) built at {} [build-id: {}]",
+          git_hash, git_branch, git_dirty, build_timestamp, build_id);
 
     let rnode_client_opt: Option<LspClient<tonic::transport::Channel>> = if !config.no_rnode {
         let rnode_endpoint = format!("http://{}:{}", config.rnode_address, config.rnode_port);
@@ -769,12 +794,114 @@ async fn run_server(config: ServerConfig, conn_manager: ConnectionManager) -> io
 }
 
 fn main() -> io::Result<()> {
+    // Install a custom panic hook to capture stack overflow information
+    // This must be done BEFORE any logging is initialized
+    std::panic::set_hook(Box::new(|panic_info| {
+        let thread = std::thread::current();
+        let thread_name = thread.name().unwrap_or("<unnamed>");
+        let thread_id = format!("{:?}", thread.id());
+
+        let payload = panic_info.payload();
+        let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+            *s
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.as_str()
+        } else {
+            "<unknown panic payload>"
+        };
+
+        let location = if let Some(loc) = panic_info.location() {
+            format!("{}:{}:{}", loc.file(), loc.line(), loc.column())
+        } else {
+            "<unknown location>".to_string()
+        };
+
+        // Check if this is a stack overflow
+        let is_stack_overflow = msg.contains("stack overflow")
+            || msg.contains("thread") && msg.contains("has overflowed its stack");
+
+        let panic_type = if is_stack_overflow { "STACK OVERFLOW" } else { "PANIC" };
+
+        // Write to stderr (will be captured by VSCode in Output panel)
+        eprintln!("\n╔══════════════════════════════════════════════════════════════════════");
+        eprintln!("║ {} DETECTED", panic_type);
+        eprintln!("╠══════════════════════════════════════════════════════════════════════");
+        eprintln!("║ Thread Name: {}", thread_name);
+        eprintln!("║ Thread ID:   {}", thread_id);
+        eprintln!("║ Location:    {}", location);
+        eprintln!("║ Message:     {}", msg);
+        eprintln!("╚══════════════════════════════════════════════════════════════════════\n");
+
+        // Also write to a panic log file directly (bypasses tracing system)
+        if let Some(cache_dir) = dirs::cache_dir() {
+            let mut panic_log_path = cache_dir;
+            panic_log_path.push("f1r3fly-io");
+            panic_log_path.push("rholang-language-server");
+
+            // Ensure directory exists
+            let _ = std::fs::create_dir_all(&panic_log_path);
+
+            panic_log_path.push("panic.log");
+
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&panic_log_path)
+            {
+                use std::io::Write;
+                let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f");
+                let _ = writeln!(file, "\n[{}] {} DETECTED", timestamp, panic_type);
+                let _ = writeln!(file, "Thread Name: {}", thread_name);
+                let _ = writeln!(file, "Thread ID:   {}", thread_id);
+                let _ = writeln!(file, "Location:    {}", location);
+                let _ = writeln!(file, "Message:     {}", msg);
+                let _ = writeln!(file, "Process ID:  {}", std::process::id());
+                let _ = file.flush();
+
+                eprintln!("Panic information also written to: {:?}", panic_log_path);
+            }
+        }
+
+        // Print backtrace info
+        if std::env::var("RUST_BACKTRACE").is_ok() {
+            eprintln!("Note: Backtrace follows below\n");
+        } else {
+            eprintln!("Set RUST_BACKTRACE=1 for backtrace\n");
+        }
+    }));
+
     // Build Tokio runtime with larger stack size to handle deeply nested ASTs
-    // Default stack size is often 2MB, we increase to 8MB to prevent stack overflow
-    // when parsing real-world Rholang files with deeply nested structures
+    // Default stack size is often 2MB, we increase it to prevent stack overflow
+    // when parsing real-world Rholang files with deeply nested structures (e.g., robot_planning.rho)
+    //
+    // Stack size rationale:
+    // - Tree-Sitter AST for robot_planning.rho: 2,742 nodes, 80 frames deep
+    // - Debug build stack frames: ~7,000 bytes each (no inlining, bounds checks, debug assertions)
+    // - Release build stack frames: ~350 bytes each (inlining, optimizations)
+    // - Debug mode total: 80 × 7,000 = ~560 KB per recursive pass, ~1-2 MB with transforms
+    // - Release mode total: 80 × 350 = ~27 KB per recursive pass, ~50 KB with transforms
+    //
+    // Different allocations for debug vs release:
+    // Now that rayon is configured with proper stack size, we can use smaller allocations
+    #[cfg(debug_assertions)]
+    const STACK_SIZE: usize = 16 * 1024 * 1024;  // 16MB for debug (8-16x safety margin)
+
+    #[cfg(not(debug_assertions))]
+    const STACK_SIZE: usize = 8 * 1024 * 1024;   // 8MB for release (160x safety margin)
+
+    // Configure Rayon global thread pool with same stack size
+    // Rayon is used for parallel workspace indexing and needs the same stack size
+    // as the main parsing threads to handle deeply nested ASTs
+    rayon::ThreadPoolBuilder::new()
+        .stack_size(STACK_SIZE)
+        .thread_name(|i| format!("rholang-rayon-worker-{}", i))
+        .build_global()
+        .expect("Failed to build rayon thread pool");
+
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
-        .thread_stack_size(8 * 1024 * 1024)  // 8MB stack size
+        .thread_stack_size(STACK_SIZE)
+        .thread_name("rholang-tokio-worker")  // Name threads for easier debugging
         .enable_all()
         .build()?;
 

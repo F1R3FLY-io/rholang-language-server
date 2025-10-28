@@ -49,8 +49,11 @@ with_lsp_client!(test_goto_definition_performance_small_file, CommType::Stdio, |
         .open_document("/path/to/usage.rho", usage_code)
         .expect("Failed to open usage.rho");
 
-    // Wait for indexing to complete
-    std::thread::sleep(Duration::from_millis(100));
+    // Wait for indexing and validation to complete for both documents
+    client.await_diagnostics(&contract_doc)
+        .expect("Failed to wait for contract diagnostics");
+    client.await_diagnostics(&usage_doc)
+        .expect("Failed to wait for usage diagnostics");
 
     // Measure goto-definition performance
     // Position is on "myContract" in usage file (line 1, after "new result in {")
@@ -74,7 +77,7 @@ with_lsp_client!(test_goto_definition_performance_cross_file, CommType::Stdio, |
     let contract_code = "contract myContract(@x) = { stdout!(*x, \"ack\") }";
     let usage_code = "myContract!(42)";
 
-    let _contract_doc = client
+    let contract_doc = client
         .open_document("/path/to/defs.rho", contract_code)
         .expect("Failed to open contract");
 
@@ -82,7 +85,11 @@ with_lsp_client!(test_goto_definition_performance_cross_file, CommType::Stdio, |
         .open_document("/path/to/calls.rho", usage_code)
         .expect("Failed to open usage");
 
-    std::thread::sleep(Duration::from_millis(50));
+    // Wait for indexing and validation to complete for both documents
+    client.await_diagnostics(&contract_doc)
+        .expect("Failed to wait for contract diagnostics");
+    client.await_diagnostics(&usage_doc)
+        .expect("Failed to wait for usage diagnostics");
 
     let start = Instant::now();
     let result = client.definition(&usage_doc.uri(), Position::new(0, 0));
@@ -117,7 +124,9 @@ with_lsp_client!(test_document_highlight_performance, CommType::Stdio, |client: 
         .open_document("/path/to/highlight_test.rho", code)
         .expect("Failed to open document");
 
-    std::thread::sleep(Duration::from_millis(50));
+    // Wait for indexing and validation to complete
+    client.await_diagnostics(&doc)
+        .expect("Failed to wait for diagnostics");
 
     // Test document highlight on 'myVar' (line 1, column 4)
     let start = Instant::now();
@@ -164,7 +173,10 @@ with_lsp_client!(test_large_file_performance, CommType::Stdio, |client: &LspClie
         .open_document("/path/to/large.rho", &large_file)
         .expect("Failed to open large file");
 
-    std::thread::sleep(Duration::from_millis(200)); // Allow indexing to complete
+    // Wait for diagnostics to ensure indexing and semantic validation are complete
+    // With 101 contracts, semantic validation can take 200-300ms
+    client.await_diagnostics(&doc)
+        .expect("Failed to wait for diagnostics");
 
     // Find goto-definition for targetContract
     let target_line = large_file.lines().position(|l| l.contains("targetContract")).unwrap();
@@ -203,7 +215,9 @@ with_lsp_client!(test_no_quadratic_complexity, CommType::Stdio, |client: &LspCli
             .open_document(&format!("/path/to/test{}.rho", size), &code)
             .expect("Failed to open document");
 
-        std::thread::sleep(Duration::from_millis(100));
+        // Wait for indexing and validation to complete
+        client.await_diagnostics(&doc)
+            .expect("Failed to wait for diagnostics");
 
         let start = Instant::now();
         let _ = client.definition(&doc.uri(), Position::new(0, 4)); // Check first variable

@@ -20,6 +20,28 @@ use crate::ir::symbol_table::{Symbol, SymbolTable, SymbolType};
 use super::state::{RholangBackend, WorkspaceChangeEvent, WorkspaceChangeType};
 
 impl RholangBackend {
+    /// Checks if symbol linking might be needed (stale global symbols).
+    ///
+    /// Returns true if:
+    /// - There are documents in workspace but no global symbols
+    ///
+    /// This is used to eagerly trigger symbol linking for critical operations
+    /// like rename, goto-definition, and references to avoid race conditions
+    /// with the debounced symbol linker.
+    pub(crate) async fn needs_symbol_linking(&self) -> bool {
+        let workspace = self.workspace.read().await;
+        let doc_count = workspace.documents.len();
+        let symbol_count = workspace.global_symbols.len();
+
+        // If we have documents but no global symbols, we definitely need linking
+        // This handles the race condition where documents are indexed but
+        // the debounced symbol linker hasn't run yet
+        let needs_linking = doc_count > 0 && symbol_count == 0;
+        debug!("needs_symbol_linking: doc_count={}, symbol_count={}, needs={}",
+               doc_count, symbol_count, needs_linking);
+        needs_linking
+    }
+
     /// Links symbols across all workspace files.
     ///
     /// This function:
@@ -29,25 +51,31 @@ impl RholangBackend {
     /// 4. Updates the global inverted index for cross-file navigation
     /// 5. Broadcasts workspace change event via hot observable
     pub(crate) async fn link_symbols(&self) {
-        // Clone documents first, then release write lock immediately to avoid blocking readers
-        let documents = {
+        // Clone both documents and global_table in a single read lock acquisition
+        let (documents, global_table) = {
             let workspace = self.workspace.read().await;
-            workspace.documents.clone()
+            (workspace.documents.clone(), workspace.global_table.clone())
         };
 
-        // Collect all contract symbols (without holding any lock)
+        // Collect all global contract symbols from workspace.global_table
+        // The global_table was populated during indexing by SymbolTableBuilder,
+        // which only inserts top-level contracts (is_top_level check at line 370 of symbol_table_builder.rs)
         let mut global_symbols = HashMap::new();
-        for (_uri, doc) in &documents {
-            for symbol in doc.symbol_table.collect_all_symbols() {
-                if matches!(symbol.symbol_type, SymbolType::Contract) {
-                    global_symbols.insert(
-                        symbol.name.clone(),
-                        (symbol.declaration_uri.clone(), symbol.declaration_location),
-                    );
-                }
+
+        // Get all contract symbols from the global table
+        for (name, symbol) in global_table.symbols.read().unwrap().iter() {
+            if matches!(symbol.symbol_type, crate::ir::symbol_table::SymbolType::Contract) {
+                debug!("link_symbols: Adding global contract '{}' from {} at {:?}",
+                       name, symbol.declaration_uri, symbol.declaration_location);
+                global_symbols.insert(
+                    name.clone(),
+                    (symbol.declaration_uri.clone(), symbol.declaration_location),
+                );
             }
         }
+        debug!("link_symbols: Collected {} global contract symbols from global_table", global_symbols.len());
 
+        debug!("link_symbols: Processing {} documents", documents.len());
         info!("Linked symbols across {} files", documents.len());
 
         // Resolve potential global references (without holding any lock)
@@ -189,6 +217,28 @@ impl RholangBackend {
             RholangNode::Quote { quotable, .. } => {
                 self.handle_quote_symbol(uri, position, quotable, byte_offset)
                     .await
+            }
+            RholangNode::Block { proc, .. } | RholangNode::Parenthesized { expr: proc, .. } => {
+                // Block and Parenthesized are just wrappers, handle the inner expression
+                debug!("Block/Parenthesized node encountered, checking inner expression");
+                match &**proc {
+                    RholangNode::Var { name, .. } => {
+                        self.handle_var_symbol(uri, position, name, &path, &symbol_table)
+                            .await
+                    }
+                    RholangNode::Contract { name, .. } => {
+                        self.handle_contract_symbol(uri, position, name).await
+                    }
+                    RholangNode::Send { channel, .. } | RholangNode::SendSync { channel, .. } => {
+                        self.handle_send_symbol(uri, position, channel, byte_offset)
+                            .await
+                    }
+                    RholangNode::Quote { quotable, .. } => {
+                        self.handle_quote_symbol(uri, position, quotable, byte_offset)
+                            .await
+                    }
+                    _ => None,
+                }
             }
             _ => None,
         }

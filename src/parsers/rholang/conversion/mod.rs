@@ -726,6 +726,27 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             let node = Arc::new(RholangNode::Map { base, pairs, remainder, metadata });
             (node, absolute_end)
         }
+        "pathmap" => {
+            let mut current_prev_end = absolute_start;
+            let elements = ts_node.named_children(&mut ts_node.walk())
+                .filter(|n| n.kind() != "_proc_remainder")
+                .map(|child| {
+                    let (node, end) = convert_ts_node_to_ir(child, rope, current_prev_end);
+                    current_prev_end = end;
+                    node
+                })
+                .collect::<Vector<_, ArcK>>();
+            let remainder = ts_node.children(&mut ts_node.walk())
+                .find(|n| n.kind() == "_proc_remainder")
+                .map(|rem| {
+                    let rem_ts = rem.child_by_field_name("remainder").expect("ProcRemainder node must have a remainder");
+                    let (rem_node, rem_end) = convert_ts_node_to_ir(rem_ts, rope, current_prev_end);
+                    current_prev_end = rem_end;
+                    rem_node
+                });
+            let node = Arc::new(RholangNode::Pathmap { base, elements, remainder, metadata });
+            (node, absolute_end)
+        }
         "tuple" => {
             let mut current_prev_end = absolute_start;
             let elements = ts_node.named_children(&mut ts_node.walk())

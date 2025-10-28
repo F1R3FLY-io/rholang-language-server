@@ -220,6 +220,7 @@ impl LspClient {
     }
 
     fn await_response(&self, request_id: u64) -> Result<Arc<Value>, String> {
+        // Check if response already available
         {
             let responses_by_id = self.responses_by_id.read().expect("Failed to acquire read lock on responses_by_id");
             if let Some(response) = responses_by_id.get(&request_id) {
@@ -230,23 +231,45 @@ impl LspClient {
         let timeout = Duration::from_secs(30);
         let start = Instant::now();
 
-        while start.elapsed() < timeout {
-            if let Ok(message) = self.receiver.lock().expect("Failed to lock receiver").recv_timeout(Duration::from_millis(100)) {
-                debug!("Processing message: {:?}", message);
-                if let Err(e) = self.dispatch(message) {
-                    return Err(format!("Failed to dispatch message: {}", e));
+        // Process messages until we find the response or timeout
+        loop {
+            // Check timeout before waiting
+            if start.elapsed() >= timeout {
+                return Err(format!("Timeout waiting for response with id {}", request_id));
+            }
+
+            // Calculate remaining time
+            let remaining = timeout.saturating_sub(start.elapsed());
+            let wait_duration = remaining.min(Duration::from_millis(50)); // Check every 50ms max
+
+            // Try to receive a message with a short timeout
+            match self.receiver.lock().expect("Failed to lock receiver").recv_timeout(wait_duration) {
+                Ok(message) => {
+                    debug!("Processing message: {:?}", message);
+                    // Process the message
+                    if let Err(e) = self.dispatch(message) {
+                        return Err(format!("Failed to dispatch message: {}", e));
+                    }
+
+                    // Check if we got the response we're waiting for
+                    let responses_by_id = self.responses_by_id.read().expect("Failed to acquire read lock on responses_by_id");
+                    if let Some(response) = responses_by_id.get(&request_id) {
+                        return Ok(response.clone());
+                    }
                 }
-                let responses_by_id = self.responses_by_id.read().expect("Failed to acquire read lock on responses_by_id");
-                if let Some(response) = responses_by_id.get(&request_id) {
-                    return Ok(response.clone());
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // Timeout on recv - loop back to check overall timeout
+                    continue;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("LSP server disconnected while waiting for response".to_string());
                 }
             }
         }
-
-        Err(format!("Timeout waiting for response with id {}", request_id))
     }
 
     pub fn await_diagnostics(&self, doc: &LspDocument) -> Result<Arc<PublishDiagnosticsParams>, String> {
+        // Check if diagnostics already available
         {
             let diagnostics_by_id = self.diagnostics_by_id.read().expect("Failed to acquire read lock on diagnostics_by_id");
             if let Some(diagnostics) = diagnostics_by_id.get(&doc.id) {
@@ -261,23 +284,45 @@ impl LspClient {
         let timeout = Duration::from_secs(10);
         let start = Instant::now();
 
-        while start.elapsed() < timeout {
-            if let Ok(message) = self.receiver.lock().expect("Failed to lock receiver").recv_timeout(Duration::from_millis(100)) {
-                if let Err(e) = self.dispatch(message) {
-                    return Err(format!("Failed to dispatch message: {}", e));
-                }
-                let diagnostics_by_id = self.diagnostics_by_id.read().expect("Failed to acquire read lock on diagnostics_by_id");
-                if let Some(diagnostics) = diagnostics_by_id.get(&doc.id) {
-                    if let Some(version) = diagnostics.version {
-                        if version == doc.version.load(Ordering::Relaxed) {
-                            return Ok(diagnostics.clone());
+        // Process messages until we find the diagnostic or timeout
+        // Use shorter recv_timeout to check for timeout periodically while remaining responsive
+        loop {
+            // Check timeout before waiting
+            if start.elapsed() >= timeout {
+                return Err(format!("Timeout waiting for diagnostics for document with URI: {}", doc.uri()));
+            }
+
+            // Calculate remaining time
+            let remaining = timeout.saturating_sub(start.elapsed());
+            let wait_duration = remaining.min(Duration::from_millis(50)); // Check every 50ms max
+
+            // Try to receive a message with a short timeout
+            match self.receiver.lock().expect("Failed to lock receiver").recv_timeout(wait_duration) {
+                Ok(message) => {
+                    // Process the message
+                    if let Err(e) = self.dispatch(message) {
+                        return Err(format!("Failed to dispatch message: {}", e));
+                    }
+
+                    // Check if we got the diagnostics we're waiting for
+                    let diagnostics_by_id = self.diagnostics_by_id.read().expect("Failed to acquire read lock on diagnostics_by_id");
+                    if let Some(diagnostics) = diagnostics_by_id.get(&doc.id) {
+                        if let Some(version) = diagnostics.version {
+                            if version == doc.version.load(Ordering::Relaxed) {
+                                return Ok(diagnostics.clone());
+                            }
                         }
                     }
                 }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // Timeout on recv - loop back to check overall timeout
+                    continue;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("LSP server disconnected while waiting for diagnostics".to_string());
+                }
             }
         }
-
-        Err(format!("Timeout waiting for diagnostics for document with URI: {}", doc.uri()))
     }
 
     pub fn initialize(&self) -> Result<Arc<Value>, String> {

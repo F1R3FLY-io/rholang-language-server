@@ -212,6 +212,13 @@ pub enum RholangNode {
         remainder: Option<Arc<RholangNode>>,
         metadata: Option<Arc<Metadata>>,
     },
+    /// Pathmap collection (e.g., {| proc1, proc2 |}).
+    Pathmap {
+        base: NodeBase,
+        elements: RholangNodeVector,
+        remainder: Option<Arc<RholangNode>>,
+        metadata: Option<Arc<Metadata>>,
+    },
     /// Tuple collection (e.g., (1, 2)).
     Tuple {
         base: NodeBase,

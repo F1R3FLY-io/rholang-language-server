@@ -71,20 +71,18 @@ fn cleanup_old_logs(log_dir: &PathBuf) -> io::Result<()> {
 /// * `no_color` - Disable ANSI colors in stderr output
 /// * `log_level` - Override log level (otherwise uses RUST_LOG or defaults to "debug")
 /// * `enable_file_logging` - Enable file logging to temp directory (disable for tests)
+///
+/// # Logging Behavior
+/// - **Stderr**: Only logs at the configured level (from --log-level, RUST_LOG, or default "debug")
+/// - **File**: Logs at DEBUG level by default
 pub fn init_logger(no_color: bool, log_level: Option<&str>, enable_file_logging: bool) -> io::Result<WorkerGuard> {
     let timer = fmt::time::OffsetTime::new(
         UtcOffset::UTC,
         format_description!("[[[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z]"),
     );
 
-    // Log to stderr
-    let stderr_layer = fmt::layer()
-        .with_writer(std::io::stderr)
-        .with_timer(timer.clone())
-        .with_ansi(!no_color);
-
-    // Configure the log level based on whether --log-level was provided
-    let env_filter = match log_level {
+    // Configure the stderr log level based on whether --log-level was provided
+    let stderr_filter = match log_level {
         Some(level) => {
             // If --log-level is provided, use it directly
             tracing_subscriber::EnvFilter::new(level)
@@ -95,6 +93,16 @@ pub fn init_logger(no_color: bool, log_level: Option<&str>, enable_file_logging:
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug"))
         }
     };
+
+    // Log to stderr with the configured filter level
+    let stderr_layer = fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_timer(timer.clone())
+        .with_ansi(!no_color)
+        .with_filter(stderr_filter);
+
+    // File logs at DEBUG level by default
+    let file_filter = tracing_subscriber::EnvFilter::new("debug");
 
     // Conditionally enable file logging
     if enable_file_logging {
@@ -122,11 +130,12 @@ pub fn init_logger(no_color: bool, log_level: Option<&str>, enable_file_logging:
         let file_layer = fmt::layer()
             .with_writer(non_blocking)
             .with_timer(timer)
-            .with_ansi(false); // No ANSI colors in file
+            .with_ansi(false) // No ANSI colors in file
+            .with_filter(file_filter);
 
         // Combine the layers using a registry
+        // Note: Each layer has its own filter, so no global filter needed
         let result = tracing_subscriber::registry()
-            .with(env_filter)
             .with(stderr_layer)
             .with(file_layer)
             .try_init();
@@ -152,8 +161,8 @@ pub fn init_logger(no_color: bool, log_level: Option<&str>, enable_file_logging:
         let (_, guard) = tracing_appender::non_blocking(std::io::sink());
 
         // Combine the layers using a registry (stderr only)
+        // Note: stderr_layer already has its own filter
         let result = tracing_subscriber::registry()
-            .with(env_filter)
             .with(stderr_layer)
             .try_init();
 

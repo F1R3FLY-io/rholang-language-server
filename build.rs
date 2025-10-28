@@ -9,6 +9,82 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Ensure tree-sitter grammar is regenerated with named comments for LSP use
     ensure_rholang_parser_with_named_comments()?;
 
+    // Embed build metadata for version tracking
+    embed_build_metadata()?;
+
+    Ok(())
+}
+
+fn embed_build_metadata() -> Result<(), Box<dyn std::error::Error>> {
+    // Get git commit hash
+    let git_hash = Command::new("git")
+        .args(&["rev-parse", "--short=8", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|output| {
+            if output.status.success() {
+                String::from_utf8(output.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+        .trim()
+        .to_string();
+
+    // Get git branch
+    let git_branch = Command::new("git")
+        .args(&["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|output| {
+            if output.status.success() {
+                String::from_utf8(output.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+        .trim()
+        .to_string();
+
+    // Check if working directory is dirty
+    let git_dirty = Command::new("git")
+        .args(&["status", "--porcelain"])
+        .output()
+        .ok()
+        .map(|output| !output.stdout.is_empty())
+        .unwrap_or(false);
+
+    // Get build timestamp
+    let build_timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
+
+    // Generate a unique build ID (first 8 chars of hash of timestamp + git hash)
+    let build_id = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        format!("{}{}", build_timestamp, git_hash).hash(&mut hasher);
+        format!("{:08x}", hasher.finish() & 0xFFFFFFFF)
+    };
+
+    // Export as environment variables for the compiler
+    println!("cargo:rustc-env=BUILD_GIT_HASH={}", git_hash);
+    println!("cargo:rustc-env=BUILD_GIT_BRANCH={}", git_branch);
+    println!("cargo:rustc-env=BUILD_GIT_DIRTY={}", if git_dirty { "-dirty" } else { "" });
+    println!("cargo:rustc-env=BUILD_TIMESTAMP={}", build_timestamp);
+    println!("cargo:rustc-env=BUILD_ID={}", build_id);
+
+    // Rerun if git state changes
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/index");
+
+    println!("cargo:warning=Build metadata: {} ({}{}) [{}]",
+             git_hash,
+             git_branch,
+             if git_dirty { "-dirty" } else { "" },
+             build_id);
+
     Ok(())
 }
 

@@ -11,7 +11,7 @@ use futures::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, info, trace};
 
-use super::state::{DocumentChangeEvent, IndexingTask, RholangBackend};
+use super::state::{DiagnosticUpdate, DocumentChangeEvent, IndexingTask, RholangBackend};
 use super::streams::{self, BackendEvent, StreamExt as CustomStreamExt};
 
 impl RholangBackend {
@@ -346,6 +346,144 @@ impl RholangBackend {
             }
 
             info!("Unified event pipeline task terminated");
+        });
+    }
+
+    /// Spawns a debounced symbol linker task
+    ///
+    /// This function creates a background task that listens for symbol linking requests
+    /// and batches them to reduce lock contention. Instead of calling link_symbols()
+    /// immediately for each file update, requests are batched with a 50ms timeout window.
+    ///
+    /// Benefits:
+    /// - Reduces workspace write lock acquisitions from O(n) to O(1) per batch
+    /// - Improves indexing throughput during workspace initialization
+    /// - Safe: All link requests are eventually processed, none are dropped
+    pub(super) fn spawn_debounced_symbol_linker(
+        backend: RholangBackend,
+        link_symbols_rx: tokio::sync::mpsc::Receiver<()>,
+    ) {
+        let mut shutdown_rx = backend.shutdown_tx.subscribe();
+
+        tokio::spawn(async move {
+            // Create stream from receiver
+            let link_stream = ReceiverStream::new(link_symbols_rx);
+
+            // Apply reactive operators with batching
+            let mut reactive_stream = Box::pin(
+                link_stream
+                    // Batch link requests with 50ms timeout window
+                    .chunk_timeout(100, Duration::from_millis(50))
+                    // Take until shutdown
+                    .take_until(async move {
+                        let _ = shutdown_rx.recv().await;
+                        info!("Debounced symbol linker received shutdown signal");
+                    })
+            );
+
+            // Process batches
+            while let Some(batch) = reactive_stream.next().await {
+                let batch_size = batch.len();
+                trace!("Symbol linking batch: {} requests collapsed into 1 call", batch_size);
+
+                // Execute single link_symbols call for entire batch
+                backend.link_symbols().await;
+
+                debug!("Completed symbol linking for batch of {} requests", batch_size);
+            }
+
+            info!("Debounced symbol linker task terminated");
+        });
+    }
+
+    /// Spawns a debounced diagnostics publisher task
+    ///
+    /// This function creates a background task that batches diagnostic updates before
+    /// publishing them to the LSP client. This reduces LSP protocol overhead and
+    /// prevents UI flicker during rapid typing.
+    ///
+    /// Features:
+    /// - Batches diagnostics with 150ms timeout window
+    /// - Deduplicates: keeps only the latest diagnostics per URI
+    /// - Version checking: only publishes if document version matches
+    /// - Safe: All diagnostic updates are eventually published, none are dropped
+    pub(super) fn spawn_debounced_diagnostics_publisher(
+        backend: RholangBackend,
+        diagnostics_rx: tokio::sync::mpsc::Receiver<DiagnosticUpdate>,
+    ) {
+        let mut shutdown_rx = backend.shutdown_tx.subscribe();
+
+        tokio::spawn(async move {
+            use std::collections::HashMap;
+
+            // Create stream from receiver
+            let diagnostics_stream = ReceiverStream::new(diagnostics_rx);
+
+            // Apply reactive operators with batching
+            let mut reactive_stream = Box::pin(
+                diagnostics_stream
+                    // Batch diagnostics with 150ms timeout window
+                    .chunk_timeout(50, Duration::from_millis(150))
+                    // Take until shutdown
+                    .take_until(async move {
+                        let _ = shutdown_rx.recv().await;
+                        info!("Debounced diagnostics publisher received shutdown signal");
+                    })
+            );
+
+            // Process batches
+            while let Some(batch) = reactive_stream.next().await {
+                // Deduplicate: keep only latest diagnostics per URI
+                let mut latest_by_uri: HashMap<tower_lsp::lsp_types::Url, DiagnosticUpdate> =
+                    HashMap::new();
+
+                for update in batch {
+                    // Always keep the latest update for each URI
+                    latest_by_uri
+                        .entry(update.uri.clone())
+                        .and_modify(|existing| {
+                            // Keep the one with higher version, or the newer one if versions are equal
+                            match (existing.version, update.version) {
+                                (Some(existing_ver), Some(new_ver)) if new_ver > existing_ver => {
+                                    *existing = update.clone();
+                                }
+                                (None, Some(_)) => {
+                                    *existing = update.clone();
+                                }
+                                _ => {}
+                            }
+                        })
+                        .or_insert(update);
+                }
+
+                trace!(
+                    "Diagnostics batch: {} updates deduplicated to {} unique URIs",
+                    latest_by_uri.len(),
+                    latest_by_uri.len()
+                );
+
+                // Publish deduplicated diagnostics
+                for (uri, update) in latest_by_uri {
+                    let diagnostic_count = update.diagnostics.len();
+
+                    // Publish diagnostics to client
+                    backend
+                        .client
+                        .publish_diagnostics(uri.clone(), update.diagnostics, update.version)
+                        .await;
+
+                    // Broadcast completion event for tests/subscribers
+                    let _ = backend.diagnostics_published.send(crate::lsp::backend::state::DiagnosticPublished {
+                        uri,
+                        version: update.version,
+                        diagnostic_count,
+                    });
+                }
+
+                debug!("Published diagnostics batch");
+            }
+
+            info!("Debounced diagnostics publisher task terminated");
         });
     }
 }

@@ -342,6 +342,13 @@ impl LanguageServer for RholangBackend {
 
         debug!("Starting rename for {} at {:?} to '{}'", uri, position, new_name);
 
+        // Eagerly ensure symbols are linked before rename operation
+        // This prevents race conditions with the debounced symbol linker
+        if self.needs_symbol_linking().await {
+            debug!("Eagerly linking symbols for rename operation");
+            self.link_symbols().await;
+        }
+
         // Check if position is within a virtual document (embedded language)
         {
             let virtual_docs = self.virtual_docs.read().await;
@@ -691,6 +698,12 @@ impl LanguageServer for RholangBackend {
 
         debug!("goto_declaration request for {} at {:?}", uri, position);
 
+        // Eagerly ensure symbols are linked before goto-declaration operation
+        if self.needs_symbol_linking().await {
+            debug!("Eagerly linking symbols for goto-declaration operation");
+            self.link_symbols().await;
+        }
+
         if let Some(symbol) = self.get_symbol_at_position(&uri, position).await {
             let range = Self::position_to_range(symbol.declaration_location, symbol.name.len());
             let loc = Location { uri: symbol.declaration_uri.clone(), range };
@@ -707,6 +720,12 @@ impl LanguageServer for RholangBackend {
         let include_decl = params.context.include_declaration;
 
         debug!("references request for {} at {:?} (include_decl: {})", uri, lsp_pos, include_decl);
+
+        // Eagerly ensure symbols are linked before references operation
+        if self.needs_symbol_linking().await {
+            debug!("Eagerly linking symbols for references operation");
+            self.link_symbols().await;
+        }
 
         let byte = {
             let workspace = self.workspace.read().await;
@@ -919,6 +938,12 @@ impl LanguageServer for RholangBackend {
         let position = params.text_document_position_params.position;
 
         debug!("documentHighlight at {}:{:?}", uri, position);
+
+        // Eagerly ensure symbols are linked before document highlight operation
+        if self.needs_symbol_linking().await {
+            debug!("Eagerly linking symbols for document highlight operation");
+            self.link_symbols().await;
+        }
 
         // Check if position is within a virtual document (embedded language)
         {

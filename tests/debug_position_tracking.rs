@@ -1265,7 +1265,7 @@ fn find_var_nodes_by_name(
 #[test]
 fn test_hover_querycode_at_byte_8222() {
     std::thread::Builder::new()
-        .stack_size(16 * 1024 * 1024)
+        .stack_size(64 * 1024 * 1024)
         .spawn(|| {
             let full_content = fs::read_to_string("tests/resources/robot_planning.rho")
                 .expect("Failed to read robot_planning.rho");
