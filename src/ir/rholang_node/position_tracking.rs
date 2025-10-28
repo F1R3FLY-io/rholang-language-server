@@ -36,6 +36,9 @@ fn compute_positions_helper(
     let base = node.base();
     let key = &**node as *const RholangNode as usize;
     let relative_start = base.relative_start();
+
+    // Removed debug logging
+
     let start = Position {
         row: (prev_end.row as i32 + relative_start.delta_lines) as usize,
         column: if relative_start.delta_lines == 0 {
@@ -45,7 +48,27 @@ fn compute_positions_helper(
         },
         byte: prev_end.byte + relative_start.delta_bytes,
     };
-    let end = compute_end_position(start, base.span_lines(), base.span_columns(), base.length());
+
+    // Debug: Log ALL nodes up to byte 14850 to find where 2-byte offset is introduced
+    if start.byte <= 14850 {
+        let node_type = match &**node {
+            RholangNode::Input { .. } => "Input".to_string(),
+            RholangNode::LinearBind { .. } => "LinearBind".to_string(),
+            RholangNode::Wildcard { .. } => "Wildcard".to_string(),
+            RholangNode::Var { name, .. } => format!("Var({})", name),
+            RholangNode::Send { .. } => "Send".to_string(),
+            RholangNode::Par { .. } => "Par".to_string(),
+            RholangNode::Block { .. } => "Block".to_string(),
+            RholangNode::New { .. } => "New".to_string(),
+            RholangNode::NameDecl { .. } => "NameDecl".to_string(),
+            _ => format!("{:?}", node).chars().take(15).collect(),
+        };
+        debug!("POS_TRACK [{}]: prev_end={}, delta_bytes={}, COMPUTED start.byte={}",
+               node_type, start.byte - base.delta_bytes(), base.delta_bytes(), start.byte);
+    }
+
+    // Use syntactic_length for reconstruction to include closing delimiters
+    let end = compute_end_position(start, base.span_lines(), base.span_columns(), base.syntactic_length());
 
     // Hot path: Position computation runs during parsing for every node
     // Removed per-node debug logging to avoid excessive log volume
@@ -56,11 +79,30 @@ fn compute_positions_helper(
     // Process children
     match &**node {
         RholangNode::Par { left: Some(left), right: Some(right), .. } => {
+            // Debug: log Par processing around byte 14932
+            if current_prev.byte >= 14900 && current_prev.byte <= 14950 {
+                debug!("Par (left/right): processing left with current_prev.byte={}",
+                       current_prev.byte);
+            }
             current_prev = compute_positions_helper(left, current_prev, positions);
+            if current_prev.byte >= 14900 && current_prev.byte <= 14950 {
+                debug!("Par (left/right): processing right with current_prev.byte={}",
+                       current_prev.byte);
+            }
             current_prev = compute_positions_helper(right, current_prev, positions);
         }
         RholangNode::Par { processes: Some(procs), .. } => {
-            for proc in procs.iter() {
+            for (i, proc) in procs.iter().enumerate() {
+                // Debug: log Par processing around byte 14932
+                if current_prev.byte >= 14900 && current_prev.byte <= 14950 {
+                    let proc_type = match &**proc {
+                        RholangNode::Send { .. } => "Send",
+                        RholangNode::Block { .. } => "Block",
+                        _ => "other",
+                    };
+                    debug!("Par (processes): processing child {} ({}) with current_prev.byte={}",
+                           i, proc_type, current_prev.byte);
+                }
                 current_prev = compute_positions_helper(proc, current_prev, positions);
             }
         }
@@ -79,7 +121,8 @@ fn compute_positions_helper(
             send_type_delta,
             ..
         } => {
-            let channel_end = compute_positions_helper(channel, current_prev, positions);
+            // Channel starts at the Send node's start position, not current_prev
+            let channel_end = compute_positions_helper(channel, start, positions);
             let send_type_end = Position {
                 row: (channel_end.row as i32 + send_type_delta.delta_lines) as usize,
                 column: if send_type_delta.delta_lines == 0 {
@@ -89,9 +132,22 @@ fn compute_positions_helper(
                 },
                 byte: channel_end.byte + send_type_delta.delta_bytes,
             };
+            if send_type_end.byte >= 14740 && send_type_end.byte <= 14750 {
+                debug!("Send node: send_type_end.byte={}, send_type_delta.delta_bytes={}",
+                       send_type_end.byte, send_type_delta.delta_bytes);
+            }
             let mut temp_prev = send_type_end;
-            for input in inputs.iter() {
-                temp_prev = compute_positions_helper(input, temp_prev, positions);
+            for (i, input) in inputs.iter().enumerate() {
+                if temp_prev.byte >= 14745 && temp_prev.byte <= 14800 {
+                    debug!("Send node: processing input {} with temp_prev.byte={}",
+                           i, temp_prev.byte);
+                }
+                let input_end = compute_positions_helper(input, temp_prev, positions);
+                if input_end.byte >= 14790 && input_end.byte <= 14810 {
+                    debug!("Send node: input {} ended at byte {}",
+                           i, input_end.byte);
+                }
+                temp_prev = input_end;
             }
             current_prev = temp_prev;
         }
@@ -163,7 +219,18 @@ fn compute_positions_helper(
             current_prev = compute_positions_helper(proc, current_prev, positions);
         }
         RholangNode::Block { proc, .. } => {
+            // Debug: Check Block's end position computation around byte 14850-14900
+            if start.byte >= 14840 && start.byte <= 14910 {
+                debug!("Block: start.byte={}, base.length()={}, computed end.byte={}",
+                       start.byte, base.length(), end.byte);
+                debug!("Block: processing proc child with current_prev.byte={}",
+                       current_prev.byte);
+            }
             current_prev = compute_positions_helper(proc, current_prev, positions);
+            if start.byte >= 14840 && start.byte <= 14910 {
+                debug!("Block: proc_end.byte={}, will return end.byte={}",
+                       current_prev.byte, end.byte);
+            }
         }
         RholangNode::Parenthesized { expr, .. } => {
             current_prev = compute_positions_helper(expr, current_prev, positions);
@@ -328,18 +395,11 @@ fn compute_positions_helper(
         _ => {}
     }
 
-    // Compute the actual end position as the maximum of computed end and last child's end
-    // to handle structural nodes like Par that have no content of their own
-    let actual_end = if current_prev.byte > end.byte {
-        current_prev
-    } else {
-        end
-    };
+    // Simplified position tracking: all nodes now encode correct lengths
+    // No edge cases needed - the invariant node.end = node.start + node.length holds
+    positions.insert(key, (start, end));
 
-    // Insert position with the corrected end
-    positions.insert(key, (start, actual_end));
-
-    actual_end
+    end
 }
 
 /// Computes the absolute end position of a node given its start position, span lines, span columns, and length.

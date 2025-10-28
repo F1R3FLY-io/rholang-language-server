@@ -23,6 +23,45 @@ use super::helpers::{
     is_comment, safe_byte_slice,
 };
 
+/// Creates a NodeBase with correct length based on actual content extent.
+///
+/// This ensures the invariant: `node.end = node.start + node.length` holds.
+///
+/// # Arguments
+/// * `absolute_start` - The absolute start position of the node
+/// * `content_end` - The content end position (last child's end, for semantic operations)
+/// * `syntactic_end` - The syntactic end position (includes closing delimiters, for reconstruction)
+/// * `prev_end` - The previous sibling's end position (for computing deltas)
+fn create_correct_node_base(absolute_start: Position, content_end: Position, syntactic_end: Position, prev_end: Position) -> NodeBase {
+    let delta_lines = absolute_start.row as i32 - prev_end.row as i32;
+    let delta_columns = if delta_lines == 0 {
+        absolute_start.column as i32 - prev_end.column as i32
+    } else {
+        absolute_start.column as i32
+    };
+    let delta_bytes = absolute_start.byte - prev_end.byte;
+
+    let relative_start = RelativePosition {
+        delta_lines,
+        delta_columns,
+        delta_bytes,
+    };
+
+    // Compute dual lengths: content (for semantics) and syntactic (for reconstruction)
+    let content_length = content_end.byte - absolute_start.byte;
+    let syntactic_length = syntactic_end.byte - absolute_start.byte;
+
+    // Span is based on syntactic extent (includes closing delimiters)
+    let span_lines = syntactic_end.row - absolute_start.row;
+    let span_columns = if span_lines == 0 {
+        syntactic_end.column - absolute_start.column
+    } else {
+        syntactic_end.column
+    };
+
+    NodeBase::new(relative_start, content_length, syntactic_length, span_lines, span_columns)
+}
+
 /// Converts Tree-Sitter nodes to IR nodes with accurate relative positions.
 pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Position) -> (Arc<RholangNode>, Position) {
     let absolute_start = Position {
@@ -35,6 +74,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
         column: ts_node.end_position().column,
         byte: ts_node.end_byte(),
     };
+
     let delta_lines = absolute_start.row as i32 - prev_end.row as i32;
     let delta_columns = if delta_lines == 0 {
         absolute_start.column as i32 - prev_end.column as i32
@@ -43,6 +83,15 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
     };
     // The delta_bytes must include bytes for whitespace and newlines to maintain accurate byte offsets.
     let delta_bytes = absolute_start.byte - prev_end.byte;
+
+    // Debug: log Tree-Sitter reported positions for nodes around byte 14738, 14831 (Input), 14880 (New), and 14932
+    if (absolute_start.byte >= 14730 && absolute_start.byte <= 14810) ||
+       (absolute_start.byte >= 14825 && absolute_start.byte <= 14950) {
+        debug!("Tree-Sitter '{}' node: start_byte={}, end_byte={}, length={}, prev_end.byte={}, delta_bytes={}, absolute_start.byte={}",
+               ts_node.kind(), ts_node.start_byte(), ts_node.end_byte(),
+               ts_node.end_byte() - ts_node.start_byte(), prev_end.byte, delta_bytes, absolute_start.byte);
+    }
+
     // Hot path: removed per-node position logging (fires for every AST node during parsing)
     // Use RUST_LOG=trace for detailed position tracking
     let relative_start = RelativePosition {
@@ -61,7 +110,9 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
     } else {
         absolute_end.column
     };
-    let base = NodeBase::new(
+    // Use new_simple() for most nodes - they don't have closing delimiters
+    // Nodes with delimiters (Block, Parenthesized, List, Set, Map, etc.) will override this
+    let base = NodeBase::new_simple(
         relative_start,
         length,
         span_lines,
@@ -99,7 +150,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             } else if all_nodes.len() == 2 {
                 // Exactly 2 top-level processes - use binary Par
                 debug!("source_file: creating binary Par for 2 top-level nodes");
-                let par_base = NodeBase::new(
+                let par_base = NodeBase::new_simple(
                     RelativePosition {
                         delta_lines: 0,
                         delta_columns: 0,
@@ -119,7 +170,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             } else {
                 // More than 2 top-level processes - use n-ary Par (O(1) depth instead of O(n))
                 debug!("source_file: creating n-ary Par for {} top-level nodes", all_nodes.len());
-                let par_base = NodeBase::new(
+                let par_base = NodeBase::new_simple(
                     RelativePosition {
                         delta_lines: 0,
                         delta_columns: 0,
@@ -151,13 +202,28 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             if named_child_count == 2 {
                 // Standard binary Par - use direct children to preserve tree-sitter positions
                 let left_ts = ts_node.named_child(0).expect("Par node must have a left named child");
+                // Debug: Check if Par and its first child have different start positions
+                if absolute_start.byte >= 14930 && absolute_start.byte <= 14950 {
+                    eprintln!("Par node: ts_node.start_byte()={}, absolute_start.byte={}",
+                        ts_node.start_byte(), absolute_start.byte);
+                    eprintln!("Par's left child: left_ts.start_byte()={}", left_ts.start_byte());
+                    eprintln!("Difference: {} bytes", left_ts.start_byte() as i64 - ts_node.start_byte() as i64);
+                }
                 let (left, left_end) = convert_ts_node_to_ir(left_ts, rope, absolute_start);
 
                 let right_ts = ts_node.named_child(1).expect("Par node must have a right named child");
                 let (right, right_end) = convert_ts_node_to_ir(right_ts, rope, left_end);
 
+                // Create corrected base: Par's extent is from its start to right child's end
+                // Par has no closing delimiter, so content and syntactic ends are the same
+                if absolute_start.byte >= 14930 && absolute_start.byte <= 14950 {
+                    eprintln!("Creating Par base: absolute_start.byte={}, prev_end.byte={}, delta={}",
+                        absolute_start.byte, prev_end.byte, absolute_start.byte - prev_end.byte);
+                }
+                let corrected_base = create_correct_node_base(absolute_start, right_end, right_end, prev_end);
+
                 let node = Arc::new(RholangNode::Par {
-                    base,
+                    base: corrected_base,
                     left: Some(left),
                     right: Some(right),
                     processes: None,
@@ -185,24 +251,30 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                     process_children[0].clone()
                 } else if process_children.is_empty() {
                     Arc::new(RholangNode::Nil { base: base.clone(), metadata: metadata.clone() })
-                } else if process_children.len() == 2 {
-                    // After filtering comments, we have exactly 2 children - use the tree-sitter Par base
-                    Arc::new(RholangNode::Par {
-                        base,
-                        left: Some(process_children[0].clone()),
-                        right: Some(process_children[1].clone()),
-                        processes: None,
-                        metadata,
-                    })
                 } else {
-                    // More than 2 children - create n-ary Par (reduces nesting from O(n) to O(1))
-                    Arc::new(RholangNode::Par {
-                        base,
-                        left: None,
-                        right: None,
-                        processes: Some(Vector::from_iter(process_children)),
-                        metadata,
-                    })
+                    // Create corrected base for Par nodes (2 or more children)
+                    // Par has no closing delimiter, so content and syntactic ends are the same
+                    let corrected_base = create_correct_node_base(absolute_start, current_prev_end, current_prev_end, prev_end);
+
+                    if process_children.len() == 2 {
+                        // After filtering comments, we have exactly 2 children
+                        Arc::new(RholangNode::Par {
+                            base: corrected_base,
+                            left: Some(process_children[0].clone()),
+                            right: Some(process_children[1].clone()),
+                            processes: None,
+                            metadata,
+                        })
+                    } else {
+                        // More than 2 children - create n-ary Par (reduces nesting from O(n) to O(1))
+                        Arc::new(RholangNode::Par {
+                            base: corrected_base,
+                            left: None,
+                            right: None,
+                            processes: Some(Vector::from_iter(process_children)),
+                            metadata,
+                        })
+                    }
                 };
                 (result, current_prev_end)
             }
@@ -256,6 +328,13 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
         }
         "send" => {
             let channel_ts = ts_node.child_by_field_name("channel").expect("Send node must have a channel");
+            // Debug: Check if there's a position mismatch between Send and channel
+            if absolute_start.byte >= 14930 && absolute_start.byte <= 14950 {
+                eprintln!("Send node: ts_node.start_byte()={}, absolute_start.byte={}",
+                    ts_node.start_byte(), absolute_start.byte);
+                eprintln!("Channel node: channel_ts.start_byte()={}", channel_ts.start_byte());
+                eprintln!("Difference: {} bytes", channel_ts.start_byte() - ts_node.start_byte());
+            }
             let (channel, channel_end) = convert_ts_node_to_ir(channel_ts, rope, absolute_start);
             let send_type_ts = ts_node.child_by_field_name("send_type").expect("Send node must have a send_type");
             let send_type_abs_end = Position {
@@ -292,22 +371,33 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                     RholangSendType::Single
                 }
             };
+            // Use Tree-Sitter's absolute_end for the syntactic extent (includes closing ')')
+            let send_end = absolute_end;
+
+            // Send has a closing ')' delimiter:
+            // - content_end is after last input (current_prev_end)
+            // - syntactic_end includes the ')' (send_end/absolute_end)
+            let corrected_base = create_correct_node_base(absolute_start, current_prev_end, send_end, prev_end);
+
             let node = Arc::new(RholangNode::Send {
-                base,
+                base: corrected_base,
                 channel,
                 send_type,
                 send_type_delta,
                 inputs,
                 metadata,
             });
-            (node, absolute_end)
+            (node, send_end)
         }
         "new" => {
             let decls_ts = ts_node.child_by_field_name("decls").expect("New node must have decls");
             let (decls, decls_end) = collect_named_descendants(decls_ts, rope, absolute_start);
             let proc_ts = ts_node.child_by_field_name("proc").expect("New node must have a process");
             let (proc, proc_end) = convert_ts_node_to_ir(proc_ts, rope, decls_end);
-            let node = Arc::new(RholangNode::New { base, decls, proc, metadata });
+            // Create corrected base: New's extent is from start to proc's end
+            // New has no closing delimiter, so content and syntactic ends are the same
+            let corrected_base = create_correct_node_base(absolute_start, proc_end, proc_end, prev_end);
+            let node = Arc::new(RholangNode::New { base: corrected_base, decls, proc, metadata });
             (node, proc_end)
         }
         "ifElse" => {
@@ -407,25 +497,59 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             };
             let proc_ts = ts_node.child_by_field_name("proc").expect("Contract node must have a process");
             let (proc, proc_end) = convert_ts_node_to_ir(proc_ts, rope, formals_end);
-            let node = Arc::new(RholangNode::Contract { base, name, formals, formals_remainder, proc, metadata });
+            // Create corrected base: Contract's extent is from start to proc's end
+            // Contract has no closing delimiter, so content and syntactic ends are the same
+            let corrected_base = create_correct_node_base(absolute_start, proc_end, proc_end, prev_end);
+            let node = Arc::new(RholangNode::Contract { base: corrected_base, name, formals, formals_remainder, proc, metadata });
             (node, proc_end)
         }
         "input" => {
             let receipts_ts = ts_node.child_by_field_name("receipts").expect("Input node must have receipts");
+
+            // Debug: log Input/receipts around the problematic New node
+            if absolute_start.byte >= 14825 && absolute_start.byte <= 14840 {
+                debug!("Input node: absolute_start.byte={}, receipts_ts.start_byte()={}, receipts_ts.end_byte()={}",
+                       absolute_start.byte, receipts_ts.start_byte(), receipts_ts.end_byte());
+            }
+
             let mut current_prev_end = absolute_start;
             let receipts = receipts_ts.named_children(&mut receipts_ts.walk())
                 .map(|receipt_node| {
+                    if absolute_start.byte >= 14825 && absolute_start.byte <= 14840 {
+                        debug!("Processing receipt: receipt_node.kind()={}, start={}, end={}, current_prev_end.byte={}",
+                               receipt_node.kind(), receipt_node.start_byte(), receipt_node.end_byte(), current_prev_end.byte);
+                    }
                     let (binds, binds_end) = collect_named_descendants(receipt_node, rope, current_prev_end);
+                    if absolute_start.byte >= 14825 && absolute_start.byte <= 14840 {
+                        debug!("Receipt ended at binds_end.byte={}", binds_end.byte);
+                    }
                     current_prev_end = binds_end;
                     binds
                 })
                 .collect::<Vector<_, ArcK>>();
+
+            if absolute_start.byte >= 14825 && absolute_start.byte <= 14840 {
+                let proc_start = ts_node.child_by_field_name("proc").map(|p| p.start_byte()).unwrap_or(0);
+                debug!("Input passing current_prev_end.byte={} to proc (proc_ts.start_byte()={})",
+                       current_prev_end.byte, proc_start);
+            }
+
             let proc_ts = ts_node.child_by_field_name("proc").expect("Input node must have a process");
             let (proc, proc_end) = convert_ts_node_to_ir(proc_ts, rope, current_prev_end);
-            let node = Arc::new(RholangNode::Input { base, receipts, proc, metadata });
+            // Create corrected base: Input's extent is from start to proc's end
+            // Input has no closing delimiter, so content and syntactic ends are the same
+            let corrected_base = create_correct_node_base(absolute_start, proc_end, proc_end, prev_end);
+            let node = Arc::new(RholangNode::Input { base: corrected_base, receipts, proc, metadata });
             (node, proc_end)
         }
         "block" => {
+            // Debug: Check Block's length computation around byte 14850-14900
+            if absolute_start.byte >= 14840 && absolute_start.byte <= 14910 {
+                debug!("Block node: start_byte={}, end_byte={}, length={}, ts_node.text='{}'",
+                       ts_node.start_byte(), ts_node.end_byte(),
+                       ts_node.end_byte() - ts_node.start_byte(),
+                       ts_node.utf8_text(rope.to_string().as_bytes()).unwrap_or("<error>").chars().take(50).collect::<String>());
+            }
             // A block contains '{', multiple children (including comments), and '}'
             // Collect all named children and reduce them into a Par tree (like source_file)
             let (all_nodes, _nodes_end) = collect_named_descendants(ts_node, rope, absolute_start);
@@ -437,7 +561,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             let proc = if process_nodes.len() == 0 {
                 // Empty block - use Nil
                 Arc::new(RholangNode::Nil {
-                    base: NodeBase::new(
+                    base: NodeBase::new_simple(
                         RelativePosition {
                             delta_lines: 0,
                             delta_columns: 0,
@@ -452,7 +576,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 process_nodes[0].clone()
             } else if process_nodes.len() == 2 {
                 // Exactly 2 children - use binary Par
-                let par_base = NodeBase::new(
+                let par_base = NodeBase::new_simple(
                     RelativePosition {
                         delta_lines: 0,
                         delta_columns: 0,
@@ -471,7 +595,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 })
             } else {
                 // More than 2 children - use n-ary Par (O(1) depth instead of O(n))
-                let par_base = NodeBase::new(
+                let par_base = NodeBase::new_simple(
                     RelativePosition {
                         delta_lines: 0,
                         delta_columns: 0,
@@ -761,6 +885,13 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
         }
         "var" => {
             let name = safe_byte_slice(rope, ts_node.start_byte(), ts_node.end_byte());
+            // Debug: log Tree-Sitter reported positions for variables
+            if name.contains("robot") {
+                debug!("Tree-Sitter 'var' node: name='{}', ts_node.start_byte()={}, ts_node.end_byte()={}, absolute_start.byte={}, absolute_end.byte={}, prev_end.byte={}",
+                       name, ts_node.start_byte(), ts_node.end_byte(), absolute_start.byte, absolute_end.byte, prev_end.byte);
+                debug!("  Relative: delta_lines={}, delta_columns={}, delta_bytes={}",
+                       relative_start.delta_lines, relative_start.delta_columns, relative_start.delta_bytes);
+            }
             let node = Arc::new(RholangNode::Var { base, name, metadata });
             (node, absolute_end)
         }
@@ -773,7 +904,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                     (uri_node, uri_end)
                 });
             let node = Arc::new(RholangNode::NameDecl { base, var, uri: uri.as_ref().map(|(u, _)| u.clone()), metadata });
-            (node, uri.map_or(var_end, |(_, end)| end))
+            (node, absolute_end)  // Return Tree-Sitter's end, not child's end
         }
         "decl" => {
             let names_ts = ts_node.child_by_field_name("names").expect("Decl node must have names");
@@ -791,7 +922,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 (Vector::new_with_ptr_kind(), None, absolute_start)
             };
             if names.is_empty() && remainder.is_none() {
-                let wildcard_base = NodeBase::new(
+                let wildcard_base = NodeBase::new_simple(
                     RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
                     1,
                     0,
@@ -812,7 +943,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 (Vector::new_with_ptr_kind(), None, absolute_start)
             };
             if names.is_empty() && remainder.is_none() {
-                let wildcard_base = NodeBase::new(
+                let wildcard_base = NodeBase::new_simple(
                     RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
                     1,
                     0,
@@ -833,7 +964,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 (Vector::new_with_ptr_kind(), None, absolute_start)
             };
             if names.is_empty() && remainder.is_none() {
-                let wildcard_base = NodeBase::new(
+                let wildcard_base = NodeBase::new_simple(
                     RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
                     1,
                     0,
