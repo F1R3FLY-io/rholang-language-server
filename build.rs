@@ -1,6 +1,8 @@
 use std::process::Command;
 use std::path::Path;
 use std::fs;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_build::compile_protos("proto/repl.proto")?;
@@ -56,12 +58,13 @@ fn embed_build_metadata() -> Result<(), Box<dyn std::error::Error>> {
         .map(|output| !output.stdout.is_empty())
         .unwrap_or(false);
 
-    // Generate stable build ID based on git hash + dirty status
-    // This only changes when code changes, not on every build
+    // Generate build ID based on source code and dependencies
+    // This changes when source files or Cargo.lock changes
+    let source_hash = compute_source_hash();
     let build_id = if git_dirty {
-        format!("{}-dirty", git_hash)
+        format!("{}-{}", git_hash, &source_hash[..8])
     } else {
-        git_hash.clone()
+        format!("{}-{}", git_hash, &source_hash[..8])
     };
 
     // Export as environment variables for the compiler
@@ -193,4 +196,41 @@ fn is_file_newer(file1: &Path, file2: &Path) -> Result<bool, std::io::Error> {
     let metadata1 = fs::metadata(file1)?;
     let metadata2 = fs::metadata(file2)?;
     Ok(metadata1.modified()? > metadata2.modified()?)
+}
+
+fn compute_source_hash() -> String {
+    let mut hasher = DefaultHasher::new();
+
+    // Hash Cargo.lock to detect dependency changes
+    if let Ok(cargo_lock) = fs::read_to_string("Cargo.lock") {
+        cargo_lock.hash(&mut hasher);
+    }
+
+    // Hash Cargo.toml to detect direct dependency changes
+    if let Ok(cargo_toml) = fs::read_to_string("Cargo.toml") {
+        cargo_toml.hash(&mut hasher);
+    }
+
+    // Hash all source files
+    if let Ok(entries) = fs::read_dir("src") {
+        let mut files: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
+            .collect();
+        files.sort_by_key(|e| e.path());
+
+        for entry in files {
+            if let Ok(contents) = fs::read_to_string(entry.path()) {
+                entry.path().to_string_lossy().hash(&mut hasher);
+                contents.hash(&mut hasher);
+            }
+        }
+    }
+
+    // Tell Cargo to rerun when these files change
+    println!("cargo:rerun-if-changed=Cargo.lock");
+    println!("cargo:rerun-if-changed=Cargo.toml");
+    println!("cargo:rerun-if-changed=src");
+
+    format!("{:016x}", hasher.finish())
 }
