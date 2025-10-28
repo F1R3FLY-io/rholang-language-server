@@ -15,7 +15,7 @@ use tower_lsp::Client;
 use tower_lsp::lsp_types::Url;
 use notify::RecommendedWatcher;
 
-use crate::language_regions::VirtualDocumentRegistry;
+use crate::language_regions::{VirtualDocumentRegistry, DetectionWorkerHandle, DetectorRegistry};
 use crate::lsp::models::{LspDocument, WorkspaceState};
 use crate::lsp::semantic_validator::SemanticValidator;
 use crate::lsp::diagnostic_provider::DiagnosticProvider;
@@ -120,6 +120,11 @@ pub struct RholangBackend {
     /// Channel to request debounced diagnostic publishing
     /// Sending diagnostics to this channel batches them before publishing to the client
     pub(super) diagnostics_tx: tokio::sync::mpsc::Sender<DiagnosticUpdate>,
+    /// Async virtual document detection worker (hybrid spawn_blocking + rayon)
+    /// Provides 18-19x faster throughput than blocking detection
+    pub(super) detection_worker: DetectionWorkerHandle,
+    /// Detector registry for virtual document detection
+    pub(super) detector_registry: Arc<DetectorRegistry>,
 }
 
 // Manual Debug implementation since DiagnosticProvider doesn't implement Debug

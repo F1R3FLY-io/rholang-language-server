@@ -41,7 +41,10 @@ use crate::ir::symbol_table::{Symbol, SymbolTable, SymbolType};
 use crate::ir::transforms::symbol_table_builder::{SymbolTableBuilder, InvertedIndex};
 use crate::ir::transforms::symbol_index_builder::SymbolIndexBuilder;
 use crate::ir::transforms::document_symbol_visitor::collect_document_symbols;
-use crate::language_regions::{ChannelFlowAnalyzer, DirectiveParser, SemanticDetector, VirtualDocumentRegistry};
+use crate::language_regions::{
+    ChannelFlowAnalyzer, DirectiveParser, SemanticDetector, VirtualDocumentRegistry,
+    DetectorRegistry, spawn_detection_worker,
+};
 use crate::lsp::models::{CachedDocument, LspDocument, LspDocumentHistory, LspDocumentState, WorkspaceState};
 use crate::lsp::semantic_validator::SemanticValidator;
 use crate::lsp::diagnostic_provider::{BackendConfig, DiagnosticProvider, create_provider};
@@ -136,6 +139,10 @@ impl RholangBackend {
         // Large buffer to handle concurrent tests - each test waits for diagnostics
         let (diagnostics_published_tx, _) = tokio::sync::broadcast::channel::<state::DiagnosticPublished>(1000);
 
+        // Create virtual document detection infrastructure
+        let detector_registry = Arc::new(DetectorRegistry::with_defaults());
+        let detection_worker = spawn_detection_worker(detector_registry.clone());
+
         let backend = Self {
             client: client.clone(),
             documents_by_uri: Arc::new(DashMap::new()),
@@ -168,6 +175,8 @@ impl RholangBackend {
             diagnostics_published: Arc::new(diagnostics_published_tx),
             link_symbols_tx: link_symbols_tx.clone(),
             diagnostics_tx: diagnostics_tx.clone(),
+            detection_worker,
+            detector_registry,
         };
 
         // Spawn reactive document change debouncer
