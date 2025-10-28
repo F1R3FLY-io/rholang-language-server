@@ -103,7 +103,7 @@ pub struct LspClient {
     pub tcp_write_stream: Mutex<Option<Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>>>,
     #[cfg(windows)] pub pipe_write_stream: Mutex<Option<Arc<Mutex<tokio::io::WriteHalf<NamedPipeClient>>>>>,
     #[cfg(unix)] pub unix_write_stream: Mutex<Option<Arc<Mutex<tokio::io::WriteHalf<UnixStream>>>>>,
-    pub websocket_stream: Mutex<Option<Arc<Mutex<futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>>>,
+    pub websocket_stream: Mutex<Option<Arc<Mutex<futures::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>>>,
     pub generated_pipe_path: Mutex<Option<String>>,
     pub comm_type: CommType,
 }

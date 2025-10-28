@@ -119,16 +119,16 @@ impl<T: AsyncWrite + Unpin + Send + 'static> LspStream for AsyncLspWriteStream<T
 }
 
 pub struct WebSocketStreamAdapter {
-    sink: Arc<Mutex<futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>,
-    stream: Arc<Mutex<futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>,
+    sink: Arc<Mutex<futures::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>,
+    stream: Arc<Mutex<futures::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>,
     runtime_handle: tokio::runtime::Handle,
     read_buffer: Vec<u8>,
 }
 
 impl WebSocketStreamAdapter {
     pub fn new(
-        sink: Arc<Mutex<futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>,
-        stream: Arc<Mutex<futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>,
+        sink: Arc<Mutex<futures::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>,
+        stream: Arc<Mutex<futures::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>,
         runtime_handle: tokio::runtime::Handle,
     ) -> Self {
         WebSocketStreamAdapter {
