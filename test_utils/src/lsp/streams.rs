@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{tungstenite::Message, MaybeTlsStream, WebSocketStream};
-use futures_util::{SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt};
 
 use tracing::{error, info, trace};
 

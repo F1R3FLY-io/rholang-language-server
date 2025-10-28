@@ -56,34 +56,24 @@ fn embed_build_metadata() -> Result<(), Box<dyn std::error::Error>> {
         .map(|output| !output.stdout.is_empty())
         .unwrap_or(false);
 
-    // Get build timestamp
-    let build_timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
-
-    // Generate a unique build ID (first 8 chars of hash of timestamp + git hash)
-    let build_id = {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        format!("{}{}", build_timestamp, git_hash).hash(&mut hasher);
-        format!("{:08x}", hasher.finish() & 0xFFFFFFFF)
+    // Generate stable build ID based on git hash + dirty status
+    // This only changes when code changes, not on every build
+    let build_id = if git_dirty {
+        format!("{}-dirty", git_hash)
+    } else {
+        git_hash.clone()
     };
 
     // Export as environment variables for the compiler
     println!("cargo:rustc-env=BUILD_GIT_HASH={}", git_hash);
     println!("cargo:rustc-env=BUILD_GIT_BRANCH={}", git_branch);
     println!("cargo:rustc-env=BUILD_GIT_DIRTY={}", if git_dirty { "-dirty" } else { "" });
-    println!("cargo:rustc-env=BUILD_TIMESTAMP={}", build_timestamp);
     println!("cargo:rustc-env=BUILD_ID={}", build_id);
 
-    // Rerun if git state changes
+    // Only rerun build script if git state actually changes
+    // This prevents unnecessary recompilation from timestamp changes
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/index");
-
-    println!("cargo:warning=Build metadata: {} ({}{}) [{}]",
-             git_hash,
-             git_branch,
-             if git_dirty { "-dirty" } else { "" },
-             build_id);
 
     Ok(())
 }

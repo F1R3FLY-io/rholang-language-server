@@ -8,14 +8,13 @@ license = "Apache-2.0"
 anyhow = "1.0"
 archery = "1.2.1"  # Matches rpds 1.1.1's dependency
 async-trait = "0.1"
-chrono = "0.4"
+chrono = "0.4"  # Used for runtime timestamps in LSP
 clap = { version = "4.5", features = ["derive"] }
-const_format = "0.2"
+const_format = "0.2"  # Used for compile-time string formatting
 dashmap = "6.1"
 dirs = "5.0"
-futures = "0.3"
+futures = "0.3"  # Includes futures-util functionality
 parking_lot = "0.12"
-futures-util = "0.3"
 lsp-types = "0.97"
 mork = { path = "../MORK/kernel", features = ["interning"] }
 mork-expr = { path = "../MORK/expr" }
@@ -61,7 +60,6 @@ rholang = { path = "../f1r3node/rholang", optional = true }
 nix = { version = "0.27", features = ["signal"] }
 
 [dev-dependencies]
-cargo-nextest = "0.9.101"
 indoc = "2"
 quickcheck = "1.0"
 test_utils = { path = "test_utils" }

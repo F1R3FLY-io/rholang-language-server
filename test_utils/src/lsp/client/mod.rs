@@ -23,7 +23,7 @@ use tokio::io::{AsyncWriteExt, split};
 use tokio::net::{TcpStream, UnixStream};
 use tokio::runtime::Handle;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
-use futures_util::{SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt};
 
 use uuid::Uuid;
 

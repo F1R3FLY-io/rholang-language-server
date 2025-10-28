@@ -6,8 +6,8 @@ use std::time::Duration;
 #[cfg(unix)]
 use std::fs;
 
-use futures_util::sink::SinkExt;
-use futures_util::stream::TryStreamExt;
+use futures::sink::SinkExt;
+use futures::stream::TryStreamExt;
 #[allow(unused_imports)]
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, DuplexStream, Stdout};
 use tokio::net::{TcpListener, UnixListener};
@@ -63,9 +63,7 @@ impl ServerConfig {
             " (",
             env!("BUILD_GIT_BRANCH"),
             env!("BUILD_GIT_DIRTY"),  // Already includes "-dirty" or "" from build.rs
-            ") built at ",
-            env!("BUILD_TIMESTAMP"),
-            "\nBuild ID: ",
+            ")\nBuild ID: ",
             env!("BUILD_ID")
         );
 
@@ -742,12 +740,11 @@ async fn run_server(config: ServerConfig, conn_manager: ConnectionManager) -> io
     let git_hash = env!("BUILD_GIT_HASH");
     let git_branch = env!("BUILD_GIT_BRANCH");
     let git_dirty = env!("BUILD_GIT_DIRTY");  // Already includes "-dirty" or ""
-    let build_timestamp = env!("BUILD_TIMESTAMP");
     let build_id = env!("BUILD_ID");
 
     info!("Initializing rholang-language-server with log level {} ...", config.log_level);
-    info!("Build: {} ({}{}) built at {} [build-id: {}]",
-          git_hash, git_branch, git_dirty, build_timestamp, build_id);
+    info!("Build: {} ({}{}) [build-id: {}]",
+          git_hash, git_branch, git_dirty, build_id);
 
     let rnode_client_opt: Option<LspClient<tonic::transport::Channel>> = if !config.no_rnode {
         let rnode_endpoint = format!("http://{}:{}", config.rnode_address, config.rnode_port);
