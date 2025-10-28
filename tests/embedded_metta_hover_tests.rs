@@ -18,6 +18,7 @@ fn create_test_metta_region() -> LanguageRegion {
         start_column: 10,
         source: RegionSource::CommentDirective,
         content: "(= factorial 42)".to_string(),
+        concatenation_chain: None,
     }
 }
 
@@ -59,6 +60,7 @@ fn test_hover_for_metta_atom() {
         start_column: 0,
         source: RegionSource::SemanticAnalysis,
         content: "factorial".to_string(),
+        concatenation_chain: None,
     };
 
     let mut registry = VirtualDocumentRegistry::new();
@@ -95,6 +97,7 @@ fn test_position_mapping_for_hover() {
         start_column: 15,
         source: RegionSource::ChannelFlow,
         content: "(+ 1 2 3)".to_string(),
+        concatenation_chain: None,
     };
 
     // Save the expected start line before moving region
@@ -201,4 +204,56 @@ new metta in {
     let hover = virtual_doc.hover(LspPosition { line: 0, character: 5 });
 
     println!("Hover for channel flow detected MeTTa: {:?}", hover);
+}
+
+#[test]
+fn test_holed_document_hover() {
+    // Test that hover works on literals but not on holes in concatenated strings
+    use rholang_language_server::language_regions::SemanticDetector;
+
+    let source = r#"
+@"rho:metta:compile"!("!(get_neighbors " ++ fromRoom ++ ")")
+"#;
+
+    let tree = parse_code(source);
+    let rope = Rope::from_str(source);
+
+    // Use semantic detector to find concatenated regions
+    let regions = SemanticDetector::detect_regions(source, &tree, &rope);
+
+    assert_eq!(regions.len(), 1, "Should detect one concatenated MeTTa region");
+    assert!(regions[0].concatenation_chain.is_some(), "Should have concatenation chain");
+
+    // Create virtual document
+    use url::Url;
+    let parent_uri = Url::parse("file:///test.rho").unwrap();
+    let mut registry = VirtualDocumentRegistry::new();
+    registry.register_regions(&parent_uri, &regions);
+
+    let virtual_docs = registry.get_by_parent(&parent_uri);
+    assert_eq!(virtual_docs.len(), 1);
+
+    let virtual_doc = &virtual_docs[0];
+
+    // Test that the virtual document content is the literals only (holes removed)
+    assert_eq!(virtual_doc.content, "!(get_neighbors )");
+
+    // Test hover on a literal part (should work)
+    let hover_on_literal = virtual_doc.hover(LspPosition { line: 0, character: 2 });
+    // Note: hover may or may not return something depending on parsing,
+    // but importantly it should NOT be blocked by hole check for literal positions
+    println!("Hover on literal (char 2): {:?}", hover_on_literal);
+
+    // Test that is_position_in_hole correctly identifies holes
+    // The exact positions depend on the concatenation chain implementation
+    // For the content "!(get_neighbors )", positions 0-17 should be valid literals
+    let is_hole_at_0 = virtual_doc.is_position_in_hole(LspPosition { line: 0, character: 0 });
+    let is_hole_at_5 = virtual_doc.is_position_in_hole(LspPosition { line: 0, character: 5 });
+
+    println!("Is position 0 in hole? {}", is_hole_at_0);
+    println!("Is position 5 in hole? {}", is_hole_at_5);
+
+    // Both should be false since the virtual content only contains literals
+    assert!(!is_hole_at_0, "Position 0 should not be in a hole");
+    assert!(!is_hole_at_5, "Position 5 should not be in a hole");
 }

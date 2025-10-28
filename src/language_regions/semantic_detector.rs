@@ -140,11 +140,10 @@ impl SemanticDetector {
     ) {
         for child in inputs_node.children(&mut inputs_node.walk()) {
             if child.kind() == "string_literal" {
-                // Extract the string content
+                // Direct string literal
                 if let Ok(text) = child.utf8_text(source.as_bytes()) {
                     let content = Self::extract_string_content(text);
 
-                    // Create a language region
                     regions.push(LanguageRegion {
                         language: "metta".to_string(),
                         start_byte: child.start_byte() + 1, // Skip opening quote
@@ -153,8 +152,133 @@ impl SemanticDetector {
                         start_column: child.start_position().column,
                         source: RegionSource::SemanticAnalysis,
                         content,
+                        concatenation_chain: None,
                     });
                 }
+            } else if child.kind() == "concat" {
+                // This is a concatenation with ++
+                if let Some(region) = Self::extract_concatenation(&child, source) {
+                    regions.push(region);
+                }
+            }
+        }
+    }
+
+    /// Extracts a concatenation chain from a concat node
+    ///
+    /// Recursively processes `++` operators to build a holed virtual document
+    fn extract_concatenation<'a>(
+        concat_node: &TSNode<'a>,
+        source: &'a str,
+    ) -> Option<LanguageRegion> {
+        use lsp_types::{Position, Range};
+        use super::concatenation::{ConcatPart, ConcatenationChain};
+
+        trace!("Found concatenation in send to MeTTa channel");
+
+        // Extract all parts of the concatenation
+        let mut parts = Vec::new();
+        Self::collect_concat_parts(concat_node, source, &mut parts);
+
+        if parts.is_empty() {
+            return None;
+        }
+
+        // Build virtual content (literals only, holes removed)
+        let content: String = parts
+            .iter()
+            .filter_map(|part| match part {
+                ConcatPart::Literal { content, .. } => Some(content.as_str()),
+                ConcatPart::Hole { .. } => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+
+        // Create range encompassing the entire concatenation
+        let full_range = Range {
+            start: parts.first()?.original_range().start,
+            end: parts.last()?.original_range().end,
+        };
+
+        let chain = ConcatenationChain::new(parts, full_range);
+
+        debug!(
+            "Detected MeTTa concatenation with {} literals and {} holes",
+            chain.literal_count(),
+            chain.hole_count()
+        );
+
+        Some(LanguageRegion {
+            language: "metta".to_string(),
+            start_byte: concat_node.start_byte(),
+            end_byte: concat_node.end_byte(),
+            start_line: concat_node.start_position().row,
+            start_column: concat_node.start_position().column,
+            source: RegionSource::SemanticAnalysis,
+            content,
+            concatenation_chain: Some(chain),
+        })
+    }
+
+    /// Recursively collects parts from a concatenation expression
+    fn collect_concat_parts<'a>(
+        node: &TSNode<'a>,
+        source: &'a str,
+        parts: &mut Vec<super::concatenation::ConcatPart>,
+    ) {
+        use lsp_types::{Position, Range};
+        use super::concatenation::ConcatPart;
+
+        match node.kind() {
+            "concat" => {
+                // Recursively process left and right sides
+                let mut cursor = node.walk();
+                if cursor.goto_first_child() {
+                    let left = cursor.node();
+                    Self::collect_concat_parts(&left, source, parts);
+
+                    // Skip the operator
+                    while cursor.goto_next_sibling() {
+                        let current = cursor.node();
+                        if current.kind() != "++" {
+                            Self::collect_concat_parts(&current, source, parts);
+                        }
+                    }
+                }
+            }
+            "string_literal" => {
+                // This is a literal part
+                if let Ok(text) = node.utf8_text(source.as_bytes()) {
+                    let content = Self::extract_string_content(text);
+                    parts.push(ConcatPart::Literal {
+                        content,
+                        original_range: Range {
+                            start: Position {
+                                line: node.start_position().row as u32,
+                                character: (node.start_position().column + 1) as u32, // Skip opening quote
+                            },
+                            end: Position {
+                                line: node.end_position().row as u32,
+                                character: (node.end_position().column - 1) as u32, // Skip closing quote
+                            },
+                        },
+                    });
+                }
+            }
+            _ => {
+                // Any other node type is a hole (variable, expression, etc.)
+                parts.push(ConcatPart::Hole {
+                    original_range: Range {
+                        start: Position {
+                            line: node.start_position().row as u32,
+                            character: node.start_position().column as u32,
+                        },
+                        end: Position {
+                            line: node.end_position().row as u32,
+                            character: node.end_position().column as u32,
+                        },
+                    },
+                });
             }
         }
     }
@@ -284,5 +408,64 @@ mod tests {
         assert!(!SemanticDetector::is_metta_compiler_channel(
             "rho:io:stdout"
         ));
+    }
+
+    #[test]
+    fn test_detect_concatenated_metta_string() {
+        let source = r#"
+@"rho:metta:compile"!("!(get_neighbors " ++ fromRoom ++ ")")
+"#;
+        let tree = parse_code(source);
+        let rope = Rope::from_str(source);
+
+        let regions = SemanticDetector::detect_regions(source, &tree, &rope);
+
+        assert_eq!(regions.len(), 1, "Should detect one MeTTa region");
+        assert_eq!(regions[0].language, "metta");
+        assert_eq!(regions[0].source, RegionSource::SemanticAnalysis);
+
+        // Should extract only literal parts
+        assert_eq!(regions[0].content, "!(get_neighbors )");
+
+        // Should have concatenation chain
+        assert!(regions[0].concatenation_chain.is_some(), "Should have concatenation chain");
+
+        let chain = regions[0].concatenation_chain.as_ref().unwrap();
+        assert_eq!(chain.literal_count(), 2, "Should have 2 literal parts");
+        assert_eq!(chain.hole_count(), 1, "Should have 1 hole (fromRoom variable)");
+        assert!(chain.has_holes(), "Chain should have holes");
+    }
+
+    #[test]
+    fn test_detect_multiple_hole_concatenation() {
+        let source = r#"
+@"rho:metta:compile"!("!(find_path " ++ from ++ " " ++ to ++ ")")
+"#;
+        let tree = parse_code(source);
+        let rope = Rope::from_str(source);
+
+        let regions = SemanticDetector::detect_regions(source, &tree, &rope);
+
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].content, "!(find_path  )");
+
+        let chain = regions[0].concatenation_chain.as_ref().unwrap();
+        assert_eq!(chain.literal_count(), 3, "Should have 3 literal parts");
+        assert_eq!(chain.hole_count(), 2, "Should have 2 holes (from and to variables)");
+    }
+
+    #[test]
+    fn test_direct_string_no_concatenation_chain() {
+        let source = r#"
+@"rho:metta:compile"!("(= factorial (lambda (n) 42))")
+"#;
+        let tree = parse_code(source);
+        let rope = Rope::from_str(source);
+
+        let regions = SemanticDetector::detect_regions(source, &tree, &rope);
+
+        assert_eq!(regions.len(), 1);
+        assert!(regions[0].concatenation_chain.is_none(),
+            "Direct string should not have concatenation chain");
     }
 }

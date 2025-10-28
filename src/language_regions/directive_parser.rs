@@ -35,6 +35,9 @@ pub struct LanguageRegion {
     pub source: RegionSource,
     /// The actual text content of the region
     pub content: String,
+    /// Optional concatenation chain for holed virtual documents
+    /// When present, indicates the region is formed by concatenating string literals with expressions
+    pub concatenation_chain: Option<super::concatenation::ConcatenationChain>,
 }
 
 /// Parser for detecting embedded language regions via comment directives
@@ -93,6 +96,7 @@ impl DirectiveParser {
                     start_column: string_node.start_position().column,
                     source: RegionSource::CommentDirective,
                     content,
+                    concatenation_chain: None,
                 });
             }
         }

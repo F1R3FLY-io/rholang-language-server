@@ -514,6 +514,7 @@ impl ChannelFlowAnalyzer {
                                     start_column: input_child.start_position().column,
                                     source: RegionSource::ChannelFlow,
                                     content,
+                                concatenation_chain: None,
                                 });
                             }
                         }
@@ -551,6 +552,7 @@ impl ChannelFlowAnalyzer {
                         start_column: pending.start_column,
                         source: RegionSource::ChannelFlow,
                         content: pending.content.clone(),
+                        concatenation_chain: None,
                     });
                 }
             }
@@ -657,6 +659,7 @@ impl ChannelFlowAnalyzer {
                                 start_column: input_child.start_position().column,
                                 source: RegionSource::ChannelFlow,
                                 content,
+                            concatenation_chain: None,
                             });
                         }
                     }

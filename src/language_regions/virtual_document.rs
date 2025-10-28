@@ -31,6 +31,13 @@ pub struct VirtualDocument {
     pub byte_offset: usize,
     /// Diagnostics for this virtual document (in virtual coordinates)
     pub diagnostics: Vec<Diagnostic>,
+    /// Optional concatenation chain for holed virtual documents
+    /// When present, this indicates the virtual document is formed from string concatenations
+    /// with holes (variables/expressions) that should be skipped during LSP operations
+    pub concatenation_chain: Option<Arc<super::concatenation::ConcatenationChain>>,
+    /// Cached position map for holed documents
+    /// Lazily computed from concatenation_chain
+    holed_position_map: RwLock<Option<Arc<super::concatenation::HoledPositionMap>>>,
     /// Cached parsed IR (MeTTa AST nodes with relative positions)
     /// Uses RwLock for thread-safe lazy caching
     cached_ir: RwLock<Option<Arc<Vec<Arc<crate::ir::metta_node::MettaNode>>>>>,
@@ -54,7 +61,9 @@ impl Clone for VirtualDocument {
             parent_end: self.parent_end,
             byte_offset: self.byte_offset,
             diagnostics: self.diagnostics.clone(),
+            concatenation_chain: self.concatenation_chain.clone(),
             // Don't clone caches - create fresh empty caches
+            holed_position_map: RwLock::new(None),
             cached_ir: RwLock::new(None),
             cached_tree: RwLock::new(None),
             cached_symbol_table: RwLock::new(None),
@@ -116,6 +125,8 @@ impl VirtualDocument {
             parent_end,
             byte_offset: region.start_byte,
             diagnostics: Vec::new(),
+            concatenation_chain: region.concatenation_chain.as_ref().map(|chain| Arc::new(chain.clone())),
+            holed_position_map: RwLock::new(None),
             cached_ir: RwLock::new(None),
             cached_tree: RwLock::new(None),
             cached_symbol_table: RwLock::new(None),
@@ -206,6 +217,56 @@ impl VirtualDocument {
     /// Sets diagnostics for this virtual document
     pub fn set_diagnostics(&mut self, diagnostics: Vec<Diagnostic>) {
         self.diagnostics = diagnostics;
+    }
+
+    /// Gets or creates the holed position map for this virtual document
+    ///
+    /// Returns None if this is not a holed document (no concatenation chain)
+    fn get_holed_position_map(&self) -> Option<Arc<super::concatenation::HoledPositionMap>> {
+        // If there's no concatenation chain, this is not a holed document
+        let chain = self.concatenation_chain.as_ref()?;
+
+        // Try to get cached map first (read lock)
+        {
+            let cache = self.holed_position_map.read().ok()?;
+            if let Some(ref map) = *cache {
+                return Some(map.clone());
+            }
+        }
+
+        // Cache miss - create the map (write lock)
+        {
+            let mut cache = self.holed_position_map.write().ok()?;
+
+            // Double-check in case another thread created it while we waited
+            if let Some(ref map) = *cache {
+                return Some(map.clone());
+            }
+
+            // Create new holed position map from the concatenation chain
+            let map = Arc::new(super::concatenation::HoledPositionMap::new(chain.clone()));
+            *cache = Some(map.clone());
+            Some(map)
+        }
+    }
+
+    /// Checks if a position in the virtual document falls within a hole
+    ///
+    /// For holed documents, returns true if the position is in a hole (variable/expression).
+    /// For regular documents, always returns false.
+    pub fn is_position_in_hole(&self, virtual_pos: LspPosition) -> bool {
+        if let Some(map) = self.get_holed_position_map() {
+            // Convert from tower_lsp::lsp_types::Position to lsp_types::Position
+            let pos = lsp_types::Position {
+                line: virtual_pos.line,
+                character: virtual_pos.character,
+            };
+            // If mapping returns None, the position is in a hole
+            map.virtual_to_original(pos).is_none()
+        } else {
+            // Not a holed document
+            false
+        }
     }
 
     /// Gets the cached IR, parsing if necessary
@@ -446,10 +507,15 @@ impl VirtualDocument {
 
     /// Maps diagnostics from virtual coordinates to parent coordinates
     ///
-    /// Returns diagnostics with ranges mapped to the parent document
+    /// Returns diagnostics with ranges mapped to the parent document.
+    /// For holed documents, filters out diagnostics that fall within holes.
     pub fn map_diagnostics_to_parent(&self) -> Vec<Diagnostic> {
         self.diagnostics
             .iter()
+            .filter(|diag| {
+                // Skip diagnostics that fall in holes (variables/expressions)
+                !self.is_position_in_hole(diag.range.start)
+            })
             .map(|diag| {
                 let mut parent_diag = diag.clone();
                 parent_diag.range = self.map_range_to_parent(diag.range);
@@ -498,7 +564,11 @@ impl VirtualDocument {
     /// # Returns
     /// Hover information with ranges in virtual coordinates
     pub fn hover(&self, position: LspPosition) -> Option<tower_lsp::lsp_types::Hover> {
-        
+        // Skip hover for positions in holes (variables/expressions in concatenations)
+        if self.is_position_in_hole(position) {
+            trace!("Position {:?} is in a hole, skipping hover", position);
+            return None;
+        }
 
         match self.language.as_str() {
             "metta" => self.hover_metta(position),
@@ -880,6 +950,7 @@ mod tests {
             start_column: 10,
             source: RegionSource::CommentDirective,
             content: "(= factorial (lambda (n) 42))".to_string(),
+            concatenation_chain: None,
         }
     }
 
@@ -934,6 +1005,7 @@ mod tests {
             start_column: 18,
             source: RegionSource::ChannelFlow,
             content: "\n          (= (is_connected $from $to)\n             (match & self (connected $from $to) true))".to_string(),
+            concatenation_chain: None,
         };
 
         let virtual_doc = VirtualDocument::new(parent_uri, &region, 0);
