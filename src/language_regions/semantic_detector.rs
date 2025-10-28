@@ -310,6 +310,31 @@ impl SemanticDetector {
     }
 }
 
+/// Implementation of VirtualDocumentDetector trait for SemanticDetector
+impl super::detector::VirtualDocumentDetector for SemanticDetector {
+    fn name(&self) -> &str {
+        "semantic-detector"
+    }
+
+    fn detect(&self, source: &str, tree: &Tree, rope: &Rope) -> Vec<LanguageRegion> {
+        Self::detect_regions(source, tree, rope)
+    }
+
+    fn priority(&self) -> i32 {
+        // Medium-high priority - semantic analysis is more reliable than flow analysis
+        50
+    }
+
+    fn can_run_in_parallel(&self) -> bool {
+        true
+    }
+
+    fn supports_incremental(&self) -> bool {
+        // Could support incremental by only re-scanning modified send nodes
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

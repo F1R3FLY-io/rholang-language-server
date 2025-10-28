@@ -282,6 +282,31 @@ impl DirectiveParser {
     }
 }
 
+/// Implementation of VirtualDocumentDetector trait for DirectiveParser
+impl super::detector::VirtualDocumentDetector for DirectiveParser {
+    fn name(&self) -> &str {
+        "directive-parser"
+    }
+
+    fn detect(&self, source: &str, tree: &Tree, rope: &Rope) -> Vec<LanguageRegion> {
+        Self::scan_directives(source, tree, rope)
+    }
+
+    fn priority(&self) -> i32 {
+        // Highest priority - explicit directives should override semantic detection
+        100
+    }
+
+    fn can_run_in_parallel(&self) -> bool {
+        true
+    }
+
+    fn supports_incremental(&self) -> bool {
+        // Comment directives don't change often and require full scan
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -76,3 +76,7 @@ interpreter = ["rholang"]
 [[bin]]
 name = "dummy_client"
 path = "test_utils/src/bin/dummy_client.rs"
+
+[[bench]]
+name = "detection_worker_benchmark"
+harness = false

@@ -694,6 +694,30 @@ impl ChannelFlowAnalyzer {
     }
 }
 
+/// Implementation of VirtualDocumentDetector trait for ChannelFlowAnalyzer
+impl super::detector::VirtualDocumentDetector for ChannelFlowAnalyzer {
+    fn name(&self) -> &str {
+        "channel-flow-analyzer"
+    }
+
+    fn detect(&self, source: &str, tree: &Tree, rope: &Rope) -> Vec<LanguageRegion> {
+        Self::analyze(source, tree, rope)
+    }
+
+    fn priority(&self) -> i32 {
+        // Lower priority - channel flow analysis is less precise than direct semantic detection
+        25
+    }
+
+    fn can_run_in_parallel(&self) -> bool {
+        true
+    }
+
+    fn supports_incremental(&self) -> bool {
+        // Could support incremental by tracking scope changes
+        false
+    }
+}
 
 #[cfg(test)]
 mod tests {
