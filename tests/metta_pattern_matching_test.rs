@@ -124,7 +124,7 @@ fn test_pattern_matching_find_call() {
     use rholang_language_server::ir::rholang_node::RelativePosition;
 
     fn test_base() -> NodeBase {
-        NodeBase::new(
+        NodeBase::new_simple(
             RelativePosition {
                 delta_lines: 0,
                 delta_columns: 0,
@@ -194,7 +194,7 @@ fn test_arity_filtering() {
     use rholang_language_server::ir::rholang_node::RelativePosition;
 
     fn test_base() -> NodeBase {
-        NodeBase::new(
+        NodeBase::new_simple(
             RelativePosition {
                 delta_lines: 0,
                 delta_columns: 0,

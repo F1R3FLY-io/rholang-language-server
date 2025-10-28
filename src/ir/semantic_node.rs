@@ -37,14 +37,40 @@ pub struct Position {
 #[derive(Debug, Clone)]
 pub struct NodeBase {
     relative_start: RelativePosition, // Position relative to the previous node's end
-    length: usize,                    // Length of the node's text in bytes
+    content_length: usize,            // "Soft" length: content up to last child (for semantic operations)
+    syntactic_length: usize,          // "Hard" length: includes closing delimiters (for reconstruction)
     span_lines: usize,                // Number of lines spanned by the node
     span_columns: usize,              // Columns on the last line
 }
 
 impl NodeBase {
     /// Creates a new NodeBase instance with the specified attributes.
+    ///
+    /// # Arguments
+    /// * `relative_start` - Position relative to previous node's end
+    /// * `content_length` - Soft length: content up to last child (for semantics)
+    /// * `syntactic_length` - Hard length: includes closing delimiters (for reconstruction)
+    /// * `span_lines` - Number of lines spanned
+    /// * `span_columns` - Columns on the last line
     pub fn new(
+        relative_start: RelativePosition,
+        content_length: usize,
+        syntactic_length: usize,
+        span_lines: usize,
+        span_columns: usize,
+    ) -> Self {
+        NodeBase {
+            relative_start,
+            content_length,
+            syntactic_length,
+            span_lines,
+            span_columns,
+        }
+    }
+
+    /// Convenience constructor for nodes without closing delimiters.
+    /// Sets syntactic_length = content_length.
+    pub fn new_simple(
         relative_start: RelativePosition,
         length: usize,
         span_lines: usize,
@@ -52,7 +78,8 @@ impl NodeBase {
     ) -> Self {
         NodeBase {
             relative_start,
-            length,
+            content_length: length,
+            syntactic_length: length,
             span_lines,
             span_columns,
         }
@@ -63,9 +90,24 @@ impl NodeBase {
         self.relative_start
     }
 
+    /// Returns the content length (soft length) - content up to last child.
+    /// Use this for semantic operations and understanding node structure.
+    pub fn content_length(&self) -> usize {
+        self.content_length
+    }
+
+    /// Returns the syntactic length (hard length) - includes closing delimiters.
+    /// Use this for position reconstruction to compute next sibling's start.
+    pub fn syntactic_length(&self) -> usize {
+        self.syntactic_length
+    }
+
     /// Returns the length of the node's text in bytes.
+    /// DEPRECATED: Use content_length() or syntactic_length() instead.
+    /// Defaults to syntactic_length for backward compatibility.
+    #[deprecated(since = "0.1.0", note = "Use content_length() or syntactic_length() instead")]
     pub fn length(&self) -> usize {
-        self.length
+        self.syntactic_length
     }
 
     /// Returns the number of lines spanned by the node.
@@ -76,6 +118,21 @@ impl NodeBase {
     /// Returns the number of columns on the last line spanned by the node.
     pub fn span_columns(&self) -> usize {
         self.span_columns
+    }
+
+    /// Returns the delta in bytes from the previous node's end.
+    pub fn delta_bytes(&self) -> usize {
+        self.relative_start.delta_bytes
+    }
+
+    /// Returns the delta in lines from the previous node's end.
+    pub fn delta_lines(&self) -> i32 {
+        self.relative_start.delta_lines
+    }
+
+    /// Returns the delta in columns from the previous node's end.
+    pub fn delta_columns(&self) -> i32 {
+        self.relative_start.delta_columns
     }
 }
 

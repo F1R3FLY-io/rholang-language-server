@@ -187,6 +187,11 @@ impl RholangBackend {
         let (node, path) = node_path_opt?;
         let symbol_table = symbol_table_opt?;
 
+        // Debug: log if we found a Var node
+        if let RholangNode::Var { name, .. } = &*node {
+            debug!("Var node '{}' found at requested byte offset: {}", name, byte_offset);
+        }
+
         // Log node type for debugging
         let node_type_name = match &*node {
             RholangNode::Var { .. } => "Var",
@@ -221,6 +226,22 @@ impl RholangBackend {
             RholangNode::Block { proc, .. } | RholangNode::Parenthesized { expr: proc, .. } => {
                 // Block and Parenthesized are just wrappers, handle the inner expression
                 debug!("Block/Parenthesized node encountered, checking inner expression");
+
+                // Log the inner node type for debugging
+                let inner_type = match &**proc {
+                    RholangNode::Par { .. } => "Par",
+                    RholangNode::Var { .. } => "Var",
+                    RholangNode::Contract { .. } => "Contract",
+                    RholangNode::Send { .. } => "Send",
+                    RholangNode::SendSync { .. } => "SendSync",
+                    RholangNode::Quote { .. } => "Quote",
+                    other => {
+                        debug!("Inner node type discriminant: {:?}", std::mem::discriminant(other));
+                        "Other"
+                    }
+                };
+                debug!("Inner node type: {}", inner_type);
+
                 match &**proc {
                     RholangNode::Var { name, .. } => {
                         self.handle_var_symbol(uri, position, name, &path, &symbol_table)
@@ -236,6 +257,34 @@ impl RholangBackend {
                     RholangNode::Quote { quotable, .. } => {
                         self.handle_quote_symbol(uri, position, quotable, byte_offset)
                             .await
+                    }
+                    RholangNode::Par { processes, .. } => {
+                        // Par node contains parallel processes, need to find which one contains our position
+                        // The problem is we don't have the positions map here, so we can't check
+                        // Instead, let's try all Send nodes and let handle_send_symbol determine if it's the right one
+                        debug!("Par node inside Block, searching through {} processes",
+                               processes.as_ref().map(|p| p.len()).unwrap_or(0));
+
+                        if let Some(procs) = processes {
+                            for proc_node in procs.iter() {
+                                let result = match &**proc_node {
+                                    RholangNode::Send { channel, .. } | RholangNode::SendSync { channel, .. } => {
+                                        self.handle_send_symbol(uri, position, channel, byte_offset).await
+                                    }
+                                    RholangNode::Var { name, .. } => {
+                                        self.handle_var_symbol(uri, position, name, &path, &symbol_table).await
+                                    }
+                                    _ => None,
+                                };
+
+                                if result.is_some() {
+                                    return result;
+                                }
+                            }
+                        }
+
+                        debug!("No matching process found in Par node");
+                        None
                     }
                     _ => None,
                 }

@@ -281,7 +281,7 @@ impl LspClient {
             }
         }
 
-        let timeout = Duration::from_secs(10);
+        let timeout = Duration::from_secs(20);  // Increased for large files like robot_planning.rho
         let start = Instant::now();
 
         // Process messages until we find the diagnostic or timeout
@@ -831,11 +831,15 @@ impl LspClient {
         self.send_request(request_id, "textDocument/definition", Some(serde_json::to_value(params).unwrap()));
         let response = self.await_response(request_id)?;
         if let Some(result) = response.get("result") {
-            if result.is_array() {
+            if result.is_null() {
+                // Server returned null, meaning no definition found
+                Ok(None)
+            } else if result.is_array() {
                 let locations: Vec<Location> = serde_json::from_value(result.clone()).unwrap();
                 Ok(locations.into_iter().next())
             } else {
-                let location: Location = serde_json::from_value(result.clone()).unwrap();
+                let location: Location = serde_json::from_value(result.clone())
+                    .map_err(|e| format!("Failed to deserialize location: {}", e))?;
                 Ok(Some(location))
             }
         } else {

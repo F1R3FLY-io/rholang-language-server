@@ -1583,7 +1583,7 @@ Nil"#;
 
     /// Creates a Nil node with default metadata containing a version field.
     fn create_nil_node() -> Arc<RholangNode> {
-        let base = NodeBase::new(RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 3, 0, 3);
+        let base = NodeBase::new_simple(RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 3, 0, 3);
         let mut data = HashMap::new();
         data.insert("version".to_string(), Arc::new(0_usize) as Arc<dyn Any + Send + Sync>);
         let metadata = Some(Arc::new(data));

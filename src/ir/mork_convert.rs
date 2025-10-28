@@ -295,7 +295,7 @@ mod tests {
     use crate::ir::rholang_node::{NodeBase, RelativePosition};
 
     fn create_base() -> NodeBase {
-        NodeBase::new(
+        NodeBase::new_simple(
             RelativePosition {
                 delta_lines: 0,
                 delta_columns: 0,

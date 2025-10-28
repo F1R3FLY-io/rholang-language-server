@@ -17,6 +17,7 @@ use crate::ir::rholang_node::{
     BinOperator, RholangBundleType, RholangNode, NodeBase, RholangSendType,
     UnaryOperator, RholangVarRefKind, Position, RelativePosition,
 };
+use crate::parsers::position_utils::create_node_base_from_absolute;
 
 use super::helpers::{
     collect_named_descendants, collect_patterns, collect_linear_binds,
@@ -25,41 +26,22 @@ use super::helpers::{
 
 /// Creates a NodeBase with correct length based on actual content extent.
 ///
-/// This ensures the invariant: `node.end = node.start + node.length` holds.
+/// This is a compatibility wrapper around `position_utils::create_node_base_from_absolute`.
+/// It maintains the same signature as the original implementation for backward compatibility
+/// with the Rholang parser's call-by-value pattern.
 ///
 /// # Arguments
 /// * `absolute_start` - The absolute start position of the node
 /// * `content_end` - The content end position (last child's end, for semantic operations)
 /// * `syntactic_end` - The syntactic end position (includes closing delimiters, for reconstruction)
 /// * `prev_end` - The previous sibling's end position (for computing deltas)
+///
+/// # Note
+/// This function takes `prev_end` by value (not &mut) for backward compatibility.
+/// The common position_utils module provides the underlying implementation.
 fn create_correct_node_base(absolute_start: Position, content_end: Position, syntactic_end: Position, prev_end: Position) -> NodeBase {
-    let delta_lines = absolute_start.row as i32 - prev_end.row as i32;
-    let delta_columns = if delta_lines == 0 {
-        absolute_start.column as i32 - prev_end.column as i32
-    } else {
-        absolute_start.column as i32
-    };
-    let delta_bytes = absolute_start.byte - prev_end.byte;
-
-    let relative_start = RelativePosition {
-        delta_lines,
-        delta_columns,
-        delta_bytes,
-    };
-
-    // Compute dual lengths: content (for semantics) and syntactic (for reconstruction)
-    let content_length = content_end.byte - absolute_start.byte;
-    let syntactic_length = syntactic_end.byte - absolute_start.byte;
-
-    // Span is based on syntactic extent (includes closing delimiters)
-    let span_lines = syntactic_end.row - absolute_start.row;
-    let span_columns = if span_lines == 0 {
-        syntactic_end.column - absolute_start.column
-    } else {
-        syntactic_end.column
-    };
-
-    NodeBase::new(relative_start, content_length, syntactic_length, span_lines, span_columns)
+    let mut prev_end_mut = prev_end;
+    create_node_base_from_absolute(absolute_start, syntactic_end, &mut prev_end_mut, Some(content_end))
 }
 
 /// Converts Tree-Sitter nodes to IR nodes with accurate relative positions.

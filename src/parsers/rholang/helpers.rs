@@ -167,7 +167,7 @@ pub(crate) fn collect_patterns(
                 } else {
                     child.end_position().column
                 };
-                let quote_base = NodeBase::new(q_delta, length, span_lines, span_columns);
+                let quote_base = NodeBase::new_simple(q_delta, length, span_lines, span_columns);
                 child_node = Arc::new(RholangNode::Quote {
                     base: quote_base,
                     quotable: child_node,

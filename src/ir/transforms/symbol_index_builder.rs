@@ -478,7 +478,7 @@ mod tests {
     fn create_test_contract_name(name: &str) -> Arc<RholangNode> {
         Arc::new(RholangNode::Var {
             name: name.to_string(),
-            base: NodeBase::new(
+            base: NodeBase::new_simple(
                 crate::ir::rholang_node::RelativePosition {
                     delta_lines: 0,
                     delta_columns: 0,

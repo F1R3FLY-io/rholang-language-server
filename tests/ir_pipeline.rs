@@ -34,7 +34,7 @@ impl Visitor for SimplifyDoubleUnary {
         if let RholangNode::UnaryOp { op: inner_op, operand: inner_operand, .. } = &*new_operand {
             if *inner_op == op {
                 debug!("Simplifying double unary operation: {:?}", op);
-                let new_base = NodeBase::new(
+                let new_base = NodeBase::new_simple(
                     base.relative_start(),
                     inner_operand.base().length(),
                     0,
@@ -52,7 +52,7 @@ impl Visitor for SimplifyDoubleUnary {
                     let new_text = new_value.to_string();
                     let new_length = new_text.len();
                     debug!("Simplifying neg(long_literal({})) to {}", value, new_value);
-                    let new_base = NodeBase::new(
+                    let new_base = NodeBase::new_simple(
                         base.relative_start(),
                         new_length,
                         0,
@@ -71,7 +71,7 @@ impl Visitor for SimplifyDoubleUnary {
                     let new_text = if new_value { "true" } else { "false" }.to_string();
                     let new_length = new_text.len();
                     debug!("Simplifying not(bool_literal({})) to {}", value, new_value);
-                    let new_base = NodeBase::new(
+                    let new_base = NodeBase::new_simple(
                         base.relative_start(),
                         new_length,
                         0,

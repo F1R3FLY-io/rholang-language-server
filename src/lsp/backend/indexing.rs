@@ -108,7 +108,7 @@ impl RholangBackend {
                 use crate::ir::unified_ir::UnifiedIR;
                 use crate::ir::semantic_node::{NodeBase, RelativePosition};
                 Arc::new(UnifiedIR::Error {
-                    base: NodeBase::new(
+                    base: NodeBase::new_simple(
                         RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
                         0,
                         0,
@@ -241,7 +241,7 @@ impl RholangBackend {
                 use crate::ir::unified_ir::UnifiedIR;
                 use crate::ir::semantic_node::{NodeBase, RelativePosition};
                 Arc::new(UnifiedIR::Error {
-                    base: NodeBase::new(
+                    base: NodeBase::new_simple(
                         RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
                         0,
                         0,
@@ -418,7 +418,7 @@ impl RholangBackend {
         // Create a placeholder RholangNode for the ir field
         // This is temporary - in future we'll refactor CachedDocument to use Arc<dyn SemanticNode>
         let placeholder_ir = Arc::new(RholangNode::Nil {
-            base: NodeBase::new(
+            base: NodeBase::new_simple(
                 RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
                 text.len(),
                 0,
@@ -437,7 +437,7 @@ impl RholangBackend {
             })
         } else {
             Arc::new(UnifiedIR::Error {
-                base: NodeBase::new(
+                base: NodeBase::new_simple(
                     RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
                     0,
                     0,

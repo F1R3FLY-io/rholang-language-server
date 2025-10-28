@@ -1481,7 +1481,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Par {
                 processes: None,
             base,
@@ -1502,7 +1502,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::SendSync {
             base,
             channel,
@@ -1524,7 +1524,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Send {
             base,
             channel,
@@ -1545,7 +1545,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::New {
             base,
             decls,
@@ -1565,7 +1565,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::IfElse {
             base,
             condition,
@@ -1585,7 +1585,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Let {
             base,
             decls,
@@ -1604,7 +1604,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Bundle {
             base,
             bundle_type,
@@ -1623,7 +1623,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Match {
             base,
             expression,
@@ -1641,7 +1641,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Choice {
             base,
             branches,
@@ -1661,7 +1661,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Contract {
             base,
             name,
@@ -1682,7 +1682,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Input {
             base,
             receipts,
@@ -1700,7 +1700,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Block {
             base,
             proc,
@@ -1717,7 +1717,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Parenthesized {
             base,
             expr,
@@ -1736,7 +1736,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::BinOp {
             base,
             op,
@@ -1756,7 +1756,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::UnaryOp {
             base,
             op,
@@ -1776,7 +1776,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Method {
             base,
             receiver,
@@ -1795,7 +1795,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Eval {
             base,
             name,
@@ -1812,7 +1812,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Quote {
             base,
             quotable,
@@ -1830,7 +1830,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::VarRef {
             base,
             kind,
@@ -1848,7 +1848,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::BoolLiteral {
             base,
             value,
@@ -1865,7 +1865,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::LongLiteral {
             base,
             value,
@@ -1882,7 +1882,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::StringLiteral {
             base,
             value,
@@ -1899,7 +1899,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::UriLiteral {
             base,
             value,
@@ -1915,7 +1915,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Nil { base, metadata }
     }
 
@@ -1929,7 +1929,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::List {
             base,
             elements,
@@ -1948,7 +1948,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Set {
             base,
             elements,
@@ -1967,7 +1967,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Map {
             base,
             pairs,
@@ -1985,7 +1985,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Tuple {
             base,
             elements,
@@ -2002,7 +2002,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Var { base, name, metadata }
     }
 
@@ -2016,7 +2016,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::NameDecl {
             base,
             var,
@@ -2036,7 +2036,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Decl {
             base,
             names,
@@ -2057,7 +2057,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::LinearBind {
             base,
             names,
@@ -2078,7 +2078,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::RepeatedBind {
             base,
             names,
@@ -2099,7 +2099,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::PeekBind {
             base,
             names,
@@ -2118,7 +2118,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Comment {
             base,
             kind,
@@ -2134,7 +2134,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Wildcard { base, metadata }
     }
 
@@ -2147,7 +2147,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::SimpleType {
             base,
             value,
@@ -2164,7 +2164,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::ReceiveSendSource {
             base,
             name,
@@ -2182,7 +2182,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::SendReceiveSource {
             base,
             name,
@@ -2200,7 +2200,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Error {
             base,
             children,
@@ -2218,7 +2218,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Disjunction {
             base,
             left,
@@ -2237,7 +2237,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Conjunction {
             base,
             left,
@@ -2255,7 +2255,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Negation {
             base,
             operand,
@@ -2271,7 +2271,7 @@ impl RholangNode {
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
         RholangNode::Unit { base, metadata }
     }
 }
@@ -2811,7 +2811,7 @@ mod tests {
             assert_eq!(left_start.byte, 0);
             let left_end = left.absolute_end(&root);
             assert_eq!(left_end.row, 0);
-            assert_eq!(left_end.column, 10);
+            assert_eq!(left_end.column, 10);  // Send includes closing ')'
             assert_eq!(left_end.byte, 10);
             let right_start = right.absolute_start(&root);
             assert_eq!(right_start.row, 1);
@@ -2935,7 +2935,7 @@ mod tests {
             Arc::new("test".to_string()) as Arc<dyn Any + Send + Sync>,
         );
         let metadata = Arc::new(data);
-        let base = NodeBase::new(
+        let base = NodeBase::new_simple(
             RelativePosition {
                 delta_lines: 0,
                 delta_columns: 0,
@@ -3201,7 +3201,7 @@ mod tests {
     fn test_match_pat_set() {
         let p_e = Vector::new_with_ptr_kind()
             .push_back(Arc::new(RholangNode::LongLiteral {
-                base: NodeBase::new(
+                base: NodeBase::new_simple(
                     RelativePosition {
                         delta_lines: 0,
                         delta_columns: 0,
@@ -3215,7 +3215,7 @@ mod tests {
                 metadata: None,
             }))
             .push_back(Arc::new(RholangNode::LongLiteral {
-                base: NodeBase::new(
+                base: NodeBase::new_simple(
                     RelativePosition {
                         delta_lines: 0,
                         delta_columns: 0,
@@ -3229,7 +3229,7 @@ mod tests {
                 metadata: None,
             }));
         let pat = Arc::new(RholangNode::Set {
-            base: NodeBase::new(
+            base: NodeBase::new_simple(
                 RelativePosition {
                     delta_lines: 0,
                     delta_columns: 0,
@@ -3245,7 +3245,7 @@ mod tests {
         });
         let c_e = Vector::new_with_ptr_kind()
             .push_back(Arc::new(RholangNode::LongLiteral {
-                base: NodeBase::new(
+                base: NodeBase::new_simple(
                     RelativePosition {
                         delta_lines: 0,
                         delta_columns: 0,
@@ -3259,7 +3259,7 @@ mod tests {
                 metadata: None,
             }))
             .push_back(Arc::new(RholangNode::LongLiteral {
-                base: NodeBase::new(
+                base: NodeBase::new_simple(
                     RelativePosition {
                         delta_lines: 0,
                         delta_columns: 0,
@@ -3273,7 +3273,7 @@ mod tests {
                 metadata: None,
             }));
         let concrete = Arc::new(RholangNode::Set {
-            base: NodeBase::new(
+            base: NodeBase::new_simple(
                 RelativePosition {
                     delta_lines: 0,
                     delta_columns: 0,
@@ -3295,7 +3295,7 @@ mod tests {
     fn test_match_pat_map() {
         let p_pair1 = (
             Arc::new(RholangNode::StringLiteral {
-                base: NodeBase::new(
+                base: NodeBase::new_simple(
                     RelativePosition {
                         delta_lines: 0,
                         delta_columns: 0,
@@ -3309,7 +3309,7 @@ mod tests {
                 metadata: None,
             }),
             Arc::new(RholangNode::LongLiteral {
-                base: NodeBase::new(
+                base: NodeBase::new_simple(
                     RelativePosition {
                         delta_lines: 0,
                         delta_columns: 0,
@@ -3325,7 +3325,7 @@ mod tests {
         );
         let p_pair2 = (
             Arc::new(RholangNode::StringLiteral {
-                base: NodeBase::new(
+                base: NodeBase::new_simple(
                     RelativePosition {
                         delta_lines: 0,
                         delta_columns: 0,
@@ -3339,7 +3339,7 @@ mod tests {
                 metadata: None,
             }),
             Arc::new(RholangNode::LongLiteral {
-                base: NodeBase::new(
+                base: NodeBase::new_simple(
                     RelativePosition {
                         delta_lines: 0,
                         delta_columns: 0,
@@ -3355,7 +3355,7 @@ mod tests {
         );
         let p_pairs = Vector::new_with_ptr_kind().push_back(p_pair1).push_back(p_pair2);
         let pat = Arc::new(RholangNode::Map {
-            base: NodeBase::new(
+            base: NodeBase::new_simple(
                 RelativePosition {
                     delta_lines: 0,
                     delta_columns: 0,
@@ -3371,7 +3371,7 @@ mod tests {
         });
         let c_pair1 = (
             Arc::new(RholangNode::StringLiteral {
-                base: NodeBase::new(
+                base: NodeBase::new_simple(
                     RelativePosition {
                         delta_lines: 0,
                         delta_columns: 0,
@@ -3385,7 +3385,7 @@ mod tests {
                 metadata: None,
             }),
             Arc::new(RholangNode::LongLiteral {
-                base: NodeBase::new(
+                base: NodeBase::new_simple(
                     RelativePosition {
                         delta_lines: 0,
                         delta_columns: 0,
@@ -3401,7 +3401,7 @@ mod tests {
         );
         let c_pair2 = (
             Arc::new(RholangNode::StringLiteral {
-                base: NodeBase::new(
+                base: NodeBase::new_simple(
                     RelativePosition {
                         delta_lines: 0,
                         delta_columns: 0,
@@ -3415,7 +3415,7 @@ mod tests {
                 metadata: None,
             }),
             Arc::new(RholangNode::LongLiteral {
-                base: NodeBase::new(
+                base: NodeBase::new_simple(
                     RelativePosition {
                         delta_lines: 0,
                         delta_columns: 0,
@@ -3431,7 +3431,7 @@ mod tests {
         );
         let c_pairs = Vector::new_with_ptr_kind().push_back(c_pair1).push_back(c_pair2);
         let concrete = Arc::new(RholangNode::Map {
-            base: NodeBase::new(
+            base: NodeBase::new_simple(
                 RelativePosition {
                     delta_lines: 0,
                     delta_columns: 0,
@@ -3452,7 +3452,7 @@ mod tests {
     #[test]
     fn test_match_pat_disjunction() {
         let p_left = Arc::new(RholangNode::LongLiteral {
-            base: NodeBase::new(
+            base: NodeBase::new_simple(
                 RelativePosition {
                     delta_lines: 0,
                     delta_columns: 0,
@@ -3466,7 +3466,7 @@ mod tests {
             metadata: None,
         });
         let p_right = Arc::new(RholangNode::LongLiteral {
-            base: NodeBase::new(
+            base: NodeBase::new_simple(
                 RelativePosition {
                     delta_lines: 0,
                     delta_columns: 0,
@@ -3480,7 +3480,7 @@ mod tests {
             metadata: None,
         });
         let pat = Arc::new(RholangNode::Disjunction {
-            base: NodeBase::new(
+            base: NodeBase::new_simple(
                 RelativePosition {
                     delta_lines: 0,
                     delta_columns: 0,
@@ -3495,7 +3495,7 @@ mod tests {
             metadata: None,
         });
         let c_left = Arc::new(RholangNode::LongLiteral {
-            base: NodeBase::new(
+            base: NodeBase::new_simple(
                 RelativePosition {
                     delta_lines: 0,
                     delta_columns: 0,
@@ -3509,7 +3509,7 @@ mod tests {
             metadata: None,
         });
         let c_right = Arc::new(RholangNode::LongLiteral {
-            base: NodeBase::new(
+            base: NodeBase::new_simple(
                 RelativePosition {
                     delta_lines: 0,
                     delta_columns: 0,
@@ -3523,7 +3523,7 @@ mod tests {
             metadata: None,
         });
         let concrete = Arc::new(RholangNode::Disjunction {
-            base: NodeBase::new(
+            base: NodeBase::new_simple(
                 RelativePosition {
                     delta_lines: 0,
                     delta_columns: 0,

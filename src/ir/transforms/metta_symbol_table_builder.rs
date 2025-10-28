@@ -471,7 +471,7 @@ mod tests {
     use crate::ir::semantic_node::{NodeBase, RelativePosition};
 
     fn test_base() -> NodeBase {
-        NodeBase::new(
+        NodeBase::new_simple(
             RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
             10,
             0,

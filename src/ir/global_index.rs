@@ -73,7 +73,7 @@ impl SymbolLocation {
 
         Arc::new(RholangNode::StringLiteral {
             value: location_data,
-            base: NodeBase::new(
+            base: NodeBase::new_simple(
                 RelativePosition {
                     delta_lines: 0,
                     delta_columns: 0,
@@ -345,7 +345,7 @@ impl GlobalSymbolIndex {
         // Var nodes are converted to "$name" (variables) which unify with anything!
         Arc::new(RholangNode::StringLiteral {
             value: format!("contract:{}", name),
-            base: NodeBase::new(
+            base: NodeBase::new_simple(
                 RelativePosition {
                     delta_lines: 0,
                     delta_columns: 0,
@@ -364,7 +364,7 @@ impl GlobalSymbolIndex {
         // Var nodes are converted to "$name" (variables) which unify with anything!
         Arc::new(RholangNode::StringLiteral {
             value: format!("send:contract:{}", name),
-            base: NodeBase::new(
+            base: NodeBase::new_simple(
                 RelativePosition {
                     delta_lines: 0,
                     delta_columns: 0,
@@ -382,7 +382,7 @@ impl GlobalSymbolIndex {
         // Use StringLiteral for constant pattern matching
         Arc::new(RholangNode::StringLiteral {
             value: format!("channel:{}", name),
-            base: NodeBase::new(
+            base: NodeBase::new_simple(
                 RelativePosition {
                     delta_lines: 0,
                     delta_columns: 0,

@@ -10,6 +10,7 @@ use mettatron::ir::{SExpr, Span as MettaSpan};
 use crate::ir::metta_node::{MettaNode, MettaVariableType};
 use crate::ir::semantic_node::{NodeBase, Position};
 use crate::ir::rholang_node::RelativePosition;
+use crate::parsers::position_utils::create_simple_node_base;
 
 /// Wrapper around MeTTaTron's Tree-Sitter parser
 pub struct MettaParser {
@@ -320,7 +321,7 @@ impl MettaParser {
             let scrutinee_length = child_prev_end.byte - child_start.byte;
 
             let scrutinee = Arc::new(MettaNode::SExpr {
-                base: NodeBase::new(
+                base: NodeBase::new_simple(
                     RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
                     scrutinee_length,
                     scrutinee_span_lines,
@@ -473,10 +474,18 @@ impl MettaParser {
         }))
     }
 
-    /// Convert MeTTaTron's absolute Span to our RelativePosition-based NodeBase
+    /// Convert MeTTaTron span to NodeBase using common position_utils.
+    ///
+    /// This function bridges MeTTaTron's Span representation to our IR's NodeBase,
+    /// using the shared position tracking utilities for consistency with other parsers.
+    ///
+    /// # Parameters
+    /// - `span`: Optional MeTTaTron span with absolute positions
+    /// - `length`: Fallback length if span is not available (unused when span is Some)
+    /// - `prev_end`: Mutable reference to previous sibling's end (updated by position_utils)
     fn span_to_base(&self, span: Option<&MettaSpan>, length: usize, prev_end: &mut Position) -> NodeBase {
         if let Some(s) = span {
-            // MeTTaTron's Span has absolute positions
+            // MeTTaTron's Span has absolute positions - convert to our Position type
             let start = Position {
                 row: s.start.row,
                 column: s.start.column,
@@ -488,36 +497,11 @@ impl MettaParser {
                 byte: s.end_byte,
             };
 
-            // Calculate relative position from previous end
-            let delta_lines = (start.row as i32) - (prev_end.row as i32);
-            let delta_columns = if delta_lines == 0 {
-                (start.column as i32) - (prev_end.column as i32)
-            } else {
-                start.column as i32
-            };
-            let delta_bytes = start.byte - prev_end.byte;
-
-            let relative_start = RelativePosition {
-                delta_lines,
-                delta_columns,
-                delta_bytes,
-            };
-
-            // Calculate span metrics
-            let span_lines = end.row - start.row;
-            let span_columns = if span_lines > 0 {
-                end.column
-            } else {
-                end.column - start.column
-            };
-
-            // Update prev_end for next sibling
-            *prev_end = end;
-
-            NodeBase::new(relative_start, length, span_lines, span_columns)
+            // Use common position utilities for consistency with other parsers
+            create_simple_node_base(start, end, prev_end)
         } else {
-            // No span information - create a minimal base
-            NodeBase::new(
+            // No span information - create a minimal base with zero deltas
+            NodeBase::new_simple(
                 RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
                 length,
                 0,

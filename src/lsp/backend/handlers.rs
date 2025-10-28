@@ -39,7 +39,7 @@ use ropey::Rope;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use walkdir::WalkDir;
 
-use crate::ir::rholang_node::{RholangNode, Position as IrPosition, find_node_at_position_with_path, find_node_at_position};
+use crate::ir::rholang_node::{RholangNode, Position as IrPosition, find_node_at_position_with_path, find_node_at_position, compute_absolute_positions};
 use crate::ir::symbol_table::SymbolType;
 use crate::ir::transforms::document_symbol_visitor::collect_document_symbols;
 
@@ -678,8 +678,27 @@ impl LanguageServer for RholangBackend {
                     let loc = Location { uri: symbol.declaration_uri.clone(), range };
                     Ok(Some(GotoDefinitionResponse::Scalar(loc)))
                 } else {
-                    debug!("No symbol found at position");
-                    Ok(None)
+                    // Try one column to the left for right word boundary (IDE convention)
+                    if lsp_pos.character > 0 {
+                        debug!("No symbol at position, trying one column left for right word boundary");
+                        let left_pos = LspPosition {
+                            line: lsp_pos.line,
+                            character: lsp_pos.character - 1,
+                        };
+                        if let Some(symbol) = self.get_symbol_at_position(&uri, left_pos).await {
+                            let pos = symbol.definition_location.unwrap_or(symbol.declaration_location);
+                            let range = Self::position_to_range(pos, symbol.name.len());
+                            let loc = Location { uri: symbol.declaration_uri.clone(), range };
+                            debug!("Found symbol at right word boundary");
+                            Ok(Some(GotoDefinitionResponse::Scalar(loc)))
+                        } else {
+                            debug!("No symbol found at position or left");
+                            Ok(None)
+                        }
+                    } else {
+                        debug!("No symbol found at position");
+                        Ok(None)
+                    }
                 };
                 info!("goto_definition completed in {:.3}ms (symbol lookup for missing node)", start.elapsed().as_secs_f64() * 1000.0);
                 result

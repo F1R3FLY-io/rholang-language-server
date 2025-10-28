@@ -141,7 +141,7 @@ mod tests {
             kind: TransformKind::Specific(Arc::new(IdentityVisitor)),
         };
         pipeline.add_transform(transform);
-        let base = NodeBase::new(RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, 0, 0);
+        let base = NodeBase::new_simple(RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, 0, 0);
         let mut data = HashMap::new();
         data.insert("version".to_string(), Arc::new(0_usize) as Arc<dyn Any + Send + Sync>);
         let metadata = Some(Arc::new(data));

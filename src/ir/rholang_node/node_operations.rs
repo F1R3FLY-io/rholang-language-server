@@ -60,7 +60,7 @@ pub fn match_pat(pat: &Arc<RholangNode>, concrete: &Arc<RholangNode>, subst: &mu
                 }
             }
             let rem_c_elements = c_e.iter().skip(p_e.len()).cloned().collect::<Vector<_, ArcK>>();
-            let rem_base = NodeBase::new(
+            let rem_base = NodeBase::new_simple(
                 RelativePosition {
                     delta_lines: 0,
                     delta_columns: 0,
@@ -122,7 +122,7 @@ pub fn match_pat(pat: &Arc<RholangNode>, concrete: &Arc<RholangNode>, subst: &mu
                 }
             }
             let rem_c_elements = c_e.iter().skip(p_e.len()).cloned().collect::<Vector<_, ArcK>>();
-            let rem_base = NodeBase::new(
+            let rem_base = NodeBase::new_simple(
                 RelativePosition {
                     delta_lines: 0,
                     delta_columns: 0,
@@ -177,7 +177,7 @@ pub fn match_pat(pat: &Arc<RholangNode>, concrete: &Arc<RholangNode>, subst: &mu
                 }
             }
             let rem_c_pairs = c_pairs.iter().skip(p_pairs.len()).cloned().collect::<Vector<_, ArcK>>();
-            let rem_base = NodeBase::new(
+            let rem_base = NodeBase::new_simple(
                 RelativePosition {
                     delta_lines: 0,
                     delta_columns: 0,
@@ -285,7 +285,7 @@ pub fn match_contract(channel: &Arc<RholangNode>, inputs: &RholangNodeVector, co
                 .skip(min_len)
                 .cloned()
                 .collect::<Vector<_, ArcK>>();
-            let rem_base = NodeBase::new(
+            let rem_base = NodeBase::new_simple(
                 RelativePosition {
                     delta_lines: 0,
                     delta_columns: 0,
