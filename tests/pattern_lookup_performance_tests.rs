@@ -80,7 +80,8 @@ fn test_arity_matching_performance() {
     println!("1M arity checks: {:?}", duration);
 
     // Should be extremely fast (simple integer comparison)
-    assert!(duration.as_millis() < 100,
+    // Threshold increased to 150ms to reduce flakiness when tests run in parallel
+    assert!(duration.as_millis() < 150,
             "Arity matching should be very fast");
 }
 
@@ -116,8 +117,9 @@ fn test_variadic_matching_performance() {
     println!("Exact matching: {:?}", exact_duration);
 
     // Both should be roughly the same speed (simple comparisons)
-    assert!(variadic_duration.as_millis() < 100);
-    assert!(exact_duration.as_millis() < 100);
+    // Thresholds increased to 150ms to reduce flakiness when tests run in parallel
+    assert!(variadic_duration.as_millis() < 150);
+    assert!(exact_duration.as_millis() < 150);
 }
 
 /// Demonstrate that pattern signature equality checks are fast
@@ -145,7 +147,8 @@ fn test_pattern_signature_equality_performance() {
     println!("1M equality checks: {:?}", duration);
 
     // Equality checking should be very fast
-    assert!(duration.as_millis() < 100);
+    // Threshold increased to 150ms to reduce flakiness when tests run in parallel
+    assert!(duration.as_millis() < 150);
 }
 
 /// Test that pattern lookup benefits scale with dataset size

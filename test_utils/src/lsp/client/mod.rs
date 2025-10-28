@@ -108,6 +108,70 @@ pub struct LspClient {
     pub comm_type: CommType,
 }
 
+/// Spawn server with retry logic to handle file system contention in parallel tests
+async fn spawn_server_with_retry_stdio(
+    server_path: &str,
+    server_args: &[&str],
+) -> io::Result<Child> {
+    let max_attempts = 5;
+    let mut wait_time = Duration::from_millis(10);
+    let mut last_error = None;
+
+    for attempt in 0..max_attempts {
+        match Command::new(server_path)
+            .args(server_args)
+            .envs(std::env::vars())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(server) => return Ok(server),
+            Err(e) => {
+                last_error = Some(e);
+                if attempt < max_attempts - 1 {
+                    tokio::time::sleep(wait_time).await;
+                    wait_time = (wait_time * 2).min(Duration::from_millis(100));
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap())
+}
+
+/// Spawn server with retry logic (null stdin variant)
+async fn spawn_server_with_retry_null(
+    server_path: &str,
+    server_args: &[&str],
+) -> io::Result<Child> {
+    let max_attempts = 5;
+    let mut wait_time = Duration::from_millis(10);
+    let mut last_error = None;
+
+    for attempt in 0..max_attempts {
+        match Command::new(server_path)
+            .args(server_args)
+            .envs(std::env::vars())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(server) => return Ok(server),
+            Err(e) => {
+                last_error = Some(e);
+                if attempt < max_attempts - 1 {
+                    tokio::time::sleep(wait_time).await;
+                    wait_time = (wait_time * 2).min(Duration::from_millis(100));
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap())
+}
+
 impl LspClient {
     /// Starts the LSP client with the given configuration.
     pub async fn start(
@@ -145,13 +209,7 @@ impl LspClient {
                         "--rnode-port", &rnode_port.to_string(),
                         "--no-rnode",  // Tests use parser-only validation (no RNode dependency)
                     ];
-                    let mut server = Command::new(&server_path)
-                        .args(server_args)
-                        .envs(std::env::vars())
-                        .stdin(Stdio::piped())
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped())
-                        .spawn()?;
+                    let mut server = spawn_server_with_retry_stdio(&server_path, server_args).await?;
                     let output = Box::new(server.stdin.take().expect("Failed to open server stdin")) as Box<dyn LspStream>;
                     let input = Box::new(server.stdout.take().expect("Failed to open server stdout")) as Box<dyn LspStream>;
                     let logger = Box::new(server.stderr.take().expect("Failed to open server stderr")) as Box<dyn LspStream>;
@@ -168,13 +226,7 @@ impl LspClient {
                         "--rnode-port", &rnode_port.to_string(),
                         "--no-rnode",  // Tests use parser-only validation (no RNode dependency)
                     ];
-                    let mut server = Command::new(&server_path)
-                        .args(server_args)
-                        .envs(std::env::vars())
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped())
-                        .spawn()?;
+                    let mut server = spawn_server_with_retry_null(&server_path, server_args).await?;
                     let logger = Box::new(server.stderr.take().expect("Failed to open server stderr")) as Box<dyn LspStream>;
 
                     // Retry connection with exponential backoff (necessary - waiting for server to bind port)
@@ -244,24 +296,59 @@ impl LspClient {
                         "--rnode-port", &rnode_port.to_string(),
                         "--no-rnode",  // Tests use parser-only validation (no RNode dependency)
                     ];
-                    let mut server = Command::new(&server_path)
-                        .args(server_args)
-                        .envs(std::env::vars())
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped())
-                        .spawn()?;
+                    let mut server = spawn_server_with_retry_null(&server_path, server_args).await?;
                     let logger = Box::new(server.stderr.take().expect("Failed to open server stderr")) as Box<dyn LspStream>;
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+
+                    // Retry connection with exponential backoff (server needs time to create socket)
                     #[cfg(windows)]
                     let (read_half, write_half) = {
-                        let client = NamedPipeClient::connect(&path).await?;
-                        split(client)
+                        let mut wait_time = Duration::from_millis(10);
+                        let max_attempts = 10;
+                        let mut last_error = None;
+                        let mut client = None;
+
+                        for attempt in 0..max_attempts {
+                            match NamedPipeClient::connect(&path).await {
+                                Ok(c) => {
+                                    client = Some(c);
+                                    break;
+                                }
+                                Err(e) => {
+                                    last_error = Some(e);
+                                    if attempt < max_attempts - 1 {
+                                        tokio::time::sleep(wait_time).await;
+                                        wait_time = (wait_time * 2).min(Duration::from_millis(200));
+                                    }
+                                }
+                            }
+                        }
+
+                        split(client.ok_or_else(|| last_error.unwrap())?)
                     };
                     #[cfg(unix)]
                     let (read_half, write_half) = {
-                        let stream = UnixStream::connect(&path).await?;
-                        split(stream)
+                        let mut wait_time = Duration::from_millis(10);
+                        let max_attempts = 10;
+                        let mut last_error = None;
+                        let mut stream = None;
+
+                        for attempt in 0..max_attempts {
+                            match UnixStream::connect(&path).await {
+                                Ok(s) => {
+                                    stream = Some(s);
+                                    break;
+                                }
+                                Err(e) => {
+                                    last_error = Some(e);
+                                    if attempt < max_attempts - 1 {
+                                        tokio::time::sleep(wait_time).await;
+                                        wait_time = (wait_time * 2).min(Duration::from_millis(200));
+                                    }
+                                }
+                            }
+                        }
+
+                        split(stream.ok_or_else(|| last_error.unwrap())?)
                     };
                     let write_stream = Arc::new(Mutex::new(write_half));
                     let output = Box::new(AsyncLspWriteStream::new(
@@ -293,13 +380,7 @@ impl LspClient {
                         "--no-rnode",  // Tests use parser-only validation (no RNode dependency)
                     ];
                     debug!("Server command: {} {:?}", server_path, server_args);
-                    let mut server = Command::new(&server_path)
-                        .args(server_args)
-                        .envs(std::env::vars())
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped())
-                        .spawn()
+                    let mut server = spawn_server_with_retry_null(&server_path, server_args).await
                         .map_err(|e| {
                             error!("Failed to spawn server: {}", e);
                             io::Error::new(io::ErrorKind::Other, format!("Failed to spawn server: {}", e))
