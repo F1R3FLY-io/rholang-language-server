@@ -63,7 +63,7 @@ fn compute_positions_helper(
             RholangNode::NameDecl { .. } => "NameDecl".to_string(),
             _ => format!("{:?}", node).chars().take(15).collect(),
         };
-        debug!("POS_TRACK [{}]: prev_end={}, delta_bytes={}, COMPUTED start.byte={}",
+        trace!("POS_TRACK [{}]: prev_end={}, delta_bytes={}, COMPUTED start.byte={}",
                node_type, start.byte - base.delta_bytes(), base.delta_bytes(), start.byte);
     }
 
