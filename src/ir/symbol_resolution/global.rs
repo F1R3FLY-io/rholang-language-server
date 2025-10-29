@@ -4,7 +4,6 @@
 //! This is typically used as a fallback when local/lexical scope resolution fails.
 
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::debug;
 
 use tower_lsp::lsp_types::{Range, Url};
@@ -20,13 +19,15 @@ use super::{
 ///
 /// This resolver searches the workspace-wide symbol index for cross-document references.
 /// It's typically used as a fallback when local scope resolution doesn't find anything.
+///
+/// Phase 1 Optimization: Now uses lock-free DashMap access
 pub struct GlobalVirtualSymbolResolver {
-    workspace: Arc<RwLock<WorkspaceState>>,
+    workspace: Arc<WorkspaceState>,
 }
 
 impl GlobalVirtualSymbolResolver {
     /// Create a new global symbol resolver
-    pub fn new(workspace: Arc<RwLock<WorkspaceState>>) -> Self {
+    pub fn new(workspace: Arc<WorkspaceState>) -> Self {
         Self { workspace }
     }
 }
@@ -43,16 +44,33 @@ impl SymbolResolver for GlobalVirtualSymbolResolver {
             symbol_name, context.language
         );
 
-        // This is an async function being called from sync context
-        // We need to use block_on or similar - for now, return empty
-        // In practice, this will be called from async LSP handlers
-        // TODO: Make SymbolResolver trait async or use blocking read
+        // Lock-free access via DashMap
+        let locations: Vec<SymbolLocation> = self.workspace
+            .global_virtual_symbols
+            .get(&context.language)
+            .and_then(|lang_symbols_entry| {
+                let lang_symbols = lang_symbols_entry.value();
+                lang_symbols.get(symbol_name).map(|locs_entry| {
+                    locs_entry.value().iter()
+                        .map(|(uri, range)| SymbolLocation {
+                            uri: uri.clone(),
+                            range: *range,
+                            kind: SymbolKind::Function,
+                            confidence: ResolutionConfidence::Fuzzy,
+                            metadata: None,
+                        })
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
 
-        // For now, we'll document that this should be called from async context
-        // and the caller should handle the async read
-        debug!("GlobalVirtualSymbolResolver: Requires async context (placeholder)");
+        debug!(
+            "GlobalVirtualSymbolResolver: Found {} locations for '{}'",
+            locations.len(),
+            symbol_name
+        );
 
-        Vec::new()
+        locations
     }
 
     fn supports_language(&self, _language: &str) -> bool {
@@ -68,17 +86,20 @@ impl SymbolResolver for GlobalVirtualSymbolResolver {
 /// Async-friendly version of global symbol resolver
 ///
 /// This resolver can be used directly from async LSP handlers
+///
+/// Phase 1 Optimization: No longer needs RwLock wrapper as WorkspaceState
+/// uses lock-free DashMap internally for concurrent access
 pub struct AsyncGlobalVirtualSymbolResolver {
-    workspace: Arc<RwLock<WorkspaceState>>,
+    workspace: Arc<WorkspaceState>,
 }
 
 impl AsyncGlobalVirtualSymbolResolver {
     /// Create a new async global resolver
-    pub fn new(workspace: Arc<RwLock<WorkspaceState>>) -> Self {
+    pub fn new(workspace: Arc<WorkspaceState>) -> Self {
         Self { workspace }
     }
 
-    /// Resolve symbol asynchronously
+    /// Resolve symbol asynchronously using lock-free lookups
     pub async fn resolve_symbol_async(
         &self,
         symbol_name: &str,
@@ -89,23 +110,23 @@ impl AsyncGlobalVirtualSymbolResolver {
             symbol_name, context.language
         );
 
-        let workspace = self.workspace.read().await;
-
-        // Look up in global_virtual_symbols
-        let locations: Vec<SymbolLocation> = workspace
+        // No lock needed - DashMap provides lock-free access
+        let locations: Vec<SymbolLocation> = self.workspace
             .global_virtual_symbols
             .get(&context.language)
-            .and_then(|lang_symbols| lang_symbols.get(symbol_name))
-            .map(|locs| {
-                locs.iter()
-                    .map(|(uri, range)| SymbolLocation {
-                        uri: uri.clone(),
-                        range: *range,
-                        kind: SymbolKind::Function, // Assume function for now
-                        confidence: ResolutionConfidence::Fuzzy, // Cross-document is less certain
-                        metadata: None,
-                    })
-                    .collect()
+            .and_then(|lang_symbols_entry| {
+                let lang_symbols = lang_symbols_entry.value();
+                lang_symbols.get(symbol_name).map(|locs_entry| {
+                    locs_entry.value().iter()
+                        .map(|(uri, range)| SymbolLocation {
+                            uri: uri.clone(),
+                            range: *range,
+                            kind: SymbolKind::Function, // Assume function for now
+                            confidence: ResolutionConfidence::Fuzzy, // Cross-document is less certain
+                            metadata: None,
+                        })
+                        .collect()
+                })
             })
             .unwrap_or_default();
 
@@ -130,32 +151,34 @@ mod tests {
 
     #[tokio::test]
     async fn test_async_global_resolver() {
-        // Create a workspace with some global symbols
-        let mut global_virtual_symbols = HashMap::new();
-        let mut metta_symbols = HashMap::new();
+        use dashmap::DashMap;
 
+        // Create a workspace with some global symbols using new DashMap structure
         let range = Range {
             start: LspPosition { line: 0, character: 0 },
             end: LspPosition { line: 0, character: 10 },
         };
 
+        // Build the nested DashMap structure
+        let global_virtual_symbols = Arc::new(DashMap::new());
+        let metta_symbols = Arc::new(DashMap::new());
         metta_symbols.insert(
             "test_symbol".to_string(),
             vec![(Url::parse("file:///test.metta#vdoc:0").unwrap(), range)],
         );
-
         global_virtual_symbols.insert("metta".to_string(), metta_symbols);
 
-        let workspace = Arc::new(RwLock::new(WorkspaceState {
-            documents: HashMap::new(),
-            global_symbols: HashMap::new(),
-            global_table: Arc::new(SymbolTable::new(None)),
-            global_inverted_index: HashMap::new(),
-            global_contracts: Vec::new(),
-            global_calls: Vec::new(),
+        let workspace = Arc::new(WorkspaceState {
+            documents: Arc::new(DashMap::new()),
+            global_symbols: Arc::new(DashMap::new()),
+            global_table: Arc::new(tokio::sync::RwLock::new(SymbolTable::new(None))),
+            global_inverted_index: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            global_contracts: Arc::new(DashMap::new()),
+            global_calls: Arc::new(DashMap::new()),
             global_index: Arc::new(std::sync::RwLock::new(GlobalSymbolIndex::new())),
             global_virtual_symbols,
-        }));
+            indexing_state: Arc::new(tokio::sync::RwLock::new(crate::lsp::models::IndexingState::Idle)),
+        });
 
         let resolver = AsyncGlobalVirtualSymbolResolver::new(workspace);
 
