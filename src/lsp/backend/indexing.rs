@@ -630,6 +630,9 @@ impl RholangBackend {
         // Phase 4: Link symbols across all indexed files
         self.link_symbols().await;
 
+        // Phase 5: Link symbols across all virtual documents
+        self.link_virtual_symbols().await;
+
         info!("Total indexing time (including symbol linking): {:?}", start.elapsed());
     }
 

@@ -122,6 +122,94 @@ impl RholangBackend {
         });
     }
 
+    /// Links symbols across all virtual documents in the workspace.
+    ///
+    /// This function:
+    /// 1. Iterates through all documents in workspace to find their virtual documents
+    /// 2. For each virtual document, builds/gets its symbol table
+    /// 3. Collects all definition symbols organized by language
+    /// 4. Updates the global_virtual_symbols table for cross-document navigation
+    ///
+    /// This enables goto-definition across all MeTTa (and other embedded language) virtual documents.
+    pub(crate) async fn link_virtual_symbols(&self) {
+        use tower_lsp::lsp_types::Range;
+
+        // Get workspace document URIs (read lock)
+        let document_uris = {
+            let workspace = self.workspace.read().await;
+            workspace.documents.keys().cloned().collect::<Vec<_>>()
+        };
+
+        // Collect symbols from all virtual documents, organized by language
+        let mut global_symbols: HashMap<String, HashMap<String, Vec<(Url, Range)>>> = HashMap::new();
+        let mut total_virtual_docs = 0;
+
+        for parent_uri in &document_uris {
+            // Get all virtual documents for this parent (each call acquires a read lock)
+            let virtual_docs_for_parent = {
+                let vdocs = self.virtual_docs.read().await;
+                vdocs.get_by_parent(parent_uri)
+            };
+
+            if virtual_docs_for_parent.is_empty() {
+                continue;
+            }
+
+            debug!("Linking symbols from {} virtual documents in {}",
+                   virtual_docs_for_parent.len(), parent_uri);
+
+            for virtual_doc in virtual_docs_for_parent {
+                total_virtual_docs += 1;
+                let language = virtual_doc.language.clone();
+
+                // Get or build symbol table for this virtual document
+                let symbol_table = match virtual_doc.get_or_build_symbol_table() {
+                    Some(table) => table,
+                    None => {
+                        debug!("No symbol table available for virtual document: {}", virtual_doc.uri);
+                        continue;
+                    }
+                };
+
+                // Extract all definition symbols
+                let definitions: Vec<_> = symbol_table.all_occurrences.iter()
+                    .filter(|occ| occ.is_definition)
+                    .collect();
+
+                trace!("Found {} definitions in virtual document {}", definitions.len(), virtual_doc.uri);
+
+                // Add definitions to global_symbols by language
+                let lang_symbols = global_symbols.entry(language.clone()).or_insert_with(HashMap::new);
+
+                for def in definitions {
+                    lang_symbols
+                        .entry(def.name.clone())
+                        .or_insert_with(Vec::new)
+                        .push((virtual_doc.uri.clone(), def.range));
+                }
+            }
+        }
+
+        // Update workspace with the collected symbols
+        let (symbol_count, lang_count) = {
+            let mut workspace = self.workspace.write().await;
+            workspace.global_virtual_symbols = global_symbols.clone();
+
+            let total_symbols: usize = global_symbols.values()
+                .map(|lang_map| lang_map.len())
+                .sum();
+            (total_symbols, global_symbols.len())
+        };
+
+        info!("Linked {} symbols across {} virtual documents in {} languages",
+              symbol_count, total_virtual_docs, lang_count);
+
+        // Log symbol counts per language
+        for (lang, symbols) in &global_symbols {
+            debug!("  {}: {} unique symbols", lang, symbols.len());
+        }
+    }
+
     /// Gets the symbol at the given position in a document.
     ///
     /// This function handles various node types:

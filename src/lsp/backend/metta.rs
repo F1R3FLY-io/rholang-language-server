@@ -631,6 +631,39 @@ impl RholangBackend {
             })));
         }
 
+        // Try cross-document lookup using global_virtual_symbols
+        // This enables goto-definition across all MeTTa virtual documents in the workspace
+        debug!("Trying cross-document lookup for MeTTa symbol '{}'", symbol.name);
+        let workspace = self.workspace.read().await;
+
+        if let Some(lang_symbols) = workspace.global_virtual_symbols.get(&virtual_doc.language) {
+            if let Some(locations) = lang_symbols.get(&symbol.name) {
+                debug!(
+                    "Found {} cross-document definition(s) for MeTTa symbol '{}' in language '{}'",
+                    locations.len(),
+                    symbol.name,
+                    virtual_doc.language
+                );
+
+                // Map to parent document locations
+                let parent_locations: Vec<Location> = locations
+                    .iter()
+                    .map(|(uri, range)| Location {
+                        uri: uri.clone(),
+                        range: *range,
+                    })
+                    .collect();
+
+                if parent_locations.len() == 1 {
+                    return Ok(Some(GotoDefinitionResponse::Scalar(
+                        parent_locations.into_iter().next().unwrap(),
+                    )));
+                } else if !parent_locations.is_empty() {
+                    return Ok(Some(GotoDefinitionResponse::Array(parent_locations)));
+                }
+            }
+        }
+
         debug!("No definition found for MeTTa symbol '{}'", symbol.name);
         Ok(None)
     }

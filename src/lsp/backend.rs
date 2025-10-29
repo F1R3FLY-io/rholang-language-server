@@ -163,6 +163,7 @@ impl RholangBackend {
                 global_contracts: Vec::new(),
                 global_calls: Vec::new(),
                 global_index: Arc::new(std::sync::RwLock::new(crate::ir::global_index::GlobalSymbolIndex::new())),
+                global_virtual_symbols: HashMap::new(),
             })),
             file_watcher: Arc::new(Mutex::new(None)),
             file_events: Arc::new(Mutex::new(rx)),

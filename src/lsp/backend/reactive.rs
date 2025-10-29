@@ -389,6 +389,9 @@ impl RholangBackend {
                 // Execute single link_symbols call for entire batch
                 backend.link_symbols().await;
 
+                // Also link virtual document symbols
+                backend.link_virtual_symbols().await;
+
                 debug!("Completed symbol linking for batch of {} requests", batch_size);
             }
 

@@ -124,4 +124,8 @@ pub struct WorkspaceState {
     pub global_calls: Vec<(Url, Arc<RholangNode>)>,
     /// Global symbol index using MORK pattern matching for O(k) lookups
     pub global_index: Arc<std::sync::RwLock<GlobalSymbolIndex>>,
+    /// Global symbols from all virtual documents across the workspace, organized by language
+    /// Maps language name -> symbol name -> list of definition locations (virtual URI + range)
+    /// Example: global_virtual_symbols["metta"]["get_neighbors"] = [(virtual_uri_1, range1), ...]
+    pub global_virtual_symbols: HashMap<String, HashMap<String, Vec<(Url, tower_lsp::lsp_types::Range)>>>,
 }
