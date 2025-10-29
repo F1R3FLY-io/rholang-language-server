@@ -15,6 +15,7 @@ use crate::ir::symbol_resolution::{
     SymbolResolver,
     lexical_scope::LexicalScopeResolver,
     composable::ComposableSymbolResolver,
+    GlobalVirtualSymbolResolver,
 };
 use crate::ir::transforms::metta_symbol_table_builder::MettaSymbolTable;
 use crate::lsp::models::WorkspaceState;
@@ -112,31 +113,40 @@ impl DocumentationProvider for MettaDocumentationProvider {
 /// * `parent_uri` - URI of the parent Rholang document
 ///
 /// # Returns
-/// Configured LanguageAdapter for MeTTa with ComposableSymbolResolver
+/// Configured LanguageAdapter for MeTTa with full symbol resolution
 ///
 /// # Architecture
 /// Uses a composable resolver with:
-/// 1. Base: LexicalScopeResolver for local symbols
-/// 2. Fallback: AsyncGlobalVirtualSymbolResolver for cross-document symbols
-/// 3. Filters: (Future) MettaPatternFilter for arity-based refinement
+/// 1. **Base**: LexicalScopeResolver for local symbols within the virtual document
+/// 2. **Fallback**: GlobalVirtualSymbolResolver for cross-document symbol resolution
+/// 3. **Filters**: (Future) MettaPatternFilter for arity-based refinement
+///
+/// ## Resolution Flow
+/// 1. First tries local scope lookup via MettaSymbolTable
+/// 2. If not found locally, falls back to global_virtual_symbols index
+/// 3. Returns all matching locations with appropriate confidence levels
 pub fn create_metta_adapter(
     symbol_table: Arc<MettaSymbolTable>,
     workspace: Arc<WorkspaceState>,
     _parent_uri: Url,
 ) -> LanguageAdapter {
-    // Create base lexical scope resolver
+    // Create base lexical scope resolver for local symbols
     let base_resolver = Box::new(
         LexicalScopeResolver::new(symbol_table, "metta".to_string())
     );
 
-    // Create composable resolver
-    // Note: Pattern matching filter and global cross-document resolver will be added later
-    // AsyncGlobalVirtualSymbolResolver requires async, which ComposableSymbolResolver doesn't support yet
+    // Create global cross-document resolver as fallback
+    let global_resolver = Box::new(
+        GlobalVirtualSymbolResolver::new(workspace)
+    );
+
+    // Create composable resolver with local + global resolution
+    // Note: Pattern matching filter will be added later when pattern matcher is available
     let resolver: Arc<dyn SymbolResolver> = Arc::new(
         ComposableSymbolResolver::new(
             base_resolver,
             vec![], // No filters for now - pattern matcher will be added later
-            None,   // No global fallback for now - async support needed
+            Some(global_resolver), // Global fallback enables cross-document goto_definition
         )
     );
 
