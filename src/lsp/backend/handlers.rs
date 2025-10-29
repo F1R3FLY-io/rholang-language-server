@@ -9,6 +9,7 @@
 //! - Information providers (hover, semantic_tokens_full)
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use tower_lsp::{LanguageServer, jsonrpc};
 use tower_lsp::lsp_types::{
@@ -81,10 +82,45 @@ impl LanguageServer for RholangBackend {
                 *root_guard = Some(root_path.clone());
                 drop(root_guard);
 
-                // Queue all .rho files for progressive indexing
-                let mut file_count = 0;
-                for entry in WalkDir::new(&root_path).into_iter().filter_map(|e| e.ok()) {
-                    if entry.path().extension().map_or(false, |ext| ext == "rho") {
+                // Phase 2 optimization: Count files first, then set indexing state before queuing
+                let file_paths: Vec<_> = WalkDir::new(&root_path)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().map_or(false, |ext| ext == "rho"))
+                    .collect();
+
+                let file_count = file_paths.len();
+
+                if file_count > 0 {
+                    // Set indexing state to InProgress before queuing tasks
+                    {
+                        let mut state = self.workspace.indexing_state.write().await;
+                        *state = crate::lsp::models::IndexingState::InProgress {
+                            total: file_count,
+                            completed: 0,
+                        };
+                    }
+
+                    // Send initial progress notification
+                    self.client.send_notification::<tower_lsp::lsp_types::notification::Progress>(
+                        tower_lsp::lsp_types::ProgressParams {
+                            token: tower_lsp::lsp_types::NumberOrString::String("workspace-indexing".to_string()),
+                            value: tower_lsp::lsp_types::ProgressParamsValue::WorkDone(
+                                tower_lsp::lsp_types::WorkDoneProgress::Begin(
+                                    tower_lsp::lsp_types::WorkDoneProgressBegin {
+                                        title: "Indexing workspace".to_string(),
+                                        message: Some(format!("Found {} files", file_count)),
+                                        percentage: Some(0),
+                                        cancellable: Some(false),
+                                    }
+                                )
+                            ),
+                        }
+                    ).await;
+
+                    // Queue all .rho files for progressive indexing
+                    let mut queued_count = 0;
+                    for entry in file_paths {
                         let uri = Url::from_file_path(entry.path()).unwrap();
                         let text = std::fs::read_to_string(entry.path()).unwrap_or_default();
 
@@ -99,11 +135,13 @@ impl LanguageServer for RholangBackend {
                         if let Err(e) = self.indexing_tx.send(task).await {
                             error!("Failed to queue indexing task for {}: {}", uri, e);
                         } else {
-                            file_count += 1;
+                            queued_count += 1;
                         }
                     }
+                    info!("Queued {} .rho files for progressive indexing", queued_count);
+                } else {
+                    info!("No .rho files found in workspace");
                 }
-                info!("Queued {} .rho files for progressive indexing", file_count);
 
                 let tx = self.file_sender.lock().unwrap().clone();
                 let mut watcher = RecommendedWatcher::new(
@@ -437,8 +475,7 @@ impl LanguageServer for RholangBackend {
         }
 
         let byte = {
-            let workspace = self.workspace.read().await;
-            if let Some(doc) = workspace.documents.get(&uri) {
+            if let Some(doc) = self.workspace.documents.get(&uri) {
                 let text = &doc.text;
                 Self::byte_offset_from_position(text, lsp_pos.line as usize, lsp_pos.character as usize)
             } else {
@@ -456,8 +493,7 @@ impl LanguageServer for RholangBackend {
 
         debug!("Computed IR position: {:?}", ir_pos);
 
-        let workspace = self.workspace.read().await;
-        if let Some(doc) = workspace.documents.get(&uri) {
+        if let Some(doc) = self.workspace.documents.get(&uri) {
             debug!("Document found in workspace: {}", uri);
             let root = &doc.ir;
             if let Some((node, path)) = find_node_at_position_with_path(root, &*doc.positions, ir_pos) {
@@ -518,8 +554,7 @@ impl LanguageServer for RholangBackend {
 
                         if let Some(contract_name) = contract_name_opt {
                             debug!("Attempting fast-path contract lookup via GlobalSymbolIndex for: {}", contract_name);
-                            let global_index = workspace.global_index.clone();
-                            drop(workspace); // Release lock before potentially async work
+                            let global_index = self.workspace.global_index.clone();
 
                             if let Ok(global_index_guard) = global_index.read() {
                                 if let Ok(Some(symbol_loc)) = global_index_guard.find_contract_definition(&contract_name) {
@@ -532,9 +567,7 @@ impl LanguageServer for RholangBackend {
                             }
                         }
 
-                        // Reacquire workspace lock for fallback (or use existing if not dropped)
-                        let workspace = self.workspace.read().await;
-
+                        // Lock-free workspace access for fallback
                         // For quoted contracts, the parent is Quote and grandparent is Send
                         // For non-quoted, parent is Send
                         let send_node = if is_quoted_channel && path.len() >= 3 {
@@ -544,24 +577,38 @@ impl LanguageServer for RholangBackend {
                         };
 
                         if let RholangNode::Send { channel, inputs, .. } | RholangNode::SendSync { channel, inputs, .. } = &**send_node {
-                            debug!("Checking {} global contracts for match with channel: {:?}", workspace.global_contracts.len(), channel);
+                            let global_contracts_len = self.workspace.global_contracts.iter().map(|e| e.value().len()).sum::<usize>();
+                            debug!("Checking {} global contracts for match with channel: {:?}", global_contracts_len, channel);
 
                             // Extract contract name and arity for pattern-based lookup
                             let contract_name = Self::extract_contract_name(channel);
                             let arg_count = inputs.len();
 
+                            // Get global_table for pattern matching (needs lock - infrequent operation)
+                            let global_table = self.workspace.global_table.read().await;
+
+                            // Collect all contracts from DashMap
+                            let all_contracts: Vec<(Url, Arc<RholangNode>)> = self.workspace.global_contracts
+                                .iter()
+                                .flat_map(|entry| {
+                                    let uri = entry.key().clone();
+                                    let contracts = entry.value().clone();
+                                    contracts.into_iter().map(move |c| (uri.clone(), c))
+                                })
+                                .collect();
+
                             // Use pattern-based filtering for O(1) lookup
                             let candidates = if let Some(name) = &contract_name {
                                 Self::filter_contracts_by_pattern(
-                                    &workspace.global_contracts,
-                                    &workspace.global_table,
+                                    &all_contracts,
+                                    &global_table,
                                     name,
                                     arg_count
                                 )
                             } else {
                                 // Fallback: no name extraction possible, check all contracts
                                 debug!("Could not extract contract name from channel, checking all contracts");
-                                workspace.global_contracts.iter().collect()
+                                all_contracts.iter().collect()
                             };
 
                             debug!("Pattern-based filtering returned {} candidate contracts", candidates.len());
@@ -572,7 +619,7 @@ impl LanguageServer for RholangBackend {
                                 debug!("match_contract(channel, inputs, contract) = {} for contract: {:?}", result, contract);
                                 result
                             }).map(|(u, c)| {
-                                let cached_doc = workspace.documents.get(u).expect("Document not found");
+                                let cached_doc = self.workspace.documents.get(u).expect("Document not found");
                                 let positions = cached_doc.positions.clone();
                                 debug!("Matched contract in {}: '{}'", u, c.text(&cached_doc.text, &cached_doc.ir).to_string());
                                 let name = if let RholangNode::Contract { name, .. } = &**c {
@@ -592,7 +639,6 @@ impl LanguageServer for RholangBackend {
                             }).collect::<Vec<_>>();
                             debug!("Found {} matching contracts", matching.len());
                             if matching.is_empty() {
-                                drop(workspace);
                                 debug!("No matching contracts; falling back to symbol lookup");
                                 let result = if let Some(symbol) = self.get_symbol_at_position(&uri, lsp_pos).await {
                                     let pos = symbol.definition_location.unwrap_or(symbol.declaration_location);
@@ -622,7 +668,7 @@ impl LanguageServer for RholangBackend {
                             if std::sync::Arc::ptr_eq(name, &node) {
                                 debug!("Node is contract name - returning contract location");
                                 // Clicking on contract name - return the contract's location
-                                let contract_doc = workspace.documents.get(&uri).expect("Document not found");
+                                let contract_doc = self.workspace.documents.get(&uri).expect("Document not found");
                                 let positions = contract_doc.positions.clone();
                                 let key = &**name as *const RholangNode as usize;
                                 if let Some((start_pos, _)) = (*positions).get(&key) {
@@ -640,7 +686,6 @@ impl LanguageServer for RholangBackend {
                             debug!("Parent is not Contract node, parent type: {:?}", std::mem::discriminant(&*parent));
                         }
 
-                        drop(workspace);
                         debug!("Falling back to symbol lookup");
                         let result = if let Some(symbol) = self.get_symbol_at_position(&uri, lsp_pos).await {
                             let pos = symbol.definition_location.unwrap_or(symbol.declaration_location);
@@ -655,7 +700,6 @@ impl LanguageServer for RholangBackend {
                         result
                     }
                 } else {
-                    drop(workspace);
                     debug!("Path too short; falling back to symbol lookup");
                     let result = if let Some(symbol) = self.get_symbol_at_position(&uri, lsp_pos).await {
                         let pos = symbol.definition_location.unwrap_or(symbol.declaration_location);
@@ -671,7 +715,6 @@ impl LanguageServer for RholangBackend {
             } else {
                 debug!("No node found at position {:?} in find_node_at_position", ir_pos);
                 // Try symbol lookup as fallback
-                drop(workspace);
                 let result = if let Some(symbol) = self.get_symbol_at_position(&uri, lsp_pos).await {
                     let pos = symbol.definition_location.unwrap_or(symbol.declaration_location);
                     let range = Self::position_to_range(pos, symbol.name.len());
@@ -746,9 +789,27 @@ impl LanguageServer for RholangBackend {
             self.link_symbols().await;
         }
 
+        // Check if position is within a virtual document (embedded language)
+        {
+            let virtual_docs = self.virtual_docs.read().await;
+            if let Some((virtual_uri, virtual_position, virtual_doc)) =
+                virtual_docs.find_virtual_document_at_position(&uri, lsp_pos)
+            {
+                debug!(
+                    "Position {:?} is in virtual document {} at virtual position {:?}",
+                    lsp_pos, virtual_uri, virtual_position
+                );
+                drop(virtual_docs);
+
+                // Get references from virtual document (MeTTa)
+                if virtual_doc.language == "metta" {
+                    return self.references_metta(&virtual_doc, virtual_position, include_decl).await;
+                }
+            }
+        }
+
         let byte = {
-            let workspace = self.workspace.read().await;
-            if let Some(doc) = workspace.documents.get(&uri) {
+            if let Some(doc) = self.workspace.documents.get(&uri) {
                 let text = &doc.text;
                 Self::byte_offset_from_position(text, lsp_pos.line as usize, lsp_pos.character as usize)
             } else {
@@ -765,8 +826,7 @@ impl LanguageServer for RholangBackend {
 
         debug!("Computed IR position: {:?}", ir_pos);
 
-        let workspace = self.workspace.read().await;
-        if let Some(doc) = workspace.documents.get(&uri) {
+        if let Some(doc) = self.workspace.documents.get(&uri) {
             debug!("Document found in workspace: {}", uri);
             let root = &doc.ir;
             if let Some((node, path)) = find_node_at_position_with_path(root, &*doc.positions, ir_pos) {
@@ -782,7 +842,7 @@ impl LanguageServer for RholangBackend {
                         // Fast path: Try GlobalSymbolIndex for O(k) reference lookup
                         if let RholangNode::Var { name: contract_name, .. } = node.as_ref() {
                             debug!("Attempting fast-path reference lookup via GlobalSymbolIndex for: {}", contract_name);
-                            let global_index = workspace.global_index.clone();
+                            let global_index = self.workspace.global_index.clone();
 
                             if let Ok(global_index_guard) = global_index.read() {
                                 if let Ok(ref_locs) = global_index_guard.find_contract_references(contract_name) {
@@ -819,7 +879,16 @@ impl LanguageServer for RholangBackend {
                             // Check all calls - the match_contract function below does the actual filtering
                             // Note: We don't use filter_contracts_by_pattern here because global_calls
                             // contains Send/SendSync nodes, not Contract nodes
-                            let candidates = workspace.global_calls.iter().collect::<Vec<_>>();
+                            // Collect all calls from DashMap
+                            let all_calls: Vec<(Url, Arc<RholangNode>)> = self.workspace.global_calls
+                                .iter()
+                                .flat_map(|entry| {
+                                    let uri = entry.key().clone();
+                                    let calls = entry.value().clone();
+                                    calls.into_iter().map(move |c| (uri.clone(), c))
+                                })
+                                .collect();
+                            let candidates = all_calls.iter().collect::<Vec<_>>();
 
                             debug!("Checking {} candidate calls for contract {:?} with arity {}",
                                    candidates.len(), contract_name, arg_count);
@@ -839,7 +908,7 @@ impl LanguageServer for RholangBackend {
                             }).collect::<Vec<_>>();
                             debug!("Found {} matching calls for contract", matching_calls.len());
                             let mut locations = matching_calls.iter().map(|(call_uri, call)| {
-                                let call_doc = workspace.documents.get(call_uri).expect("Document not found");
+                                let call_doc = self.workspace.documents.get(call_uri).expect("Document not found");
                                 let call_positions = call_doc.positions.clone();
                                 debug!("Matched call in {}: '{}'", call_uri, call.text(&call_doc.text, &call_doc.ir).to_string());
                                 let channel = match &**call {
@@ -864,7 +933,6 @@ impl LanguageServer for RholangBackend {
                             unreachable!()
                         }
                     } else {
-                        drop(workspace);
                         debug!("Not a contract name; falling back to symbol references");
                         if let Some(symbol) = self.get_symbol_at_position(&uri, lsp_pos).await {
                             let refs = self.get_symbol_references(&symbol, include_decl).await;
@@ -875,7 +943,6 @@ impl LanguageServer for RholangBackend {
                         }
                     }
                 } else {
-                    drop(workspace);
                     debug!("Path too short; falling back to symbol references");
                     if let Some(symbol) = self.get_symbol_at_position(&uri, lsp_pos).await {
                         let refs = self.get_symbol_references(&symbol, include_decl).await;
@@ -899,8 +966,7 @@ impl LanguageServer for RholangBackend {
     async fn document_symbol(&self, params: DocumentSymbolParams) -> LspResult<Option<DocumentSymbolResponse>> {
         let uri = params.text_document.uri;
         debug!("Handling documentSymbol request for {}", uri);
-        let workspace = self.workspace.read().await;
-        if let Some(doc) = workspace.documents.get(&uri) {
+        if let Some(doc) = self.workspace.documents.get(&uri) {
             use crate::lsp::models::DocumentLanguage;
 
             let symbols = match doc.language {
@@ -932,13 +998,12 @@ impl LanguageServer for RholangBackend {
     async fn symbol(&self, params: WorkspaceSymbolParams) -> LspResult<Option<Vec<SymbolInformation>>> {
         let query = params.query;
         debug!("Handling workspace symbol request with query '{}'", query);
-        let workspace = self.workspace.read().await;
 
         // Ultra-fast path: Use suffix array for O(m log n + k) substring search
         // This is significantly faster than O(documents × symbols × name_length) filtering
-        let symbols: Vec<SymbolInformation> = workspace.documents
-            .values()
-            .flat_map(|doc| doc.symbol_index.search(&query))
+        let symbols: Vec<SymbolInformation> = self.workspace.documents
+            .iter()
+            .flat_map(|entry| entry.value().symbol_index.search(&query))
             .collect();
 
         debug!("Found {} matching workspace symbols via suffix array", symbols.len());
@@ -1037,8 +1102,7 @@ impl LanguageServer for RholangBackend {
         drop(virtual_docs); // Release the lock
 
         // Get the document
-        let workspace = self.workspace.read().await;
-        let doc = match workspace.documents.get(&uri) {
+        let doc = match self.workspace.documents.get(&uri) {
             Some(doc) => doc,
             None => {
                 debug!("Document not found: {}", uri);
@@ -1076,7 +1140,7 @@ impl LanguageServer for RholangBackend {
             debug!("Hovering over variable: {}", var_name);
 
             // Try to find contract definition in global index
-            let global_index = workspace.global_index.clone();
+            let global_index = self.workspace.global_index.clone();
 
             if let Ok(global_index_guard) = global_index.read() {
                 if let Ok(Some(symbol_loc)) = global_index_guard.find_contract_definition(var_name) {
@@ -1117,10 +1181,8 @@ impl LanguageServer for RholangBackend {
             debug!("Looking up symbol information for variable '{}'", var_name);
 
             // Check if this is a contract with overloads
-            let global_table = workspace.global_table.clone();
+            let global_table = self.workspace.global_table.read().await;
             let overloads = global_table.lookup_all_contract_overloads(var_name);
-
-            drop(workspace); // Release workspace lock before get_symbol_at_position
 
             if !overloads.is_empty() {
                 // Show contract overload information
@@ -1222,8 +1284,7 @@ impl LanguageServer for RholangBackend {
         debug!("Signature help request at {}:{:?}", uri, position);
 
         // Get the document
-        let workspace = self.workspace.read().await;
-        let doc = match workspace.documents.get(&uri) {
+        let doc = match self.workspace.documents.get(&uri) {
             Some(doc) => doc,
             None => {
                 debug!("Document not found: {}", uri);
@@ -1272,7 +1333,7 @@ impl LanguageServer for RholangBackend {
                     debug!("Found contract call '{}' with {} arguments", contract_name, inputs.len());
 
                     // Get all matching overloads using pattern-based lookup
-                    let global_table = workspace.global_table.clone();
+                    let global_table = self.workspace.global_table.read().await;
                     let arg_count = inputs.len();
 
                     // Get matching overloads for this call
@@ -1384,10 +1445,8 @@ impl LanguageServer for RholangBackend {
 
         debug!("Completion request at {}:{:?}", uri, position);
 
-        let workspace = self.workspace.read().await;
-
         // Get document
-        let doc = match workspace.documents.get(&uri) {
+        let doc = match self.workspace.documents.get(&uri) {
             Some(doc) => doc,
             None => {
                 debug!("Document not found: {}", uri);
@@ -1399,7 +1458,7 @@ impl LanguageServer for RholangBackend {
 
         // Get all contract symbols from global table using pattern-based lookup
         // This is O(1) for accessing the entire contract index
-        let global_table = workspace.global_table.clone();
+        let global_table = self.workspace.global_table.read().await;
 
         // Collect all unique contract names from the pattern index
         // This gives us O(1) access to all contracts
@@ -1580,7 +1639,7 @@ impl RholangBackend {
     /// Falls back to full scan if pattern lookup yields no results for safety.
     fn filter_contracts_by_pattern<'a>(
         global_contracts: &'a [(Url, std::sync::Arc<RholangNode>)],
-        global_table: &std::sync::Arc<crate::ir::symbol_table::SymbolTable>,
+        global_table: &crate::ir::symbol_table::SymbolTable,
         contract_name: &str,
         arg_count: usize,
     ) -> Vec<&'a (Url, std::sync::Arc<RholangNode>)> {

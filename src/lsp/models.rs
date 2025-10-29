@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use dashmap::DashMap;
 use ropey::Rope;
 
 use tower_lsp::lsp_types::{TextDocumentContentChangeEvent, Url};
@@ -106,6 +108,27 @@ pub struct LspDocumentHistory {
     pub changes: Vec<VersionedChanges>,
 }
 
+/// Workspace indexing state for Phase 2 lazy initialization optimization.
+///
+/// This enum tracks the progress of background workspace indexing:
+/// - Idle: No indexing in progress
+/// - InProgress: Currently indexing workspace files
+/// - Complete: Indexing finished successfully
+/// - Failed: Indexing encountered an error
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IndexingState {
+    /// No indexing operation in progress
+    Idle,
+    /// Indexing in progress
+    /// - total: Total number of files to index
+    /// - completed: Number of files indexed so far
+    InProgress { total: usize, completed: usize },
+    /// Indexing completed successfully
+    Complete,
+    /// Indexing failed with error message
+    Failed(String),
+}
+
 /// LSP document with state for open files.
 #[derive(Debug)]
 pub struct LspDocument {
@@ -114,18 +137,74 @@ pub struct LspDocument {
 }
 
 /// Workspace state for cached documents and global symbols.
+///
+/// Optimized for concurrent access with lock-free data structures:
+/// - DashMap for high-frequency reads/writes (documents, symbols)
+/// - Separate RwLocks for infrequent bulk updates (indexes, tables)
+///
+/// This design eliminates lock contention on hot paths (goto_definition, references)
+/// while maintaining consistency for batch operations (workspace indexing).
 #[derive(Debug)]
 pub struct WorkspaceState {
-    pub documents: HashMap<Url, Arc<CachedDocument>>,
-    pub global_symbols: HashMap<String, (Url, IrPosition)>,
-    pub global_table: Arc<SymbolTable>,
-    pub global_inverted_index: HashMap<(Url, IrPosition), Vec<(Url, IrPosition)>>,
-    pub global_contracts: Vec<(Url, Arc<RholangNode>)>,
-    pub global_calls: Vec<(Url, Arc<RholangNode>)>,
+    /// Lock-free concurrent document cache
+    /// Most frequently accessed - needs zero-contention reads
+    pub documents: Arc<DashMap<Url, Arc<CachedDocument>>>,
+
+    /// Lock-free global symbol lookup
+    /// Hot path for goto_definition and references
+    pub global_symbols: Arc<DashMap<String, (Url, IrPosition)>>,
+
+    /// Symbol table for global scope
+    /// Infrequent updates (only during workspace indexing)
+    pub global_table: Arc<tokio::sync::RwLock<SymbolTable>>,
+
+    /// Inverted index for cross-file references
+    /// Infrequent updates (only during workspace indexing)
+    pub global_inverted_index: Arc<tokio::sync::RwLock<HashMap<(Url, IrPosition), Vec<(Url, IrPosition)>>>>,
+
+    /// Lock-free contract tracking by URI
+    /// Allows concurrent contract discovery without blocking
+    pub global_contracts: Arc<DashMap<Url, Vec<Arc<RholangNode>>>>,
+
+    /// Lock-free call tracking by URI
+    /// Allows concurrent call tracking without blocking
+    pub global_calls: Arc<DashMap<Url, Vec<Arc<RholangNode>>>>,
+
     /// Global symbol index using MORK pattern matching for O(k) lookups
+    /// Separate lock as it's updated less frequently than document cache
+    /// Uses std::sync::RwLock because it's accessed from blocking/sync code (Rayon threads)
     pub global_index: Arc<std::sync::RwLock<GlobalSymbolIndex>>,
+
     /// Global symbols from all virtual documents across the workspace, organized by language
-    /// Maps language name -> symbol name -> list of definition locations (virtual URI + range)
-    /// Example: global_virtual_symbols["metta"]["get_neighbors"] = [(virtual_uri_1, range1), ...]
-    pub global_virtual_symbols: HashMap<String, HashMap<String, Vec<(Url, tower_lsp::lsp_types::Range)>>>,
+    /// Lock-free nested structure: language -> symbol -> locations
+    /// Enables concurrent virtual document indexing without blocking
+    /// Example: global_virtual_symbols.get("metta").get("get_neighbors") = [(virtual_uri_1, range1), ...]
+    pub global_virtual_symbols: Arc<DashMap<String, Arc<DashMap<String, Vec<(Url, tower_lsp::lsp_types::Range)>>>>>,
+
+    /// Phase 2 optimization: Track workspace indexing state for lazy initialization
+    /// Wrapped in RwLock as it's updated infrequently (only during indexing lifecycle changes)
+    pub indexing_state: Arc<tokio::sync::RwLock<IndexingState>>,
+}
+
+impl WorkspaceState {
+    /// Create a new empty workspace state with lock-free concurrent data structures
+    pub fn new() -> Self {
+        Self {
+            documents: Arc::new(DashMap::new()),
+            global_symbols: Arc::new(DashMap::new()),
+            global_table: Arc::new(tokio::sync::RwLock::new(SymbolTable::new(None))),
+            global_inverted_index: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            global_contracts: Arc::new(DashMap::new()),
+            global_calls: Arc::new(DashMap::new()),
+            global_index: Arc::new(std::sync::RwLock::new(GlobalSymbolIndex::new())),
+            global_virtual_symbols: Arc::new(DashMap::new()),
+            indexing_state: Arc::new(tokio::sync::RwLock::new(IndexingState::Idle)),
+        }
+    }
+}
+
+impl Default for WorkspaceState {
+    fn default() -> Self {
+        Self::new()
+    }
 }

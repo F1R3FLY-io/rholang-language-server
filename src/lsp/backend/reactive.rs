@@ -246,6 +246,10 @@ impl RholangBackend {
                     })
             );
 
+            // Phase 2 optimization: Track indexing progress
+            let mut files_completed = 0;
+            let mut total_files = 0;
+
             // Process batches
             while let Some(tasks) = reactive_stream.next().await {
                 // Sort by priority
@@ -256,11 +260,50 @@ impl RholangBackend {
 
                 debug!("Processing indexing batch of {} tasks", queue.len());
 
+                // Get total from indexing state if this is first batch
+                if total_files == 0 {
+                    if let crate::lsp::models::IndexingState::InProgress { total, .. } =
+                        *backend.workspace.indexing_state.read().await {
+                        total_files = total;
+                    }
+                }
+
                 // Process each task
                 while let Some(PrioritizedTask(_, task)) = queue.pop() {
                     match backend.index_file(&task.uri, &task.text, 0, None).await {
                         Ok(cached_doc) => {
                             backend.update_workspace_document(&task.uri, std::sync::Arc::new(cached_doc)).await;
+                            files_completed += 1;
+
+                            // Phase 2: Update indexing state and send progress
+                            if total_files > 0 {
+                                {
+                                    let mut state = backend.workspace.indexing_state.write().await;
+                                    *state = crate::lsp::models::IndexingState::InProgress {
+                                        total: total_files,
+                                        completed: files_completed,
+                                    };
+                                }
+
+                                // Send progress notification every 10 files or at completion
+                                if files_completed % 10 == 0 || files_completed == total_files {
+                                    let percentage = ((files_completed as f64 / total_files as f64) * 100.0) as u32;
+                                    backend.client.send_notification::<tower_lsp::lsp_types::notification::Progress>(
+                                        tower_lsp::lsp_types::ProgressParams {
+                                            token: tower_lsp::lsp_types::NumberOrString::String("workspace-indexing".to_string()),
+                                            value: tower_lsp::lsp_types::ProgressParamsValue::WorkDone(
+                                                tower_lsp::lsp_types::WorkDoneProgress::Report(
+                                                    tower_lsp::lsp_types::WorkDoneProgressReport {
+                                                        message: Some(format!("Indexed {}/{} files", files_completed, total_files)),
+                                                        percentage: Some(percentage),
+                                                        cancellable: Some(false),
+                                                    }
+                                                )
+                                            ),
+                                        }
+                                    ).await;
+                                }
+                            }
                         }
                         Err(e) => error!("Failed to index {}: {}", task.uri, e),
                     }
@@ -268,6 +311,34 @@ impl RholangBackend {
 
                 // Link symbols after batch
                 backend.link_symbols().await;
+
+                // Phase 2: Check if indexing is complete
+                if files_completed >= total_files && total_files > 0 {
+                    {
+                        let mut state = backend.workspace.indexing_state.write().await;
+                        *state = crate::lsp::models::IndexingState::Complete;
+                    }
+
+                    // Send completion notification
+                    backend.client.send_notification::<tower_lsp::lsp_types::notification::Progress>(
+                        tower_lsp::lsp_types::ProgressParams {
+                            token: tower_lsp::lsp_types::NumberOrString::String("workspace-indexing".to_string()),
+                            value: tower_lsp::lsp_types::ProgressParamsValue::WorkDone(
+                                tower_lsp::lsp_types::WorkDoneProgress::End(
+                                    tower_lsp::lsp_types::WorkDoneProgressEnd {
+                                        message: Some(format!("Indexed {} files", files_completed)),
+                                    }
+                                )
+                            ),
+                        }
+                    ).await;
+
+                    info!("Workspace indexing complete: {} files indexed", files_completed);
+
+                    // Reset counters for next indexing cycle (e.g., workspace refresh)
+                    files_completed = 0;
+                    total_files = 0;
+                }
             }
 
             info!("Reactive progressive indexer task terminated");
