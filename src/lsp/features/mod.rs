@@ -97,6 +97,7 @@ pub mod node_finder;
 pub mod goto_definition;
 pub mod hover;
 pub mod references;
+pub mod tree_sitter;
 
 // Phase 2 modules (in progress):
 // pub mod rename;
