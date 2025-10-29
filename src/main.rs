@@ -218,9 +218,12 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     fn new(inner: WebSocketStream<S>) -> Self {
+        // Phase 1 optimization: Pre-allocate read buffer with reasonable capacity
+        // Prevents repeated allocations for typical LSP messages (1-10KB)
+        const INITIAL_CAPACITY: usize = 32 * 1024;  // 32KB initial
         WebSocketStreamAdapter {
             inner,
-            read_buffer: Vec::new(),
+            read_buffer: Vec::with_capacity(INITIAL_CAPACITY),
         }
     }
 
@@ -248,11 +251,22 @@ where
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<io::Result<()>> {
         let this = self.get_mut();
+
+        // Phase 1 optimization: Cap max buffer size to prevent unbounded growth
+        const MAX_BUFFER_SIZE: usize = 1024 * 1024;  // 1MB max
+
         if !this.read_buffer.is_empty() {
-            info!("Using buffered data: {} bytes", this.read_buffer.len());
+            trace!("Using buffered data: {} bytes", this.read_buffer.len());
             let to_copy = std::cmp::min(buf.remaining(), this.read_buffer.len());
             buf.put_slice(&this.read_buffer[..to_copy]);
             this.read_buffer.drain(..to_copy);
+
+            // Shrink buffer if it's grown too large and is now mostly empty
+            if this.read_buffer.capacity() > MAX_BUFFER_SIZE && this.read_buffer.len() < MAX_BUFFER_SIZE / 4 {
+                this.read_buffer.shrink_to(MAX_BUFFER_SIZE / 2);
+                trace!("Shrunk WebSocket read buffer to {}", this.read_buffer.capacity());
+            }
+
             return std::task::Poll::Ready(Ok(()));
         }
 
@@ -541,8 +555,12 @@ async fn run_stdio_server(
             })
         })
     }).finish();
-    let stdin = BufReader::new(tokio::io::stdin()); // Wrap stdin in BufReader
-    let stdout = tokio::io::stdout();
+
+    // Phase 1 optimization: Use larger buffers for stdin/stdout
+    // 64KB buffers provide better throughput for LSP message streams
+    const BUFFER_SIZE: usize = 64 * 1024;
+    let stdin = BufReader::with_capacity(BUFFER_SIZE, tokio::io::stdin());
+    let stdout = tokio::io::BufWriter::with_capacity(BUFFER_SIZE, tokio::io::stdout());
 
     // Spawn reactive listener for PID events
     let conn_manager_clone = conn_manager.clone();
@@ -588,13 +606,25 @@ async fn run_socket_server(
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
     info!("TCP server listening on 127.0.0.1:{}", port);
 
+    // Phase 1 optimization: Define buffer size for TCP streams
+    const BUFFER_SIZE: usize = 64 * 1024;
+
     loop {
         tokio::select! {
             result = listener.accept() => {
                 match result {
                     Ok((stream, addr)) => {
+                        // Phase 1 optimization: Configure TCP socket for low latency
+                        if let Err(e) = stream.set_nodelay(true) {
+                            warn!("Failed to set TCP_NODELAY for {}: {}", addr, e);
+                        }
+
+                        // Phase 1 optimization: Add buffering for read/write
                         let (read, write) = tokio::io::split(stream);
-                        serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None, config.validator_backend.clone()).await;
+                        let buffered_read = BufReader::with_capacity(BUFFER_SIZE, read);
+                        let buffered_write = tokio::io::BufWriter::with_capacity(BUFFER_SIZE, write);
+
+                        serve_connection(buffered_read, buffered_write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None, config.validator_backend.clone()).await;
                         conn_manager.remove_closed_connections().await;
                     }
                     Err(e) => {
@@ -889,9 +919,81 @@ fn main() -> io::Result<()> {
     // Configure Rayon global thread pool with same stack size
     // Rayon is used for parallel workspace indexing and needs the same stack size
     // as the main parsing threads to handle deeply nested ASTs
+    //
+    // The panic handler ensures that if any Rayon worker thread panics:
+    // 1. The panic is logged with full context (thread name, location, message)
+    // 2. The panic is written to the panic.log file
+    // 3. The panic is propagated so the operation fails gracefully
     rayon::ThreadPoolBuilder::new()
         .stack_size(STACK_SIZE)
         .thread_name(|i| format!("rholang-rayon-worker-{}", i))
+        .panic_handler(|err| {
+            let thread = std::thread::current();
+            let thread_name = thread.name().unwrap_or("<unnamed-rayon-worker>");
+            let thread_id = format!("{:?}", thread.id());
+
+            // Try to extract panic message
+            let panic_msg = if let Some(s) = err.downcast_ref::<&str>() {
+                *s
+            } else if let Some(s) = err.downcast_ref::<String>() {
+                s.as_str()
+            } else {
+                "<unknown panic payload>"
+            };
+
+            // Check if this is a stack overflow
+            let is_stack_overflow = panic_msg.contains("stack overflow")
+                || panic_msg.contains("has overflowed its stack");
+
+            let panic_type = if is_stack_overflow { "RAYON STACK OVERFLOW" } else { "RAYON PANIC" };
+
+            // Write to stderr (will be captured by LSP client)
+            eprintln!("\n╔══════════════════════════════════════════════════════════════════════");
+            eprintln!("║ {} DETECTED IN PARALLEL WORKER", panic_type);
+            eprintln!("╠══════════════════════════════════════════════════════════════════════");
+            eprintln!("║ Thread Name: {}", thread_name);
+            eprintln!("║ Thread ID:   {}", thread_id);
+            eprintln!("║ Message:     {}", panic_msg);
+            eprintln!("║ Context:     Rayon worker pool (parallel processing)");
+            eprintln!("╚══════════════════════════════════════════════════════════════════════\n");
+
+            // Write to panic log file
+            if let Some(cache_dir) = dirs::cache_dir() {
+                let mut panic_log_path = cache_dir;
+                panic_log_path.push("f1r3fly-io");
+                panic_log_path.push("rholang-language-server");
+
+                // Ensure directory exists
+                let _ = std::fs::create_dir_all(&panic_log_path);
+
+                panic_log_path.push("panic.log");
+
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&panic_log_path)
+                {
+                    use std::io::Write;
+                    let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f");
+                    let _ = writeln!(file, "\n[{}] {} DETECTED", timestamp, panic_type);
+                    let _ = writeln!(file, "Thread Name: {}", thread_name);
+                    let _ = writeln!(file, "Thread ID:   {}", thread_id);
+                    let _ = writeln!(file, "Message:     {}", panic_msg);
+                    let _ = writeln!(file, "Context:     Rayon worker pool (parallel processing)");
+                    let _ = writeln!(file, "Process ID:  {}", std::process::id());
+                    let _ = file.flush();
+
+                    eprintln!("Rayon panic information written to: {:?}", panic_log_path);
+                }
+            }
+
+            // Note about RUST_BACKTRACE
+            if std::env::var("RUST_BACKTRACE").is_ok() {
+                eprintln!("Note: Full backtrace available via RUST_BACKTRACE\n");
+            } else {
+                eprintln!("Tip: Set RUST_BACKTRACE=1 to see full backtrace\n");
+            }
+        })
         .build_global()
         .expect("Failed to build rayon thread pool");
 
