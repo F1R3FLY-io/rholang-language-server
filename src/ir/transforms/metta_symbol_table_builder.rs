@@ -59,8 +59,8 @@ pub struct MettaSymbolTable {
     pub scopes: Vec<MettaScope>,
     /// All symbol occurrences (for quick lookup by position)
     pub all_occurrences: Vec<SymbolOccurrence>,
-    /// Pattern matcher for function definitions
-    pub pattern_matcher: MettaPatternMatcher,
+    /// Pattern matcher for function definitions (wrapped in Arc for sharing)
+    pub pattern_matcher: Arc<MettaPatternMatcher>,
     /// Document URI (for creating locations)
     pub uri: Url,
     /// The IR nodes (for looking up call sites)
@@ -190,7 +190,7 @@ impl MettaSymbolTableBuilder {
         MettaSymbolTable {
             scopes: self.scopes,
             all_occurrences: self.all_occurrences,
-            pattern_matcher: self.pattern_matcher,
+            pattern_matcher: Arc::new(self.pattern_matcher),
             uri: self.uri,
             ir_nodes: nodes.to_vec(),
         }

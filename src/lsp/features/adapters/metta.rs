@@ -16,6 +16,7 @@ use crate::ir::symbol_resolution::{
     lexical_scope::LexicalScopeResolver,
     composable::ComposableSymbolResolver,
     GlobalVirtualSymbolResolver,
+    filters::MettaPatternFilter,
 };
 use crate::ir::transforms::metta_symbol_table_builder::MettaSymbolTable;
 use crate::lsp::models::WorkspaceState;
@@ -118,13 +119,14 @@ impl DocumentationProvider for MettaDocumentationProvider {
 /// # Architecture
 /// Uses a composable resolver with:
 /// 1. **Base**: LexicalScopeResolver for local symbols within the virtual document
-/// 2. **Fallback**: GlobalVirtualSymbolResolver for cross-document symbol resolution
-/// 3. **Filters**: (Future) MettaPatternFilter for arity-based refinement
+/// 2. **Filters**: MettaPatternFilter for arity-based pattern matching refinement
+/// 3. **Fallback**: GlobalVirtualSymbolResolver for cross-document symbol resolution
 ///
 /// ## Resolution Flow
 /// 1. First tries local scope lookup via MettaSymbolTable
-/// 2. If not found locally, falls back to global_virtual_symbols index
-/// 3. Returns all matching locations with appropriate confidence levels
+/// 2. If found, applies MettaPatternFilter to refine by name + arity matching
+/// 3. If not found locally (or filter returns empty), falls back to global_virtual_symbols index
+/// 4. Returns all matching locations with appropriate confidence levels
 pub fn create_metta_adapter(
     symbol_table: Arc<MettaSymbolTable>,
     workspace: Arc<WorkspaceState>,
@@ -132,7 +134,14 @@ pub fn create_metta_adapter(
 ) -> LanguageAdapter {
     // Create base lexical scope resolver for local symbols
     let base_resolver = Box::new(
-        LexicalScopeResolver::new(symbol_table, "metta".to_string())
+        LexicalScopeResolver::new(symbol_table.clone(), "metta".to_string())
+    );
+
+    // Create pattern matching filter for arity-based refinement
+    // The pattern_matcher is already populated by MettaSymbolTableBuilder
+    // It's wrapped in Arc in MettaSymbolTable, so we just clone the Arc (cheap)
+    let pattern_filter = Box::new(
+        MettaPatternFilter::new(symbol_table.pattern_matcher.clone())
     );
 
     // Create global cross-document resolver as fallback
@@ -140,12 +149,11 @@ pub fn create_metta_adapter(
         GlobalVirtualSymbolResolver::new(workspace)
     );
 
-    // Create composable resolver with local + global resolution
-    // Note: Pattern matching filter will be added later when pattern matcher is available
+    // Create composable resolver with local + pattern filter + global resolution
     let resolver: Arc<dyn SymbolResolver> = Arc::new(
         ComposableSymbolResolver::new(
             base_resolver,
-            vec![], // No filters for now - pattern matcher will be added later
+            vec![pattern_filter], // Pattern filter refines results by arity matching
             Some(global_resolver), // Global fallback enables cross-document goto_definition
         )
     );
