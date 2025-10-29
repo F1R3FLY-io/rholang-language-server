@@ -99,13 +99,13 @@ pub mod hover;
 pub mod references;
 pub mod rename;
 pub mod tree_sitter;
+pub mod adapters;
 
 // Phase 2 modules (in progress):
 // pub mod completion;
 
 // Future modules:
 // pub mod document_symbols;
-// pub mod adapters;
 
 // Re-export main types for convenience
 pub use traits::{

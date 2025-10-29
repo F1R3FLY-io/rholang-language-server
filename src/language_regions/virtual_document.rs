@@ -291,7 +291,7 @@ impl VirtualDocument {
     ///
     /// This method uses lazy evaluation with caching for performance.
     /// The IR is parsed once and reused for validation, hover, and semantic tokens.
-    fn get_or_parse_ir(&self) -> Option<Arc<Vec<Arc<crate::ir::metta_node::MettaNode>>>> {
+    pub fn get_or_parse_ir(&self) -> Option<Arc<Vec<Arc<crate::ir::metta_node::MettaNode>>>> {
         // Try to get cached IR first (read lock)
         {
             let cache = self.cached_ir.read().ok()?;

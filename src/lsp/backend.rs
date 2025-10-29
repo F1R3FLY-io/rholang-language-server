@@ -63,6 +63,7 @@ mod metta;
 mod symbols;
 mod handlers;
 mod indexing;
+mod unified_handlers;
 
 pub use state::RholangBackend;
 use state::{DocumentChangeEvent, IndexingTask, WorkspaceChangeEvent, WorkspaceChangeType};
