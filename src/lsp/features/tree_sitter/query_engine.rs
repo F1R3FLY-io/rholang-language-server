@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tree_sitter::{Language, Parser, Query, QueryCursor, Tree, InputEdit};
+use tree_sitter::{Language, Parser, Query, QueryCursor, Tree, InputEdit, StreamingIterator};
 use tracing::{debug, trace, warn};
 use ropey::Rope;
 
@@ -173,10 +173,20 @@ impl QueryEngine {
 
         debug!("Executing {} query", query_type.description());
 
-        // TODO: Implement proper Tree-Sitter 0.25 query execution
-        // The API has changed and needs proper investigation
-        trace!("Query execution not yet implemented for Tree-Sitter 0.25");
-        Ok(Vec::new())
+        let mut cursor = QueryCursor::new();
+        let mut captures = cursor.captures(query, tree.root_node(), source);
+
+        let mut result = Vec::new();
+
+        // Iterate through captures using streaming iterator
+        while let Some((match_data, capture_idx)) = captures.next() {
+            let capture = match_data.captures[*capture_idx];
+            let capture_name = query.capture_names()[capture.index as usize].to_string();
+            result.push(QueryCapture::new(capture.node, capture_name));
+        }
+
+        trace!("Query produced {} captures", result.len());
+        Ok(result)
     }
 
     /// Execute a query on a specific subtree (ranged query)
@@ -207,9 +217,24 @@ impl QueryEngine {
         debug!("Executing ranged {} query ({}..{})",
                query_type.description(), start_byte, end_byte);
 
-        // TODO: Implement proper Tree-Sitter 0.25 ranged query execution
-        trace!("Ranged query execution not yet implemented for Tree-Sitter 0.25");
-        Ok(Vec::new())
+        let mut cursor = QueryCursor::new();
+
+        // Set byte range for the cursor
+        cursor.set_byte_range(start_byte..end_byte);
+
+        let mut captures = cursor.captures(query, tree.root_node(), source);
+
+        let mut result = Vec::new();
+
+        // Iterate through captures using streaming iterator
+        while let Some((match_data, capture_idx)) = captures.next() {
+            let capture = match_data.captures[*capture_idx];
+            let capture_name = query.capture_names()[capture.index as usize].to_string();
+            result.push(QueryCapture::new(capture.node, capture_name));
+        }
+
+        trace!("Ranged query produced {} captures", result.len());
+        Ok(result)
     }
 
     /// Get all loaded query types
