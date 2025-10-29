@@ -211,6 +211,8 @@ impl ServerConfig {
 struct WebSocketStreamAdapter<S> {
     inner: WebSocketStream<S>,
     read_buffer: Vec<u8>,
+    /// Phase 4 optimization: Write buffer for batching small messages
+    write_buffer: Vec<u8>,
 }
 
 impl<S> WebSocketStreamAdapter<S>
@@ -224,6 +226,8 @@ where
         WebSocketStreamAdapter {
             inner,
             read_buffer: Vec::with_capacity(INITIAL_CAPACITY),
+            // Phase 4 optimization: Pre-allocate write buffer for batching
+            write_buffer: Vec::with_capacity(8 * 1024),  // 8KB write buffer
         }
     }
 
@@ -329,14 +333,31 @@ where
         buf: &[u8],
     ) -> std::task::Poll<io::Result<usize>> {
         let this = self.get_mut();
-        match this.inner.poll_ready_unpin(cx) {
-            std::task::Poll::Ready(Ok(())) => match this.inner.start_send_unpin(Message::Binary(buf.to_vec())) {
-                Ok(()) => std::task::Poll::Ready(Ok(buf.len())),
-                Err(e) => std::task::Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
-            },
-            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
-            std::task::Poll::Pending => std::task::Poll::Pending,
+
+        // Phase 4 optimization: Buffer small writes to reduce WebSocket frame overhead
+        // Max buffer size before forcing a flush (16KB threshold)
+        const MAX_WRITE_BUFFER: usize = 16 * 1024;
+
+        // If buffer would exceed threshold, flush it first
+        if !this.write_buffer.is_empty() && (this.write_buffer.len() + buf.len() > MAX_WRITE_BUFFER) {
+            match this.inner.poll_ready_unpin(cx) {
+                std::task::Poll::Ready(Ok(())) => {
+                    // Send buffered data as binary frame
+                    match this.inner.start_send_unpin(Message::Binary(std::mem::take(&mut this.write_buffer))) {
+                        Ok(()) => {}
+                        Err(e) => return std::task::Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
+                    }
+                }
+                std::task::Poll::Ready(Err(e)) => {
+                    return std::task::Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e)));
+                }
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+            }
         }
+
+        // Add data to write buffer
+        this.write_buffer.extend_from_slice(buf);
+        std::task::Poll::Ready(Ok(buf.len()))
     }
 
     fn poll_flush(
@@ -344,6 +365,25 @@ where
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<io::Result<()>> {
         let this = self.get_mut();
+
+        // Phase 4 optimization: Flush any buffered writes before flushing underlying stream
+        if !this.write_buffer.is_empty() {
+            match this.inner.poll_ready_unpin(cx) {
+                std::task::Poll::Ready(Ok(())) => {
+                    // Send buffered data as binary frame
+                    match this.inner.start_send_unpin(Message::Binary(std::mem::take(&mut this.write_buffer))) {
+                        Ok(()) => {}
+                        Err(e) => return std::task::Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
+                    }
+                }
+                std::task::Poll::Ready(Err(e)) => {
+                    return std::task::Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e)));
+                }
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+            }
+        }
+
+        // Flush underlying WebSocket stream
         match this.inner.poll_flush_unpin(cx) {
             std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(Ok(())),
             std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
@@ -356,6 +396,25 @@ where
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<io::Result<()>> {
         let this = self.get_mut();
+
+        // Phase 4 optimization: Flush any remaining buffered writes before shutdown
+        if !this.write_buffer.is_empty() {
+            match this.inner.poll_ready_unpin(cx) {
+                std::task::Poll::Ready(Ok(())) => {
+                    // Send remaining buffered data as binary frame
+                    match this.inner.start_send_unpin(Message::Binary(std::mem::take(&mut this.write_buffer))) {
+                        Ok(()) => {}
+                        Err(e) => return std::task::Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
+                    }
+                }
+                std::task::Poll::Ready(Err(e)) => {
+                    return std::task::Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e)));
+                }
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+            }
+        }
+
+        // Close underlying WebSocket stream
         match this.inner.poll_close_unpin(cx) {
             std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(Ok(())),
             std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
