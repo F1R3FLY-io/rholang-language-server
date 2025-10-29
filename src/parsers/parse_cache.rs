@@ -86,7 +86,7 @@ impl ParseCache {
     pub fn get(&self, content: &str) -> Option<Tree> {
         let hash = Self::hash_content(content);
 
-        self.cache.get(&hash).and_then(|entry| {
+        let result = self.cache.get(&hash).and_then(|entry| {
             let (cached_content, tree) = entry.value();
 
             // Verify content matches (hash collision check)
@@ -96,7 +96,16 @@ impl ParseCache {
                 // Hash collision detected - treat as cache miss
                 None
             }
-        })
+        });
+
+        // Record cache hit/miss metrics
+        if result.is_some() {
+            crate::metrics::metrics().record_parse_cache_hit();
+        } else {
+            crate::metrics::metrics().record_parse_cache_miss();
+        }
+
+        result
     }
 
     /// Stores a parse tree in the cache

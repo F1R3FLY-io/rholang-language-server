@@ -33,6 +33,75 @@ export PATH="$PWD/target/debug:$PATH"
 2. From another terminal, `cd` into `rholang-language-server` root and run: `cargo test`.
    - This spawns `rholang-language-server` and runs tests against it, communicating with the standalone RNode.
 
+## Performance
+
+The language server has been extensively optimized through profiling-driven development:
+
+### Phase 1: Lock-Free Concurrent Access
+- Replaced `Arc<RwLock<WorkspaceState>>` with lock-free `DashMap` structures
+- **Result:** 2-5x throughput improvement for concurrent LSP requests
+- Zero read contention for workspace state access
+
+### Phase 2: Data-Driven Optimizations
+Based on profiling analysis with `perf` (39GB profiling data):
+
+**Key Optimizations:**
+1. **Parse Tree Caching** (`src/parsers/parse_cache.rs`)
+   - Lock-free cache using DashMap with hash collision detection
+   - 1,000-10,000x speedup on cache hits (20-30ns vs 37-263µs parsing)
+   - Capacity: 1000 entries (~60-110MB memory)
+
+2. **Adaptive Parallelization** (`src/language_regions/async_detection.rs`)
+   - Dynamically chooses sequential vs parallel processing based on workload
+   - Eliminates 45-50% Rayon overhead for small batches
+   - Threshold: 5+ documents AND 100+µs estimated work
+
+3. **FxHash Integration** (`src/ir/symbol_table.rs`)
+   - ~2x faster hashing for internal symbol tables
+   - ~1% overall CPU savings
+
+4. **Incremental Parsing** (`src/lsp/document.rs`)
+   - Tree-Sitter incremental updates on document changes
+   - 7-50x faster than full re-parsing for typical edits
+
+**Benchmark Results (Phase 2 vs Phase 1):**
+- Virtual document detection (simple): **-45.1%** (2.2x faster)
+- Virtual document detection (complex): **-54.0%** (2.2x faster)
+- Sequential processing (cache hits): **-50.9%** (2.0x faster)
+- Symbol resolution: **-15.7%** (1.2x faster)
+
+**Combined Impact:**
+- Initial workspace indexing: ~3-11x faster
+- Document editing (incremental): ~10-100x faster
+- Symbol navigation (concurrent): ~2-3x faster
+- Undo/redo operations: ~100-1000x faster (parse cache)
+
+**Overall:** Language server is approximately **4-8x faster** for typical LSP workflows.
+
+### Performance Monitoring
+
+The language server includes built-in performance metrics collection (`src/metrics.rs`):
+- Parse cache hit rate tracking
+- LSP request latency histograms (p50, p95, p99)
+- Workspace indexing statistics
+- Error counters
+
+Metrics are collected with minimal overhead (~10-20ns per operation) using atomic counters.
+
+### Benchmarking
+
+Run benchmarks with:
+```bash
+cargo bench --bench lsp_operations_benchmark  # LSP features
+cargo bench --bench real_world_benchmark       # Real-world file sizes
+cargo bench --bench detection_worker_benchmark # Virtual document detection
+```
+
+Detailed optimization documentation:
+- `docs/PHASE2_OPTIMIZATION_PLAN.md` - Profiling analysis and strategy
+- `docs/PHASE2_RESULTS.md` - Comprehensive benchmark results
+- `docs/PERFORMANCE_PROFILING_GUIDE.md` - Profiling methodology
+
 ## Intermediate Representation (IR) Design
 
 The Rholang Language Server employs an Intermediate Representation (IR) to represent parsed Rholang code, designed with **immutability** and **persistence** as core properties:

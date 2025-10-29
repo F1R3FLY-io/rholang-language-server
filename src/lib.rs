@@ -3,6 +3,7 @@ pub mod ir;
 pub mod language_regions;
 pub mod logging;
 pub mod lsp;
+pub mod metrics;
 pub mod parsers;
 pub mod rnode_apis;
 pub mod tree_sitter;

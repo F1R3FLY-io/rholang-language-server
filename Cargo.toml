@@ -87,3 +87,7 @@ harness = false
 [[bench]]
 name = "lsp_operations_benchmark"
 harness = false
+
+[[bench]]
+name = "real_world_benchmark"
+harness = false
