@@ -93,13 +93,16 @@
 //! - Measure code reduction (target: 50%+)
 
 pub mod traits;
+pub mod node_finder;
+pub mod goto_definition;
 
-// Future modules (to be added in Phase 2+):
-// pub mod goto_definition;
+// Phase 2 modules (in progress):
 // pub mod hover;
 // pub mod references;
 // pub mod rename;
 // pub mod completion;
+
+// Future modules:
 // pub mod document_symbols;
 // pub mod adapters;
 
