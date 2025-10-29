@@ -55,6 +55,7 @@ use tracing::{debug, error};
 
 use crate::ir::metta_node::MettaNode;
 use crate::ir::semantic_node::{Position as IrPosition, SemanticNode};
+use crate::ir::symbol_resolution::global::AsyncGlobalVirtualSymbolResolver;
 use crate::language_regions::VirtualDocument;
 use crate::lsp::models::CachedDocument;
 
@@ -673,36 +674,47 @@ impl RholangBackend {
             })));
         }
 
-        // Try cross-document lookup using global_virtual_symbols
+        // Try cross-document lookup using composable resolver (AsyncGlobalVirtualSymbolResolver)
         // This enables goto-definition across all MeTTa virtual documents in the workspace
         debug!("Trying cross-document lookup for MeTTa symbol '{}'", symbol.name);
-        let workspace = self.workspace.read().await;
 
-        if let Some(lang_symbols) = workspace.global_virtual_symbols.get(&virtual_doc.language) {
-            if let Some(locations) = lang_symbols.get(&symbol.name) {
-                debug!(
-                    "Found {} cross-document definition(s) for MeTTa symbol '{}' in language '{}'",
-                    locations.len(),
-                    symbol.name,
-                    virtual_doc.language
-                );
+        use crate::ir::symbol_resolution::ResolutionContext;
 
-                // Map to parent document locations
-                let parent_locations: Vec<Location> = locations
-                    .iter()
-                    .map(|(uri, range)| Location {
-                        uri: uri.clone(),
-                        range: *range,
-                    })
-                    .collect();
+        let global_resolver = AsyncGlobalVirtualSymbolResolver::new(self.workspace.clone());
+        let resolution_context = ResolutionContext {
+            uri: virtual_doc.uri.clone(),
+            scope_id: Some(symbol.scope_id),
+            ir_node: None,
+            language: virtual_doc.language.clone(),
+            parent_uri: Some(virtual_doc.parent_uri.clone()),
+        };
 
-                if parent_locations.len() == 1 {
-                    return Ok(Some(GotoDefinitionResponse::Scalar(
-                        parent_locations.into_iter().next().unwrap(),
-                    )));
-                } else if !parent_locations.is_empty() {
-                    return Ok(Some(GotoDefinitionResponse::Array(parent_locations)));
-                }
+        let symbol_locations = global_resolver
+            .resolve_symbol_async(&symbol.name, &resolution_context)
+            .await;
+
+        if !symbol_locations.is_empty() {
+            debug!(
+                "Found {} cross-document definition(s) for MeTTa symbol '{}' via AsyncGlobalVirtualSymbolResolver",
+                symbol_locations.len(),
+                symbol.name
+            );
+
+            // Map SymbolLocation to LSP Location
+            let parent_locations: Vec<Location> = symbol_locations
+                .iter()
+                .map(|sym_loc| Location {
+                    uri: sym_loc.uri.clone(),
+                    range: sym_loc.range,
+                })
+                .collect();
+
+            if parent_locations.len() == 1 {
+                return Ok(Some(GotoDefinitionResponse::Scalar(
+                    parent_locations.into_iter().next().unwrap(),
+                )));
+            } else {
+                return Ok(Some(GotoDefinitionResponse::Array(parent_locations)));
             }
         }
 
