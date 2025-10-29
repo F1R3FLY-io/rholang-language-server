@@ -149,11 +149,9 @@ impl RholangBackend {
     /// This async wrapper delegates CPU-intensive work to `process_document_blocking` via `spawn_blocking`
     /// to prevent blocking the tokio runtime.
     pub(super) async fn process_document(&self, ir: Arc<RholangNode>, uri: &Url, text: &Rope, content_hash: u64) -> Result<CachedDocument, String> {
-        // Optimization: Acquire lock once instead of twice
-        let (global_table, global_index) = {
-            let ws = self.workspace.read().await;
-            (ws.global_table.clone(), ws.global_index.clone())
-        };
+        // Lock and clone global_table for use in blocking task
+        let global_table = Arc::new(self.workspace.global_table.read().await.clone());
+        let global_index = self.workspace.global_index.clone();
 
         // Delegate CPU-intensive work to blocking thread pool
         let uri_clone = uri.clone();
@@ -179,11 +177,9 @@ impl RholangBackend {
     #[allow(dead_code)]
     async fn process_document_old(&self, ir: Arc<RholangNode>, uri: &Url, text: &Rope, content_hash: u64) -> Result<CachedDocument, String> {
         let mut pipeline = Pipeline::new();
-        // Optimization: Acquire lock once instead of twice
-        let (global_table, global_index) = {
-            let ws = self.workspace.read().await;
-            (ws.global_table.clone(), ws.global_index.clone())
-        };
+        // Lock and clone global_table for use in transforms
+        let global_table = Arc::new(self.workspace.global_table.read().await.clone());
+        let global_index = self.workspace.global_index.clone();
 
         // Symbol table builder for local symbol tracking
         let builder = Arc::new(SymbolTableBuilder::new(ir.clone(), uri.clone(), global_table.clone()));
@@ -295,7 +291,7 @@ impl RholangBackend {
         // Check if we already have this exact content indexed
         // Note: We can't early-return here because we need to re-index to update workspace state
         // However, we can log the hash check for debugging
-        if let Some(existing) = self.workspace.read().await.documents.get(uri) {
+        if let Some(existing) = self.workspace.documents.get(uri) {
             if existing.content_hash == content_hash {
                 debug!("Content unchanged for {} (hash: {}), but reindexing to update workspace", uri, content_hash);
             } else {
@@ -427,7 +423,7 @@ impl RholangBackend {
 
         // Create empty symbol table and inverted index for now
         // TODO: Implement symbol table building for MeTTa
-        let global_table = self.workspace.read().await.global_table.clone();
+        let global_table = Arc::new(self.workspace.global_table.read().await.clone());
         let symbol_table = Arc::new(SymbolTable::new(Some(global_table)));
         let inverted_index = HashMap::new();
         let potential_global_refs = Vec::new();
@@ -455,10 +451,8 @@ impl RholangBackend {
         };
 
         // Broadcast workspace change event (ReactiveX Phase 2)
-        let workspace = self.workspace.read().await;
-        let file_count = workspace.documents.len();
-        let symbol_count = workspace.global_symbols.len();
-        drop(workspace); // Release lock before broadcasting
+        let file_count = self.workspace.documents.len();
+        let symbol_count = self.workspace.global_symbols.len();
 
         let _ = self.workspace_changes.send(WorkspaceChangeEvent {
             file_count,
@@ -503,7 +497,7 @@ impl RholangBackend {
                         let uri = Url::from_file_path(entry.path()).expect("Failed to create URI from path");
                         // DashMap::contains_key is lock-free
                         if !self.documents_by_uri.contains_key(&uri)
-                            && !self.workspace.read().await.documents.contains_key(&uri) {
+                            && !self.workspace.documents.contains_key(&uri) {
                             if let Ok(text) = std::fs::read_to_string(entry.path()) {
                                 match self.index_file(&uri, &text, 0, None).await {
                                     Ok(cached_doc) => {
@@ -556,18 +550,14 @@ impl RholangBackend {
         // Get workspace state snapshot for filtering
         // DashMap::iter() provides lock-free iteration
         let existing_docs: Vec<Url> = self.documents_by_uri.iter().map(|entry| entry.key().clone()).collect();
-        let workspace_docs = self.workspace.read().await.documents.keys().cloned().collect::<Vec<_>>();
+        let workspace_docs: Vec<Url> = self.workspace.documents.iter().map(|entry| entry.key().clone()).collect();
 
         // Phase 2: Parse and process files in parallel using Rayon
         // CRITICAL: Wrap Rayon work in spawn_blocking to prevent blocking Tokio runtime
-        let (global_table, global_index, version_counter) = {
-            let ws = self.workspace.read().await;
-            (
-                ws.global_table.clone(),
-                ws.global_index.clone(),
-                self.version_counter.clone(),
-            )
-        };
+        // Lock and clone global_table for use in blocking task
+        let global_table = Arc::new(self.workspace.global_table.read().await.clone());
+        let global_index = self.workspace.global_index.clone();
+        let version_counter = self.version_counter.clone();
 
         let results: Vec<(Url, Result<CachedDocument, String>)> = tokio::task::spawn_blocking(move || {
             paths
@@ -664,19 +654,20 @@ impl RholangBackend {
         let new_contracts: Vec<_> = contracts.into_iter().map(|c| (uri.clone(), c)).collect();
         let new_calls: Vec<_> = calls.into_iter().map(|c| (uri.clone(), c)).collect();
 
-        // Single write lock for all workspace mutations (minimized duration)
-        let (file_count, symbol_count) = {
-            let mut workspace = self.workspace.write().await;
+        // Lock-free document and symbol updates using DashMap
+        // NOTE: We do NOT clear symbols from global_table here because:
+        // 1. global_table is shared across all documents via Arc<SymbolTable>
+        // 2. SymbolTableBuilder already manages inserting/updating symbols during indexing
+        // 3. Clearing here would delete symbols that were just added by SymbolTableBuilder
+        // 4. global_table uses interior mutability, so changes are visible across all Arc clones
 
-            // NOTE: We do NOT clear symbols from global_table here because:
-            // 1. global_table is shared across all documents via Arc<SymbolTable>
-            // 2. SymbolTableBuilder already manages inserting/updating symbols during indexing
-            // 3. Clearing here would delete symbols that were just added by SymbolTableBuilder
-            // 4. global_table uses interior mutability, so changes are visible across all Arc clones
+        // Remove old global symbols for this URI
+        self.workspace.global_symbols.retain(|_, (u, _)| u != uri);
 
-            // Use in-place retain instead of clone-modify-replace
-            workspace.global_symbols.retain(|_, (u, _)| u != uri);
-            workspace.global_inverted_index.retain(|(d_uri, _), us| {
+        // Remove old inverted index entries for this URI (needs lock - bulk operation)
+        {
+            let mut inverted_index = self.workspace.global_inverted_index.write().await;
+            inverted_index.retain(|(d_uri, _), us| {
                 if d_uri == uri {
                     false
                 } else {
@@ -684,16 +675,29 @@ impl RholangBackend {
                     !us.is_empty()
                 }
             });
-            workspace.global_contracts.retain(|(u, _)| u != uri);
-            workspace.global_calls.retain(|(u, _)| u != uri);
+        }
 
-            // Insert new data
-            workspace.documents.insert(uri.clone(), cached_doc);
-            workspace.global_contracts.extend(new_contracts);
-            workspace.global_calls.extend(new_calls);
+        // Lock-free contract and call updates
+        self.workspace.global_contracts.remove(uri);
+        self.workspace.global_calls.remove(uri);
 
-            (workspace.documents.len(), workspace.global_symbols.len())
-        };
+        // Insert new data (lock-free)
+        self.workspace.documents.insert(uri.clone(), cached_doc);
+        for (contract_uri, contract) in new_contracts {
+            self.workspace.global_contracts
+                .entry(contract_uri)
+                .or_insert_with(Vec::new)
+                .push(contract);
+        }
+        for (call_uri, call) in new_calls {
+            self.workspace.global_calls
+                .entry(call_uri)
+                .or_insert_with(Vec::new)
+                .push(call);
+        }
+
+        let file_count = self.workspace.documents.len();
+        let symbol_count = self.workspace.global_symbols.len();
 
         // Broadcast workspace change event (outside lock)
         let _ = self.workspace_changes.send(WorkspaceChangeEvent {

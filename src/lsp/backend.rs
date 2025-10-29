@@ -155,16 +155,7 @@ impl RholangBackend {
             doc_change_tx: doc_change_tx.clone(),
             validation_cancel: validation_cancel.clone(),
             indexing_tx: indexing_tx.clone(),
-            workspace: Arc::new(RwLock::new(WorkspaceState {
-                documents: HashMap::new(),
-                global_symbols: HashMap::new(),
-                global_table: Arc::new(SymbolTable::new(None)),
-                global_inverted_index: HashMap::new(),
-                global_contracts: Vec::new(),
-                global_calls: Vec::new(),
-                global_index: Arc::new(std::sync::RwLock::new(crate::ir::global_index::GlobalSymbolIndex::new())),
-                global_virtual_symbols: HashMap::new(),
-            })),
+            workspace: Arc::new(WorkspaceState::new()),
             file_watcher: Arc::new(Mutex::new(None)),
             file_events: Arc::new(Mutex::new(rx)),
             file_sender: Arc::new(Mutex::new(tx)),
@@ -315,7 +306,7 @@ impl RholangBackend {
                     while let Some(PrioritizedTask(_, task)) = queue.pop() {
                         match backend.index_file(&task.uri, &task.text, 0, None).await {
                             Ok(cached_doc) => {
-                                backend.workspace.write().await.documents.insert(
+                                backend.workspace.documents.insert(
                                     task.uri.clone(),
                                     Arc::new(cached_doc)
                                 );
@@ -563,12 +554,8 @@ impl RholangBackend {
 
     /// Looks up the IR node, its symbol table, and inverted index at a given position in the document.
     pub async fn lookup_node_at_position(&self, uri: &Url, position: IrPosition) -> Option<(Arc<RholangNode>, Arc<SymbolTable>, InvertedIndex)> {
-        let opt_doc = {
-            debug!("Acquiring workspace read lock for symbol at {}:{:?}", uri, position);
-            let workspace = self.workspace.read().await;
-            debug!("Workspace read lock acquired for {}:{:?}", uri, position);
-            workspace.documents.get(uri).cloned()
-        };
+        debug!("Lock-free document lookup for symbol at {}:{:?}", uri, position);
+        let opt_doc = self.workspace.documents.get(uri).map(|entry| entry.value().clone());
         if let Some(doc) = opt_doc {
             if let Some(node) = find_node_at_position(&doc.ir, &*doc.positions, position) {
                 let symbol_table = node.metadata()
@@ -619,10 +606,8 @@ impl RholangBackend {
             }
         }
 
-        let workspace = self.workspace.read().await;
-
-        // Add local usages from the declaration document
-        if let Some(decl_doc) = workspace.documents.get(&decl_uri) {
+        // Add local usages from the declaration document (lock-free)
+        if let Some(decl_doc) = self.workspace.documents.get(&decl_uri) {
             if let Some(usages) = decl_doc.inverted_index.get(&decl_pos) {
                 for &usage_pos in usages {
                     let range = Self::position_to_range(usage_pos, name_len);
@@ -632,9 +617,10 @@ impl RholangBackend {
             }
         }
 
-        // Add global usages if the symbol is a contract
+        // Add global usages if the symbol is a contract (needs lock - infrequent operation)
         if symbol.symbol_type == SymbolType::Contract {
-            if let Some(global_usages) = workspace.global_inverted_index.get(&(decl_uri.clone(), decl_pos)) {
+            let global_inverted_index = self.workspace.global_inverted_index.read().await;
+            if let Some(global_usages) = global_inverted_index.get(&(decl_uri.clone(), decl_pos)) {
                 for &(ref use_uri, use_pos) in global_usages {
                     let range = Self::position_to_range(use_pos, name_len);
                     locations.push((use_uri.clone(), range));

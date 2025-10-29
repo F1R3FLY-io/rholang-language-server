@@ -952,4 +952,67 @@ impl RholangBackend {
             change_annotations: None,
         }))
     }
+
+    /// Find all references to a MeTTa symbol
+    pub(super) async fn references_metta(
+        &self,
+        virtual_doc: &Arc<VirtualDocument>,
+        virtual_position: LspPosition,
+        include_declaration: bool,
+    ) -> LspResult<Option<Vec<Location>>> {
+        // Get symbol table
+        let symbol_table = match virtual_doc.get_or_build_symbol_table() {
+            Some(table) => table,
+            None => {
+                debug!("Failed to build symbol table for MeTTa virtual document");
+                return Ok(None);
+            }
+        };
+
+        // Find symbol at position
+        let symbol = match symbol_table.find_symbol_at_position(&virtual_position) {
+            Some(sym) => sym,
+            None => {
+                debug!("No MeTTa symbol at position {:?}", virtual_position);
+                return Ok(None);
+            }
+        };
+
+        // Find all references in the same scope
+        let references = symbol_table.find_symbol_references(symbol);
+
+        // Create locations for all occurrences
+        let locations: Vec<Location> = references
+            .iter()
+            .filter(|occ| {
+                // Include or exclude declaration based on parameter
+                if include_declaration {
+                    true
+                } else {
+                    !occ.is_definition
+                }
+            })
+            .map(|occ| {
+                let parent_range = virtual_doc.map_range_to_parent(occ.range);
+                Location {
+                    uri: virtual_doc.parent_uri.clone(),
+                    range: parent_range,
+                }
+            })
+            .collect();
+
+        if locations.is_empty() {
+            debug!("No references found for MeTTa symbol '{}'", symbol.name);
+            return Ok(None);
+        }
+
+        debug!(
+            "Found {} reference(s) for MeTTa symbol '{}' (include_declaration: {})",
+            locations.len(),
+            symbol.name,
+            include_declaration
+        );
+
+        Ok(Some(locations))
+    }
 }

@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use dashmap::DashMap;
 use tower_lsp::lsp_types::{
     Position as LspPosition, Url,
 };
@@ -29,9 +30,9 @@ impl RholangBackend {
     /// like rename, goto-definition, and references to avoid race conditions
     /// with the debounced symbol linker.
     pub(crate) async fn needs_symbol_linking(&self) -> bool {
-        let workspace = self.workspace.read().await;
-        let doc_count = workspace.documents.len();
-        let symbol_count = workspace.global_symbols.len();
+        // Lock-free access via DashMap
+        let doc_count = self.workspace.documents.len();
+        let symbol_count = self.workspace.global_symbols.len();
 
         // If we have documents but no global symbols, we definitely need linking
         // This handles the race condition where documents are indexed but
@@ -51,38 +52,40 @@ impl RholangBackend {
     /// 4. Updates the global inverted index for cross-file navigation
     /// 5. Broadcasts workspace change event via hot observable
     pub(crate) async fn link_symbols(&self) {
-        // Clone both documents and global_table in a single read lock acquisition
-        let (documents, global_table) = {
-            let workspace = self.workspace.read().await;
-            (workspace.documents.clone(), workspace.global_table.clone())
-        };
+        // Lock-free document collection via DashMap
+        // Clone global_table separately (still needs lock for consistency)
+        let global_table = self.workspace.global_table.read().await;
 
         // Collect all global contract symbols from workspace.global_table
         // The global_table was populated during indexing by SymbolTableBuilder,
         // which only inserts top-level contracts (is_top_level check at line 370 of symbol_table_builder.rs)
-        let mut global_symbols = HashMap::new();
+        let mut global_symbols_map = HashMap::new();
 
         // Get all contract symbols from the global table
         for (name, symbol) in global_table.symbols.read().unwrap().iter() {
             if matches!(symbol.symbol_type, crate::ir::symbol_table::SymbolType::Contract) {
                 debug!("link_symbols: Adding global contract '{}' from {} at {:?}",
                        name, symbol.declaration_uri, symbol.declaration_location);
-                global_symbols.insert(
+                global_symbols_map.insert(
                     name.clone(),
                     (symbol.declaration_uri.clone(), symbol.declaration_location),
                 );
             }
         }
-        debug!("link_symbols: Collected {} global contract symbols from global_table", global_symbols.len());
+        drop(global_table); // Release lock early
 
-        debug!("link_symbols: Processing {} documents", documents.len());
-        info!("Linked symbols across {} files", documents.len());
+        debug!("link_symbols: Collected {} global contract symbols from global_table", global_symbols_map.len());
+        debug!("link_symbols: Processing {} documents", self.workspace.documents.len());
+        info!("Linked symbols across {} files", self.workspace.documents.len());
 
-        // Resolve potential global references (without holding any lock)
+        // Resolve potential global references (lock-free iteration)
         let mut resolutions = Vec::new();
-        for (doc_uri, doc) in &documents {
+        for entry in self.workspace.documents.iter() {
+            let doc_uri = entry.key();
+            let doc = entry.value();
+
             for (name, use_pos) in &doc.potential_global_refs {
-                if let Some((def_uri, def_pos)) = global_symbols.get(name).cloned() {
+                if let Some((def_uri, def_pos)) = global_symbols_map.get(name).cloned() {
                     // Skip self-references
                     if (doc_uri.clone(), *use_pos) != (def_uri.clone(), def_pos) {
                         resolutions.push(((def_uri, def_pos), (doc_uri.clone(), *use_pos)));
@@ -97,22 +100,29 @@ impl RholangBackend {
             }
         }
 
-        // Build global inverted index (without holding any lock)
-        let mut global_inverted_index = HashMap::new();
+        // Build global inverted index
+        let mut global_inverted_index_map = HashMap::new();
         for ((def_uri, def_pos), (use_uri, use_pos)) in resolutions {
-            global_inverted_index
+            global_inverted_index_map
                 .entry((def_uri, def_pos))
                 .or_insert_with(Vec::new)
                 .push((use_uri, use_pos));
         }
 
-        // Now acquire write lock only to update workspace (minimal lock duration)
-        let (file_count, symbol_count) = {
-            let mut workspace = self.workspace.write().await;
-            workspace.global_symbols = global_symbols;
-            workspace.global_inverted_index = global_inverted_index;
-            (workspace.documents.len(), workspace.global_symbols.len())
-        };
+        // Update global symbols (lock-free batch insert)
+        self.workspace.global_symbols.clear();
+        for (name, location) in global_symbols_map {
+            self.workspace.global_symbols.insert(name, location);
+        }
+
+        // Update global inverted index (requires lock for consistency)
+        {
+            let mut global_inverted_index = self.workspace.global_inverted_index.write().await;
+            *global_inverted_index = global_inverted_index_map;
+        }
+
+        let file_count = self.workspace.documents.len();
+        let symbol_count = self.workspace.global_symbols.len();
 
         // Broadcast workspace change event (ReactiveX Phase 2)
         let _ = self.workspace_changes.send(WorkspaceChangeEvent {
@@ -134,11 +144,10 @@ impl RholangBackend {
     pub(crate) async fn link_virtual_symbols(&self) {
         use tower_lsp::lsp_types::Range;
 
-        // Get workspace document URIs (read lock)
-        let document_uris = {
-            let workspace = self.workspace.read().await;
-            workspace.documents.keys().cloned().collect::<Vec<_>>()
-        };
+        // Get workspace document URIs (lock-free)
+        let document_uris: Vec<_> = self.workspace.documents.iter()
+            .map(|entry| entry.key().clone())
+            .collect();
 
         // Collect symbols from all virtual documents, organized by language
         let mut global_symbols: HashMap<String, HashMap<String, Vec<(Url, Range)>>> = HashMap::new();
@@ -190,19 +199,24 @@ impl RholangBackend {
             }
         }
 
-        // Update workspace with the collected symbols
-        let (symbol_count, lang_count) = {
-            let mut workspace = self.workspace.write().await;
-            workspace.global_virtual_symbols = global_symbols.clone();
+        // Update workspace with the collected symbols (lock-free)
+        // Clear existing and insert new nested DashMaps
+        self.workspace.global_virtual_symbols.clear();
+        for (language, symbols_map) in global_symbols.iter() {
+            let inner_map = Arc::new(DashMap::new());
+            for (symbol_name, locations) in symbols_map {
+                inner_map.insert(symbol_name.clone(), locations.clone());
+            }
+            self.workspace.global_virtual_symbols.insert(language.clone(), inner_map);
+        }
 
-            let total_symbols: usize = global_symbols.values()
-                .map(|lang_map| lang_map.len())
-                .sum();
-            (total_symbols, global_symbols.len())
-        };
+        let total_symbols: usize = global_symbols.values()
+            .map(|lang_map| lang_map.len())
+            .sum();
+        let lang_count = global_symbols.len();
 
         info!("Linked {} symbols across {} virtual documents in {} languages",
-              symbol_count, total_virtual_docs, lang_count);
+              total_symbols, total_virtual_docs, lang_count);
 
         // Log symbol counts per language
         for (lang, symbols) in &global_symbols {
@@ -224,15 +238,11 @@ impl RholangBackend {
         uri: &Url,
         position: LspPosition,
     ) -> Option<Arc<Symbol>> {
-        // Get document from workspace
-        let opt_doc = {
-            debug!("Acquiring workspace read lock for symbol at {}:{:?}", uri, position);
-            let workspace = self.workspace.read().await;
-            debug!("Workspace read lock acquired for {}:{:?}", uri, position);
-            workspace.documents.get(uri).cloned()
-        };
+        // Get document from workspace (lock-free)
+        debug!("Lock-free document lookup for symbol at {}:{:?}", uri, position);
+        let doc = self.workspace.documents.get(uri)?.value().clone();
 
-        let doc = opt_doc?;
+        debug!("Document found for {}:{:?}", uri, position);
         let text = &doc.text;
 
         // Convert LSP position to byte offset
@@ -250,10 +260,8 @@ impl RholangBackend {
 
         // Get node with path for parent checking
         let (node_path_opt, symbol_table_opt) = {
-            let opt_doc = {
-                let workspace = self.workspace.read().await;
-                workspace.documents.get(uri).cloned()
-            };
+            // Lock-free document lookup
+            let opt_doc = self.workspace.documents.get(uri).map(|entry| entry.value().clone());
 
             if let Some(doc) = opt_doc {
                 let path_result = find_node_at_position_with_path(&doc.ir, &*doc.positions, pos);
@@ -397,8 +405,9 @@ impl RholangBackend {
                     if var_name == name {
                         // This Var is a contract name - handle as global symbol
                         debug!("Var '{}' is a contract name", name);
-                        let workspace = self.workspace.read().await;
-                        if let Some((def_uri, def_pos)) = workspace.global_symbols.get(name).cloned() {
+                        // Lock-free global symbol lookup
+                        if let Some(entry) = self.workspace.global_symbols.get(name) {
+                            let (def_uri, def_pos) = entry.value().clone();
                             debug!(
                                 "Found global contract symbol '{}' at {}:{} in {}",
                                 name, position.line, position.character, uri
@@ -426,9 +435,9 @@ impl RholangBackend {
             return Some(symbol);
         }
 
-        // Search global symbols for unbound references
-        let workspace = self.workspace.read().await;
-        if let Some((def_uri, def_pos)) = workspace.global_symbols.get(name).cloned() {
+        // Search global symbols for unbound references (lock-free)
+        if let Some(entry) = self.workspace.global_symbols.get(name) {
+            let (def_uri, def_pos) = entry.value().clone();
             debug!(
                 "Found global symbol '{}' for unbound reference at {}:{} in {}",
                 name, position.line, position.character, uri
@@ -464,8 +473,9 @@ impl RholangBackend {
             _ => None,
         }?;
 
-        let workspace = self.workspace.read().await;
-        if let Some((def_uri, def_pos)) = workspace.global_symbols.get(&contract_name).cloned() {
+        // Lock-free global symbol lookup
+        if let Some(entry) = self.workspace.global_symbols.get(&contract_name) {
+            let (def_uri, def_pos) = entry.value().clone();
             debug!(
                 "Found contract symbol '{}' at {}:{} in {}",
                 contract_name, position.line, position.character, uri
@@ -491,8 +501,8 @@ impl RholangBackend {
         channel: &Arc<RholangNode>,
         byte: usize,
     ) -> Option<Arc<Symbol>> {
-        let workspace = self.workspace.read().await;
-        let doc = workspace.documents.get(uri)?;
+        // Lock-free document lookup
+        let doc = self.workspace.documents.get(uri)?.value().clone();
 
         // Check if position is within the channel node
         let channel_key = &**channel as *const RholangNode as usize;
@@ -507,7 +517,9 @@ impl RholangBackend {
             // Position is within the channel, extract the name
             if let RholangNode::Var { name: channel_name, .. } = &**channel {
                 debug!("Send channel is Var '{}'", channel_name);
-                if let Some((def_uri, def_pos)) = workspace.global_symbols.get(channel_name).cloned() {
+                // Lock-free global symbol lookup
+                if let Some(entry) = self.workspace.global_symbols.get(channel_name) {
+                    let (def_uri, def_pos) = entry.value().clone();
                     debug!(
                         "Found global contract symbol '{}' for Send at {}:{} in {}",
                         channel_name, position.line, position.character, uri
@@ -536,8 +548,8 @@ impl RholangBackend {
         byte: usize,
     ) -> Option<Arc<Symbol>> {
         if let RholangNode::Var { name: quoted_name, .. } = &**quotable {
-            let workspace = self.workspace.read().await;
-            let doc = workspace.documents.get(uri)?;
+            // Lock-free document lookup
+            let doc = self.workspace.documents.get(uri)?.value().clone();
 
             // Check if cursor is within the quoted variable
             let quotable_key = &**quotable as *const RholangNode as usize;
@@ -549,7 +561,9 @@ impl RholangBackend {
             );
 
             if q_start.byte <= byte && byte <= q_end.byte {
-                if let Some((def_uri, def_pos)) = workspace.global_symbols.get(quoted_name).cloned() {
+                // Lock-free global symbol lookup
+                if let Some(entry) = self.workspace.global_symbols.get(quoted_name) {
+                    let (def_uri, def_pos) = entry.value().clone();
                     debug!(
                         "Found global contract symbol '{}' for Quote at {}:{} in {}",
                         quoted_name, position.line, position.character, uri

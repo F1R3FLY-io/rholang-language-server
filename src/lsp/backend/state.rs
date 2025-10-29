@@ -99,7 +99,9 @@ pub struct RholangBackend {
     pub(super) doc_change_tx: tokio::sync::mpsc::Sender<DocumentChangeEvent>,
     pub(super) validation_cancel: Arc<tokio::sync::Mutex<HashMap<Url, tokio::sync::oneshot::Sender<()>>>>,
     pub(super) indexing_tx: tokio::sync::mpsc::Sender<IndexingTask>,
-    pub(super) workspace: Arc<RwLock<WorkspaceState>>,
+    /// Workspace state with lock-free concurrent collections (Phase 1 optimization)
+    /// No outer RwLock needed - internal DashMaps provide lock-free concurrent access
+    pub(super) workspace: Arc<WorkspaceState>,
     pub(super) file_watcher: Arc<Mutex<Option<RecommendedWatcher>>>,
     pub(super) file_events: Arc<Mutex<Receiver<notify::Result<notify::Event>>>>,
     pub(super) file_sender: Arc<Mutex<Sender<notify::Result<notify::Event>>>>,
