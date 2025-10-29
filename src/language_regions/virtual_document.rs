@@ -141,7 +141,25 @@ impl VirtualDocument {
     /// # Returns
     /// Position in the parent document
     pub fn map_to_parent(&self, virtual_pos: LspPosition) -> LspPosition {
-        // For single-line regions, add the virtual column to parent start column
+        // For holed documents (concatenated strings), use the holed position map
+        if let Some(map) = self.get_holed_position_map() {
+            // Convert from tower_lsp::lsp_types::Position to lsp_types::Position
+            let pos = lsp_types::Position {
+                line: virtual_pos.line,
+                character: virtual_pos.character,
+            };
+
+            if let Some(original_pos) = map.virtual_to_original(pos) {
+                return LspPosition {
+                    line: original_pos.line,
+                    character: original_pos.character,
+                };
+            }
+            // If mapping fails (position in hole), return parent_start as fallback
+            return self.parent_start;
+        }
+
+        // For regular (non-concatenated) single-line regions, add the virtual column to parent start column
         if virtual_pos.line == 0 {
             LspPosition {
                 line: self.parent_start.line,
