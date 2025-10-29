@@ -211,6 +211,7 @@ impl RholangBackend {
         indexing_rx: tokio::sync::mpsc::Receiver<IndexingTask>,
     ) {
         let mut shutdown_rx = backend.shutdown_tx.subscribe();
+        let mut shutdown_rx_inner = backend.shutdown_tx.subscribe();
 
         tokio::spawn(async move {
             use std::collections::BinaryHeap;
@@ -270,6 +271,13 @@ impl RholangBackend {
 
                 // Process each task
                 while let Some(PrioritizedTask(_, task)) = queue.pop() {
+                    // Check for shutdown signal before processing each file
+                    // This prevents long delays during batch processing
+                    if let Ok(_) = shutdown_rx_inner.try_recv() {
+                        debug!("Shutdown detected, stopping batch processing early");
+                        break;
+                    }
+
                     match backend.index_file(&task.uri, &task.text, 0, None).await {
                         Ok(cached_doc) => {
                             backend.update_workspace_document(&task.uri, std::sync::Arc::new(cached_doc)).await;
