@@ -34,7 +34,7 @@ struct ChannelBinding {
 struct PendingSend {
     /// Channel name the string was sent to
     channel_name: String,
-    /// String content
+    /// String content (virtual content if concatenated)
     content: String,
     /// Start byte position
     start_byte: usize,
@@ -44,6 +44,8 @@ struct PendingSend {
     start_line: usize,
     /// Start column
     start_column: usize,
+    /// Optional concatenation chain for holed virtual documents
+    concatenation_chain: Option<super::concatenation::ConcatenationChain>,
 }
 
 /// Tracks which variables receive from which channels
@@ -487,7 +489,7 @@ impl ChannelFlowAnalyzer {
         }
     }
 
-    /// Analyzes send arguments - handles both direct strings and variable forwards
+    /// Analyzes send arguments - handles direct strings, variable forwards, and concatenations
     fn analyze_send_arguments<'a>(
         &mut self,
         send_node: &TSNode<'a>,
@@ -526,9 +528,151 @@ impl ChannelFlowAnalyzer {
                                 self.check_variable_forward(var_name, language, regions);
                             }
                         }
+                        // Concatenation expression (e.g., "text " ++ variable ++ " more")
+                        "concat" => {
+                            if let Some(concat_region) = self.extract_concatenation_region(&input_child, source, language) {
+                                trace!("Concatenation detected in send to {}: {} parts",
+                                    target_var, concat_region.concatenation_chain.as_ref().map(|c| c.parts.len()).unwrap_or(0));
+                                regions.push(concat_region);
+                            }
+                        }
                         _ => {}
                     }
                 }
+            }
+        }
+    }
+
+    /// Extracts a concatenation expression and creates a holed language region
+    ///
+    /// Handles patterns like: "!(get_neighbors " ++ fromRoom ++ ")"
+    /// Returns a LanguageRegion with a concatenation_chain containing literals and holes
+    fn extract_concatenation_region<'a>(
+        &self,
+        concat_node: &TSNode<'a>,
+        source: &'a str,
+        language: &str,
+    ) -> Option<LanguageRegion> {
+        use lsp_types::{Position, Range};
+        use super::concatenation::{ConcatPart, ConcatenationChain};
+
+        // Extract parts recursively
+        let mut parts = Vec::new();
+        self.extract_concat_parts_from_ts(concat_node, source, &mut parts);
+
+        if parts.is_empty() {
+            return None;
+        }
+
+        // Build the virtual content (literals only, excluding holes)
+        let virtual_content: String = parts
+            .iter()
+            .filter_map(|part| match part {
+                ConcatPart::Literal { content, .. } => Some(content.as_str()),
+                ConcatPart::Hole { .. } => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+
+        // Calculate the full range from first to last part
+        let full_range = Range {
+            start: parts.first()?.original_range().start,
+            end: parts.last()?.original_range().end,
+        };
+
+        let chain = ConcatenationChain::new(parts, full_range);
+
+        // Use the concat node's position for the region
+        Some(LanguageRegion {
+            language: language.to_string(),
+            start_byte: concat_node.start_byte(),
+            end_byte: concat_node.end_byte(),
+            start_line: concat_node.start_position().row,
+            start_column: concat_node.start_position().column,
+            source: RegionSource::ChannelFlow,
+            content: virtual_content,
+            concatenation_chain: Some(chain),
+        })
+    }
+
+    /// Recursively extracts concatenation parts from a Tree-Sitter node
+    ///
+    /// Traverses binary expressions with ++ operators and collects:
+    /// - String literals as Literal parts
+    /// - Variables and other expressions as Hole parts
+    fn extract_concat_parts_from_ts<'a>(
+        &self,
+        node: &TSNode<'a>,
+        source: &'a str,
+        parts: &mut Vec<super::concatenation::ConcatPart>,
+    ) {
+        use lsp_types::{Position, Range};
+        use super::concatenation::ConcatPart;
+
+        match node.kind() {
+            "concat" => {
+                // Recursively process children (string literals and vars)
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if child.kind() != "++" {
+                        self.extract_concat_parts_from_ts(&child, source, parts);
+                    }
+                }
+            }
+            "string_literal" => {
+                // Extract the string content (remove quotes)
+                if let Ok(text) = node.utf8_text(source.as_bytes()) {
+                    let content = Self::extract_string_content(text);
+
+                    // String literals have quotes, so adjust byte positions to skip them
+                    let range = Range {
+                        start: Position {
+                            line: node.start_position().row as u32,
+                            character: (node.start_position().column + 1) as u32, // Skip opening quote
+                        },
+                        end: Position {
+                            line: node.end_position().row as u32,
+                            character: (node.end_position().column - 1) as u32, // Skip closing quote
+                        },
+                    };
+
+                    parts.push(ConcatPart::Literal {
+                        content,
+                        original_range: range,
+                    });
+                }
+            }
+            "var" | "expr" | "parenthesized_expression" => {
+                // Variables and other expressions are holes
+                let range = Range {
+                    start: Position {
+                        line: node.start_position().row as u32,
+                        character: node.start_position().column as u32,
+                    },
+                    end: Position {
+                        line: node.end_position().row as u32,
+                        character: node.end_position().column as u32,
+                    },
+                };
+                parts.push(ConcatPart::Hole {
+                    original_range: range,
+                });
+            }
+            _ => {
+                // Any other node type - treat as hole
+                let range = Range {
+                    start: Position {
+                        line: node.start_position().row as u32,
+                        character: node.start_position().column as u32,
+                    },
+                    end: Position {
+                        line: node.end_position().row as u32,
+                        character: node.end_position().column as u32,
+                    },
+                };
+                parts.push(ConcatPart::Hole {
+                    original_range: range,
+                });
             }
         }
     }
@@ -542,7 +686,9 @@ impl ChannelFlowAnalyzer {
             // Check if we have pending sends to that channel
             for pending in &self.pending_sends {
                 if pending.channel_name == source_channel {
-                    trace!("Creating region from pending send via data flow: {} -> {}", source_channel, var_name);
+                    trace!("Creating region from pending send via data flow: {} -> {}{}",
+                        source_channel, var_name,
+                        if pending.concatenation_chain.is_some() { " (concatenated)" } else { "" });
 
                     regions.push(LanguageRegion {
                         language: language.to_string(),
@@ -552,7 +698,7 @@ impl ChannelFlowAnalyzer {
                         start_column: pending.start_column,
                         source: RegionSource::ChannelFlow,
                         content: pending.content.clone(),
-                        concatenation_chain: None,
+                        concatenation_chain: pending.concatenation_chain.clone(),
                     });
                 }
             }
@@ -597,26 +743,54 @@ impl ChannelFlowAnalyzer {
     }
 
     /// Tracks string sends to intermediate channels for data flow analysis
+    ///
+    /// Handles both direct string literals and concatenation expressions
     fn track_pending_sends<'a>(&mut self, send_node: &TSNode<'a>, source: &'a str, channel_name: &str) {
-        // Find the inputs node and extract string literals
+        // Find the inputs node and extract string literals or concatenations
         for child in send_node.children(&mut send_node.walk()) {
             if child.kind() == "inputs" {
                 for input_child in child.children(&mut child.walk()) {
-                    if input_child.kind() == "string_literal" {
-                        if let Ok(text) = input_child.utf8_text(source.as_bytes()) {
-                            let content = Self::extract_string_content(text);
+                    match input_child.kind() {
+                        // Direct string literal
+                        "string_literal" => {
+                            if let Ok(text) = input_child.utf8_text(source.as_bytes()) {
+                                let content = Self::extract_string_content(text);
 
-                            trace!("Tracking pending send to {}: {}", channel_name, &content[..content.len().min(40)]);
+                                trace!("Tracking pending send to {}: {}", channel_name, &content[..content.len().min(40)]);
 
-                            self.pending_sends.push(PendingSend {
-                                channel_name: channel_name.to_string(),
-                                content,
-                                start_byte: input_child.start_byte() + 1,
-                                end_byte: input_child.end_byte() - 1,
-                                start_line: input_child.start_position().row,
-                                start_column: input_child.start_position().column,
-                            });
+                                self.pending_sends.push(PendingSend {
+                                    channel_name: channel_name.to_string(),
+                                    content,
+                                    start_byte: input_child.start_byte() + 1,
+                                    end_byte: input_child.end_byte() - 1,
+                                    start_line: input_child.start_position().row,
+                                    start_column: input_child.start_position().column,
+                                    concatenation_chain: None,
+                                });
+                            }
                         }
+                        // Concatenation expression
+                        "concat" => {
+                            // Extract concatenation as a holed region
+                            // We use "metta" as a placeholder language since we don't know yet what language
+                            // the compiler channel will expect. This will be overridden when the pending
+                            // send is consumed by check_variable_forward.
+                            if let Some(concat_region) = self.extract_concatenation_region(&input_child, source, "metta") {
+                                trace!("Tracking pending concatenation send to {}: {} parts",
+                                    channel_name, concat_region.concatenation_chain.as_ref().map(|c| c.parts.len()).unwrap_or(0));
+
+                                self.pending_sends.push(PendingSend {
+                                    channel_name: channel_name.to_string(),
+                                    content: concat_region.content,
+                                    start_byte: concat_region.start_byte,
+                                    end_byte: concat_region.end_byte,
+                                    start_line: concat_region.start_line,
+                                    start_column: concat_region.start_column,
+                                    concatenation_chain: concat_region.concatenation_chain,
+                                });
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -919,6 +1093,173 @@ new mettaCompile(`rho:metta:compile`) in {
 
         assert_eq!(regions.len(), 1, "Should detect direct send to new-bound variable");
         assert!(regions[0].content.contains("test"));
+    }
+
+    #[test]
+    fn test_robot_planning_all_regions() {
+        // Test that robot_planning.rho detects MeTTa regions including concatenated ones
+        // Note: The same concatenated string may be detected multiple times due to
+        // data flow analysis (same pending send consumed by multiple code paths)
+        let source = std::fs::read_to_string("/home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler/examples/robot_planning.rho")
+            .expect("Failed to read robot_planning.rho");
+
+        let tree = parse_code(&source);
+        let rope = Rope::from_str(&source);
+
+        let regions = ChannelFlowAnalyzer::analyze(&source, &tree, &rope);
+
+        eprintln!("Detected {} MeTTa regions in robot_planning.rho", regions.len());
+        for (i, region) in regions.iter().enumerate() {
+            eprintln!("Region {}: line {}, concatenated: {}, content preview: {}",
+                i + 1,
+                region.start_line,
+                region.concatenation_chain.is_some(),
+                &region.content[..region.content.len().min(50)].replace("\n", "\\n")
+            );
+        }
+
+        // Verify we have at least 1 multi-line and some concatenated regions
+        let multi_line_count = regions.iter().filter(|r| r.concatenation_chain.is_none()).count();
+        let concatenated_count = regions.iter().filter(|r| r.concatenation_chain.is_some()).count();
+
+        assert!(multi_line_count >= 1, "Should have at least 1 multi-line region");
+        assert!(concatenated_count >= 6, "Should have at least 6 concatenated regions");
+
+        // Verify all concatenated regions have proper chains
+        for region in &regions {
+            if let Some(chain) = &region.concatenation_chain {
+                assert!(chain.has_holes(), "Concatenated regions should have holes");
+                assert!(chain.literal_count() >= 2, "Should have at least 2 literals");
+            }
+        }
+
+        // Verify we detect the specific concatenated patterns
+        let patterns = vec!["!(get_neighbors ", "!(locate ", "!(find_any_path ",
+                           "!(distance_between ", "!(transport_object ", "!(validate_plan "];
+        for pattern in &patterns {
+            let found = regions.iter().any(|r| r.content.contains(pattern));
+            assert!(found, "Should detect pattern: {}", pattern);
+        }
+    }
+
+    #[test]
+    fn test_debug_concat_ts_structure() {
+        // Debug test to see Tree-Sitter structure
+        let source = r#"test!("a" ++ b)"#;
+        let tree = parse_code(source);
+
+        fn print_tree(node: &TSNode, source: &str, depth: usize) {
+            let indent = "  ".repeat(depth);
+            let text = node.utf8_text(source.as_bytes()).unwrap_or("");
+            let preview = if text.len() > 40 {
+                format!("{}...", &text[..40])
+            } else {
+                text.to_string()
+            };
+            eprintln!("{}{} [{}]", indent, node.kind(), preview.replace("\n", "\\n"));
+
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                print_tree(&child, source, depth + 1);
+            }
+        }
+
+        eprintln!("=== Tree-Sitter structure for concatenation ===");
+        print_tree(&tree.root_node(), source, 0);
+    }
+
+    #[test]
+    fn test_concatenated_string_detection() {
+        // Test the pattern from robot_planning.rho:
+        // queryCode!("!(get_neighbors " ++ fromRoom ++ ")")
+        let source = r#"
+new mettaCompile(`rho:metta:compile`) in {
+  new queryCode in {
+    queryCode!("!(get_neighbors " ++ fromRoom ++ ")") |
+    for (@code <- queryCode) {
+      mettaCompile!(code)
+    }
+  }
+}
+"#;
+
+        let tree = parse_code(source);
+        let rope = Rope::from_str(source);
+
+        let regions = ChannelFlowAnalyzer::analyze(source, &tree, &rope);
+
+        // Should detect the concatenated string as a holed region
+        assert_eq!(
+            regions.len(),
+            1,
+            "Should detect concatenated string via data flow analysis"
+        );
+
+        let region = &regions[0];
+        assert_eq!(region.language, "metta");
+        assert_eq!(region.source, RegionSource::ChannelFlow);
+
+        // Virtual content should have the literals joined (without the variable hole)
+        assert!(
+            region.content.contains("!(get_neighbors "),
+            "Should contain first literal"
+        );
+        assert!(region.content.contains(")"), "Should contain last literal");
+
+        // Should have a concatenation chain
+        assert!(
+            region.concatenation_chain.is_some(),
+            "Should have concatenation chain for holed virtual document"
+        );
+
+        let chain = region.concatenation_chain.as_ref().unwrap();
+        assert_eq!(chain.parts.len(), 3, "Should have 3 parts: literal + hole + literal");
+        assert!(chain.has_holes(), "Should have holes");
+        assert_eq!(chain.hole_count(), 1, "Should have 1 hole (fromRoom variable)");
+        assert_eq!(chain.literal_count(), 2, "Should have 2 literals");
+    }
+
+    #[test]
+    fn test_multiple_concatenated_strings() {
+        // Test multiple concatenated patterns
+        let source = r#"
+new mettaCompile(`rho:metta:compile`) in {
+  new queryCode in {
+    queryCode!("!(locate " ++ objectName ++ ")") |
+    queryCode!("!(find_path " ++ fromRoom ++ " " ++ toRoom ++ ")") |
+    for (@code <- queryCode) {
+      mettaCompile!(code)
+    }
+  }
+}
+"#;
+
+        let tree = parse_code(source);
+        let rope = Rope::from_str(source);
+
+        let regions = ChannelFlowAnalyzer::analyze(source, &tree, &rope);
+
+        // Should detect both concatenated strings
+        assert_eq!(
+            regions.len(),
+            2,
+            "Should detect both concatenated strings"
+        );
+
+        // First region: "!(locate " ++ objectName ++ ")"
+        assert!(regions[0].content.contains("!(locate "));
+        assert!(regions[0].concatenation_chain.is_some());
+        let chain0 = regions[0].concatenation_chain.as_ref().unwrap();
+        assert_eq!(chain0.parts.len(), 3);
+        assert_eq!(chain0.hole_count(), 1);
+
+        // Second region: "!(find_path " ++ fromRoom ++ " " ++ toRoom ++ ")"
+        assert!(regions[1].content.contains("!(find_path "));
+        assert!(regions[1].concatenation_chain.is_some());
+        let chain1 = regions[1].concatenation_chain.as_ref().unwrap();
+        assert_eq!(chain1.parts.len(), 5); // 3 literals + 2 holes
+        assert_eq!(chain1.hole_count(), 2);
+        assert_eq!(chain1.literal_count(), 3);
     }
 }
 
