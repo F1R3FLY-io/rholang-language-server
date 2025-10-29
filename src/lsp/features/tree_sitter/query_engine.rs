@@ -306,6 +306,9 @@ mod tests {
     #[test]
     fn test_query_engine_creation() {
         let result = QueryEngineFactory::create_rholang();
+        if let Err(e) = &result {
+            eprintln!("Query engine creation failed: {}", e);
+        }
         assert!(result.is_ok());
         let engine = result.unwrap();
         assert_eq!(engine.language_name(), "rholang");

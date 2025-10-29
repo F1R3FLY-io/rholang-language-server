@@ -13,8 +13,11 @@
   "select"
   "new"
   "let"
-  "bundle"
+  ; Note: "bundle" removed - it's a node type, not a keyword literal
 ] @keyword
+
+; Bundle nodes
+(bundle) @keyword
 
 ; Bundle keywords
 [
