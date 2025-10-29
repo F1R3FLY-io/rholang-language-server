@@ -95,9 +95,9 @@
 pub mod traits;
 pub mod node_finder;
 pub mod goto_definition;
+pub mod hover;
 
 // Phase 2 modules (in progress):
-// pub mod hover;
 // pub mod references;
 // pub mod rename;
 // pub mod completion;
