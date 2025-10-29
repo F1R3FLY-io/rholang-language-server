@@ -96,18 +96,61 @@ impl DocumentationProvider for RholangDocumentationProvider {
     }
 }
 
-/// Mock symbol resolver for Rholang (used until Phase 4 backend integration)
-struct MockRholangResolver;
+/// Rholang symbol resolver using traditional symbol table
+///
+/// This resolver performs lexical scope lookup in Rholang's hierarchical symbol table.
+struct RholangSymbolResolver {
+    symbol_table: Arc<SymbolTable>,
+}
 
-impl SymbolResolver for MockRholangResolver {
+impl SymbolResolver for RholangSymbolResolver {
     fn resolve_symbol(
         &self,
-        _symbol_name: &str,
+        symbol_name: &str,
         _position: &crate::ir::semantic_node::Position,
-        _context: &crate::ir::symbol_resolution::ResolutionContext,
+        context: &crate::ir::symbol_resolution::ResolutionContext,
     ) -> Vec<crate::ir::symbol_resolution::SymbolLocation> {
-        // Placeholder - real implementation will use Rholang symbol table
-        Vec::new()
+        use crate::ir::symbol_resolution::{SymbolLocation, SymbolKind, ResolutionConfidence};
+        use tower_lsp::lsp_types::{Position as LspPosition, Range};
+
+        // Look up symbol in the symbol table (walks parent chain automatically)
+        if let Some(symbol) = self.symbol_table.lookup(symbol_name) {
+            // Prefer definition_location if available, otherwise use declaration_location
+            let location = symbol.definition_location.as_ref()
+                .unwrap_or(&symbol.declaration_location);
+
+            // Convert IR Position to LSP Range
+            let lsp_pos = LspPosition {
+                line: location.row as u32,
+                character: location.column as u32,
+            };
+            let range = Range {
+                start: lsp_pos,
+                end: LspPosition {
+                    line: lsp_pos.line,
+                    character: lsp_pos.character + symbol.name.len() as u32,
+                },
+            };
+
+            // Determine symbol kind from Rholang symbol type
+            let kind = match symbol.symbol_type {
+                crate::ir::symbol_table::SymbolType::Contract => SymbolKind::Function,
+                crate::ir::symbol_table::SymbolType::Variable => SymbolKind::Variable,
+                crate::ir::symbol_table::SymbolType::Parameter => SymbolKind::Parameter,
+                _ => SymbolKind::Other,
+            };
+
+            vec![SymbolLocation {
+                uri: symbol.declaration_uri.clone(),
+                range,
+                kind,
+                confidence: ResolutionConfidence::Exact,
+                metadata: None,
+            }]
+        } else {
+            // Symbol not found in scope
+            Vec::new()
+        }
     }
 
     fn supports_language(&self, language: &str) -> bool {
@@ -115,17 +158,22 @@ impl SymbolResolver for MockRholangResolver {
     }
 }
 
-/// Create a Rholang language adapter
+/// Create a Rholang language adapter with symbol table
+///
+/// # Arguments
+/// * `symbol_table` - Symbol table for the Rholang document
 ///
 /// # Returns
-/// Configured LanguageAdapter for Rholang
+/// Configured LanguageAdapter for Rholang with working symbol resolution
 ///
-/// # Note
-/// This currently uses a mock resolver. Phase 4 will integrate with the
-/// real Rholang symbol table and scoping rules.
-pub fn create_rholang_adapter() -> LanguageAdapter {
-    // Create mock resolver (Phase 4 will replace with real Rholang resolver)
-    let resolver: Arc<dyn SymbolResolver> = Arc::new(MockRholangResolver);
+/// # Implementation
+/// Uses RholangSymbolResolver which performs hierarchical symbol table lookup,
+/// automatically walking the parent scope chain to find symbol definitions.
+pub fn create_rholang_adapter(symbol_table: Arc<SymbolTable>) -> LanguageAdapter {
+    // Create Rholang-specific resolver with real symbol table lookup
+    let resolver: Arc<dyn SymbolResolver> = Arc::new(
+        RholangSymbolResolver { symbol_table }
+    );
 
     // Create providers
     let hover = Arc::new(RholangHoverProvider);
@@ -149,7 +197,8 @@ mod tests {
 
     #[test]
     fn test_create_rholang_adapter() {
-        let adapter = create_rholang_adapter();
+        let symbol_table = Arc::new(SymbolTable::new());
+        let adapter = create_rholang_adapter(symbol_table);
 
         assert_eq!(adapter.language_name(), "rholang");
     }

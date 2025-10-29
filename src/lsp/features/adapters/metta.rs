@@ -4,15 +4,20 @@
 //! unified LanguageAdapter architecture.
 
 use std::sync::Arc;
-use tower_lsp::lsp_types::{HoverContents, CompletionItem, Documentation, MarkupContent, MarkupKind, CompletionItemKind};
+use tower_lsp::lsp_types::{HoverContents, CompletionItem, Documentation, MarkupContent, MarkupKind, CompletionItemKind, Url};
 
 use crate::lsp::features::traits::{
     LanguageAdapter, HoverProvider, CompletionProvider, DocumentationProvider,
     HoverContext, CompletionContext, DocumentationContext,
 };
 use crate::ir::semantic_node::SemanticNode;
-use crate::ir::symbol_resolution::{SymbolResolver, lexical_scope::LexicalScopeResolver};
-use crate::ir::symbol_table::SymbolTable;
+use crate::ir::symbol_resolution::{
+    SymbolResolver,
+    lexical_scope::LexicalScopeResolver,
+    composable::ComposableSymbolResolver,
+};
+use crate::ir::transforms::metta_symbol_table_builder::MettaSymbolTable;
+use crate::lsp::models::WorkspaceState;
 
 /// MeTTa-specific hover provider
 pub struct MettaHoverProvider;
@@ -99,36 +104,41 @@ impl DocumentationProvider for MettaDocumentationProvider {
     }
 }
 
-/// Mock symbol resolver for MeTTa (used until Phase 4 backend integration)
-struct MockMettaResolver;
-
-impl SymbolResolver for MockMettaResolver {
-    fn resolve_symbol(
-        &self,
-        _symbol_name: &str,
-        _position: &crate::ir::semantic_node::Position,
-        _context: &crate::ir::symbol_resolution::ResolutionContext,
-    ) -> Vec<crate::ir::symbol_resolution::SymbolLocation> {
-        // Placeholder - real implementation will use MettaSymbolTable
-        Vec::new()
-    }
-
-    fn supports_language(&self, language: &str) -> bool {
-        language == "metta"
-    }
-}
-
-/// Create a MeTTa language adapter
+/// Create a MeTTa language adapter with composable symbol resolution
+///
+/// # Arguments
+/// * `symbol_table` - MeTTa symbol table for the virtual document
+/// * `workspace` - Workspace state for cross-document symbol lookup
+/// * `parent_uri` - URI of the parent Rholang document
 ///
 /// # Returns
-/// Configured LanguageAdapter for MeTTa
+/// Configured LanguageAdapter for MeTTa with ComposableSymbolResolver
 ///
-/// # Note
-/// This currently uses a mock resolver. Phase 4 will integrate with the
-/// real MettaSymbolTable and LexicalScopeResolver.
-pub fn create_metta_adapter() -> LanguageAdapter {
-    // Create mock resolver (Phase 4 will replace with LexicalScopeResolver)
-    let resolver: Arc<dyn SymbolResolver> = Arc::new(MockMettaResolver);
+/// # Architecture
+/// Uses a composable resolver with:
+/// 1. Base: LexicalScopeResolver for local symbols
+/// 2. Fallback: AsyncGlobalVirtualSymbolResolver for cross-document symbols
+/// 3. Filters: (Future) MettaPatternFilter for arity-based refinement
+pub fn create_metta_adapter(
+    symbol_table: Arc<MettaSymbolTable>,
+    workspace: Arc<WorkspaceState>,
+    _parent_uri: Url,
+) -> LanguageAdapter {
+    // Create base lexical scope resolver
+    let base_resolver = Box::new(
+        LexicalScopeResolver::new(symbol_table, "metta".to_string())
+    );
+
+    // Create composable resolver
+    // Note: Pattern matching filter and global cross-document resolver will be added later
+    // AsyncGlobalVirtualSymbolResolver requires async, which ComposableSymbolResolver doesn't support yet
+    let resolver: Arc<dyn SymbolResolver> = Arc::new(
+        ComposableSymbolResolver::new(
+            base_resolver,
+            vec![], // No filters for now - pattern matcher will be added later
+            None,   // No global fallback for now - async support needed
+        )
+    );
 
     // Create providers
     let hover = Arc::new(MettaHoverProvider);
@@ -148,11 +158,23 @@ pub fn create_metta_adapter() -> LanguageAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::symbol_table::SymbolTable;
+    use crate::ir::transforms::metta_symbol_table_builder::MettaSymbolTable;
+    use crate::lsp::models::WorkspaceState;
+    use dashmap::DashMap;
 
     #[test]
     fn test_create_metta_adapter() {
-        let adapter = create_metta_adapter();
+        let symbol_table = Arc::new(MettaSymbolTable::new(Url::parse("file:///test.rho#metta:0").unwrap()));
+        let workspace = Arc::new(WorkspaceState {
+            documents: Arc::new(DashMap::new()),
+            global_symbols: Arc::new(DashMap::new()),
+            global_table: Arc::new(tokio::sync::RwLock::new(crate::ir::symbol_table::SymbolTable::new())),
+            global_inverted_index: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            global_virtual_symbols: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        });
+        let parent_uri = Url::parse("file:///test.rho").unwrap();
+
+        let adapter = create_metta_adapter(symbol_table, workspace, parent_uri);
 
         assert_eq!(adapter.language_name(), "metta");
     }

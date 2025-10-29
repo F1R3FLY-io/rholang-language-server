@@ -80,12 +80,14 @@ pub enum LanguageContext {
     Rholang {
         uri: Url,
         root: Arc<dyn SemanticNode>,
+        symbol_table: Arc<crate::ir::symbol_table::SymbolTable>,
     },
     /// MeTTa embedded in Rholang (virtual document)
     MettaVirtual {
         virtual_uri: Url,
         parent_uri: Url,
         root: Arc<dyn SemanticNode>,
+        symbol_table: Arc<crate::ir::transforms::metta_symbol_table_builder::MettaSymbolTable>,
     },
     /// Other embedded language (future)
     #[allow(dead_code)]
@@ -141,10 +143,18 @@ impl RholangBackend {
                     // Convert Vec<MettaNode> to single root node (use first node as representative)
                     let root: Arc<dyn SemanticNode> = ir_vec[0].clone();
 
+                    // Get symbol table from virtual document
+                    let symbol_table = virtual_doc.get_or_build_symbol_table();
+                    if symbol_table.is_none() {
+                        warn!("Failed to build symbol table for virtual document");
+                        return None;
+                    }
+
                     return Some(LanguageContext::MettaVirtual {
                         virtual_uri: uri.clone(),
                         parent_uri: virtual_doc.parent_uri.clone(),
                         root,
+                        symbol_table: symbol_table.unwrap(),
                     });
                 } else {
                     warn!("Failed to parse IR for virtual document");
@@ -191,10 +201,18 @@ impl RholangBackend {
 
                         let root: Arc<dyn SemanticNode> = ir_vec[0].clone();
 
+                        // Get symbol table from virtual document
+                        let symbol_table = virtual_doc.get_or_build_symbol_table();
+                        if symbol_table.is_none() {
+                            warn!("Failed to build symbol table for virtual document");
+                            continue;
+                        }
+
                         return Some(LanguageContext::MettaVirtual {
                             virtual_uri: virtual_doc.uri.clone(),
                             parent_uri: virtual_doc.parent_uri.clone(),
                             root,
+                            symbol_table: symbol_table.unwrap(),
                         });
                     } else {
                         warn!("Failed to parse IR for virtual document");
@@ -210,6 +228,7 @@ impl RholangBackend {
                 return Some(LanguageContext::Rholang {
                     uri: uri.clone(),
                     root: Arc::new((*doc.ir).clone()) as Arc<dyn SemanticNode>,
+                    symbol_table: doc.symbol_table.clone(),
                 });
             }
         }
@@ -224,14 +243,18 @@ impl RholangBackend {
     /// * `context` - Language context from detect_language()
     ///
     /// # Returns
-    /// Language adapter for the detected language
+    /// Language adapter for the detected language with real symbol resolvers
     fn get_adapter(&self, context: &LanguageContext) -> Option<LanguageAdapter> {
         match context {
-            LanguageContext::Rholang { .. } => {
-                Some(crate::lsp::features::adapters::create_rholang_adapter())
+            LanguageContext::Rholang { symbol_table, .. } => {
+                Some(crate::lsp::features::adapters::create_rholang_adapter(symbol_table.clone()))
             }
-            LanguageContext::MettaVirtual { .. } => {
-                Some(crate::lsp::features::adapters::create_metta_adapter())
+            LanguageContext::MettaVirtual { symbol_table, parent_uri, .. } => {
+                Some(crate::lsp::features::adapters::create_metta_adapter(
+                    symbol_table.clone(),
+                    self.workspace.clone(),
+                    parent_uri.clone(),
+                ))
             }
             LanguageContext::Other { .. } => None,
         }
@@ -270,7 +293,7 @@ impl RholangBackend {
 
         // Extract root and URI from context
         let (root, doc_uri) = match context {
-            LanguageContext::Rholang { uri, root } => (root, uri),
+            LanguageContext::Rholang { uri, root, .. } => (root, uri),
             LanguageContext::MettaVirtual {
                 virtual_uri, root, ..
             } => (root, virtual_uri),
@@ -320,13 +343,14 @@ impl RholangBackend {
 
         // Extract root, URI, and parent_uri from context
         let (root, doc_uri, parent_uri) = match context {
-            LanguageContext::Rholang { uri, root } => {
+            LanguageContext::Rholang { uri, root, .. } => {
                 (root, uri, None)
             }
             LanguageContext::MettaVirtual {
                 virtual_uri,
                 parent_uri,
                 root,
+                ..
             } => {
                 (root, virtual_uri, Some(parent_uri))
             }
@@ -391,7 +415,7 @@ impl RholangBackend {
 
         // Extract root and URI from context
         let (root, doc_uri) = match context {
-            LanguageContext::Rholang { uri, root } => (root, uri),
+            LanguageContext::Rholang { uri, root, .. } => (root, uri),
             LanguageContext::MettaVirtual {
                 virtual_uri, root, ..
             } => (root, virtual_uri),
@@ -447,7 +471,7 @@ impl RholangBackend {
 
         // Extract root and URI from context
         let (root, doc_uri) = match context {
-            LanguageContext::Rholang { uri, root } => (root, uri),
+            LanguageContext::Rholang { uri, root, .. } => (root, uri),
             LanguageContext::MettaVirtual {
                 virtual_uri, root, ..
             } => (root, virtual_uri),
@@ -488,6 +512,7 @@ mod tests {
                 ),
                 metadata: None,
             }) as Arc<dyn SemanticNode>,
+            symbol_table: Arc::new(crate::ir::symbol_table::SymbolTable::new()),
         };
     }
 }
