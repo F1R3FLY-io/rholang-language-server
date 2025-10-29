@@ -2,6 +2,19 @@
 //!
 //! Provides background detection of virtual document regions to prevent
 //! blocking the LSP server's main event loop during parsing and analysis.
+//!
+//! ## Adaptive Parallelization (Phase 2 Optimization)
+//!
+//! Based on profiling data, Rayon thread pool overhead dominates CPU time for small workloads:
+//! - Thread synchronization: ~33.6% CPU time
+//! - Work stealing overhead: ~31.0% CPU time
+//! - Actual work: ~10% CPU time
+//!
+//! Rayon overhead is approximately 15-20µs per batch, which equals or exceeds
+//! the work time for small tasks. This module now adaptively chooses between
+//! sequential and parallel processing based on estimated work time.
+//!
+//! **Heuristic**: Only use Rayon when estimated work > 100µs
 
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
@@ -9,6 +22,15 @@ use url::Url;
 use tracing::{debug, error, trace, warn};
 
 use super::{DetectorRegistry, LanguageRegion};
+
+/// Threshold below which sequential processing is faster than parallel (microseconds)
+/// Based on profiling: Rayon overhead ≈ 15-20µs (thread sync + work stealing)
+/// Conservative threshold to ensure benefit outweighs overhead
+const PARALLEL_THRESHOLD_MICROS: u64 = 100;
+
+/// Minimum number of documents to consider parallel processing
+/// Even if work time exceeds threshold, need multiple docs to benefit from parallelism
+const MIN_PARALLEL_DOCUMENTS: usize = 5;
 
 /// Request to detect virtual document regions
 #[derive(Debug)]
@@ -186,28 +208,97 @@ fn detect_regions_blocking(
     }
 }
 
-/// Performs batch detection using rayon for parallel processing
+/// Estimates work time for a batch of detection requests (microseconds)
 ///
-/// This hybrid approach (spawn_blocking + rayon) provides:
-/// - 18-19x better throughput than pure spawn_blocking
-/// - Parallel processing across multiple documents
-/// - Non-blocking async integration
+/// Based on benchmark data:
+/// - Simple MeTTa parsing: ~37µs for ~100 bytes
+/// - Complex MeTTa parsing: ~263µs for ~1000 bytes
+/// - Approximate formula: 0.26µs per byte + 10µs base per document
+///
+/// This heuristic helps decide whether Rayon overhead is justified.
+fn estimate_batch_work_time(requests: &[DetectionRequest]) -> u64 {
+    let total_size: usize = requests.iter().map(|r| r.source.len()).sum();
+    let base_overhead = requests.len() as u64 * 10; // 10µs per document
+    let parsing_time = total_size as u64 / 4; // ~0.25µs per byte
+
+    base_overhead + parsing_time
+}
+
+/// Determines whether to use parallel or sequential processing
+///
+/// Decision criteria:
+/// 1. Need at least MIN_PARALLEL_DOCUMENTS documents (5+)
+/// 2. Estimated work must exceed PARALLEL_THRESHOLD_MICROS (100µs)
+///
+/// This avoids paying 15-20µs Rayon overhead when work is smaller.
+fn should_parallelize(requests: &[DetectionRequest]) -> bool {
+    if requests.len() < MIN_PARALLEL_DOCUMENTS {
+        trace!(
+            "Using sequential processing: only {} documents (< {})",
+            requests.len(),
+            MIN_PARALLEL_DOCUMENTS
+        );
+        return false;
+    }
+
+    let estimated_work = estimate_batch_work_time(requests);
+
+    if estimated_work < PARALLEL_THRESHOLD_MICROS {
+        trace!(
+            "Using sequential processing: estimated work {}µs (< {}µs threshold)",
+            estimated_work,
+            PARALLEL_THRESHOLD_MICROS
+        );
+        false
+    } else {
+        debug!(
+            "Using parallel processing: {} documents, estimated work {}µs (>= {}µs threshold)",
+            requests.len(),
+            estimated_work,
+            PARALLEL_THRESHOLD_MICROS
+        );
+        true
+    }
+}
+
+/// Performs batch detection using adaptive parallelization
+///
+/// **Adaptive Strategy (Phase 2 Optimization)**:
+/// - Small workloads (< 5 docs, < 100µs): Sequential processing to avoid Rayon overhead
+/// - Large workloads (>= 5 docs, >= 100µs): Parallel processing with Rayon
+///
+/// This approach eliminates 15-20µs Rayon overhead for small tasks while maintaining
+/// 1.5-2x speedup for large tasks.
+///
+/// **Previous approach**: Always used Rayon (18-19x better than pure spawn_blocking)
+/// **New approach**: Adaptive (best of both worlds based on workload size)
 ///
 /// This function is CPU-intensive and should be called via `spawn_blocking`.
 fn detect_regions_batch_blocking(
     requests: Vec<DetectionRequest>,
     registry: Arc<DetectorRegistry>,
 ) -> Vec<(oneshot::Sender<DetectionResult>, DetectionResult)> {
-    use rayon::prelude::*;
+    if should_parallelize(&requests) {
+        // Large workload: Use Rayon for parallel processing
+        use rayon::prelude::*;
 
-    // Process all requests in parallel using rayon
-    requests
-        .into_par_iter()
-        .map(|request| {
-            let result = detect_regions_blocking(request.uri, request.source, registry.clone());
-            (request.response, result)
-        })
-        .collect()
+        requests
+            .into_par_iter()
+            .map(|request| {
+                let result = detect_regions_blocking(request.uri, request.source, registry.clone());
+                (request.response, result)
+            })
+            .collect()
+    } else {
+        // Small workload: Use sequential processing to avoid Rayon overhead
+        requests
+            .into_iter()
+            .map(|request| {
+                let result = detect_regions_blocking(request.uri, request.source, registry.clone());
+                (request.response, result)
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]

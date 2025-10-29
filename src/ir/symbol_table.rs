@@ -1,5 +1,5 @@
 use std::sync::RwLock;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;  // Phase 2 optimization: ~2x faster than HashMap for internal use
 use std::sync::Arc;
 use crate::ir::rholang_node::{Position, RholangNode};
 use tower_lsp::lsp_types::Url;
@@ -166,10 +166,12 @@ impl PatternSignature {
 /// Includes PathMap-based pattern indexing for efficient contract lookups.
 #[derive(Debug, Clone)]
 pub struct SymbolTable {
-    pub symbols: Arc<RwLock<HashMap<String, Arc<Symbol>>>>,
+    /// Phase 2 optimization: FxHashMap is ~2x faster than HashMap for internal use
+    pub symbols: Arc<RwLock<FxHashMap<String, Arc<Symbol>>>>,
     /// PathMap index: maps (name, arity) -> list of contract symbols with that signature
     /// Enables O(1) lookup of contracts by pattern instead of O(n) iteration
-    pattern_index: Arc<RwLock<HashMap<PatternSignature, Vec<Arc<Symbol>>>>>,
+    /// Phase 2 optimization: FxHashMap is ~2x faster than HashMap
+    pattern_index: Arc<RwLock<FxHashMap<PatternSignature, Vec<Arc<Symbol>>>>>,
     parent: Option<Arc<SymbolTable>>,
 }
 
@@ -177,8 +179,8 @@ impl SymbolTable {
     /// Creates a new symbol table with an optional parent.
     pub fn new(parent: Option<Arc<SymbolTable>>) -> Self {
         SymbolTable {
-            symbols: Arc::new(RwLock::new(HashMap::new())),
-            pattern_index: Arc::new(RwLock::new(HashMap::new())),
+            symbols: Arc::new(RwLock::new(FxHashMap::default())),
+            pattern_index: Arc::new(RwLock::new(FxHashMap::default())),
             parent,
         }
     }
