@@ -243,9 +243,20 @@ impl QueryEngineFactory {
         let language = rholang_tree_sitter::LANGUAGE.into();
         let mut engine = QueryEngine::new("rholang", language)?;
 
-        // Load default queries (these would be embedded or loaded from files)
-        // For now, we'll leave them to be loaded by the caller
-        // In production, you might want to embed the .scm files using include_str!
+        // Load embedded query files
+        let highlights = include_str!("../../../../queries/rholang/highlights.scm");
+        let folds = include_str!("../../../../queries/rholang/folds.scm");
+        let indents = include_str!("../../../../queries/rholang/indents.scm");
+        let injections = include_str!("../../../../queries/rholang/injections.scm");
+        let locals = include_str!("../../../../queries/rholang/locals.scm");
+        let textobjects = include_str!("../../../../queries/rholang/textobjects.scm");
+
+        engine.load_query(QueryType::Highlights, highlights)?;
+        engine.load_query(QueryType::Folds, folds)?;
+        engine.load_query(QueryType::Indents, indents)?;
+        engine.load_query(QueryType::Injections, injections)?;
+        engine.load_query(QueryType::Locals, locals)?;
+        engine.load_query(QueryType::TextObjects, textobjects)?;
 
         Ok(engine)
     }
