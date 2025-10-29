@@ -2,6 +2,48 @@
 //!
 //! This module provides LSP features specifically for MeTTa code embedded in Rholang files,
 //! including hover, document highlights, go-to-definition, and rename operations.
+//!
+//! # Symbol Resolution Architecture
+//!
+//! Symbol resolution for MeTTa uses a composable, trait-based architecture defined in
+//! `crate::ir::symbol_resolution`. The system supports:
+//!
+//! - **Default lexical scoping** via `LexicalScopeResolver`
+//! - **Language-specific filtering** via `SymbolFilter` trait (e.g., `MettaPatternFilter`)
+//! - **Fallback strategies** for cross-document resolution
+//! - **Complete override** via `CustomScopeResolver` for non-standard scoping
+//!
+//! Example composable resolver setup:
+//! ```ignore
+//! use crate::ir::symbol_resolution::{
+//!     ComposableSymbolResolver, LexicalScopeResolver, MettaPatternFilter,
+//!     AsyncGlobalVirtualSymbolResolver, ResolutionContext,
+//! };
+//!
+//! // Create a composable resolver with:
+//! // 1. Lexical scope as base (traverses scope chain)
+//! // 2. Pattern matching filter (refines by arity)
+//! // 3. Global cross-document lookup as fallback
+//! let resolver = ComposableSymbolResolver::new(
+//!     Box::new(LexicalScopeResolver::new(symbol_table, "metta".to_string())),
+//!     vec![Box::new(MettaPatternFilter::new(pattern_matcher))],
+//!     Some(Box::new(GlobalVirtualSymbolResolver::new(workspace))),
+//! );
+//!
+//! // Resolve a symbol
+//! let context = ResolutionContext {
+//!     uri: virtual_doc.uri.clone(),
+//!     scope_id: Some(symbol.scope_id),
+//!     ir_node: Some(call_node),  // For pattern matching
+//!     language: "metta".to_string(),
+//!     parent_uri: Some(virtual_doc.parent_uri.clone()),
+//! };
+//!
+//! let locations = resolver.resolve_symbol(&symbol.name, &position, &context);
+//! ```
+//!
+//! The current `goto_definition_metta` implementation uses specialized logic for MeTTa's
+//! pattern matching. Future refactoring could integrate the composable resolver more directly.
 
 use std::sync::Arc;
 use tower_lsp::lsp_types::{

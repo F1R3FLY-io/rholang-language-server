@@ -8,6 +8,7 @@ pub mod pattern_matching_debug;
 pub mod pipeline;
 pub mod rholang_node;
 pub mod semantic_node;
+pub mod symbol_resolution;
 pub mod symbol_table;
 pub mod transforms;
 pub mod unified_ir;
