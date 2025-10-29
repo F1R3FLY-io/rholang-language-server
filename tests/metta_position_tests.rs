@@ -14,7 +14,7 @@ fn test_simple_definition_positions() {
     let mut parser = MettaParser::new().expect("Failed to create parser");
     let nodes = parser.parse_to_ir(metta_code).expect("Failed to parse");
 
-    let builder = MettaSymbolTableBuilder::new(Url::parse("file:///test.metta").unwrap());
+    let builder = MettaSymbolTableBuilder::new_simple(Url::parse("file:///test.metta").unwrap());
     let table = builder.build(&nodes);
 
     println!("Total scopes: {}", table.scopes.len());
@@ -62,7 +62,7 @@ fn test_position_lookup_in_pattern() {
     let mut parser = MettaParser::new().expect("Failed to create parser");
     let nodes = parser.parse_to_ir(metta_code).expect("Failed to parse");
 
-    let builder = MettaSymbolTableBuilder::new(Url::parse("file:///test.metta").unwrap());
+    let builder = MettaSymbolTableBuilder::new_simple(Url::parse("file:///test.metta").unwrap());
     let table = builder.build(&nodes);
 
     println!("\nAll symbol occurrences:");

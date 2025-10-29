@@ -454,7 +454,12 @@ impl VirtualDocument {
 
                     // Build symbol table
                     use crate::ir::transforms::metta_symbol_table_builder::MettaSymbolTableBuilder;
-                    let builder = MettaSymbolTableBuilder::new(self.uri.clone());
+
+                    // Check if this virtual document is from concatenated strings
+                    // Concatenated sources limit MORK pattern matching precision
+                    let is_concatenated = self.concatenation_chain.is_some();
+
+                    let builder = MettaSymbolTableBuilder::new(self.uri.clone(), is_concatenated);
                     let table = Arc::new(builder.build(&ir));
 
                     debug!("Built symbol table with {} scopes and {} occurrences for virtual document: {}",

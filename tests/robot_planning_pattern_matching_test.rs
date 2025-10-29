@@ -32,7 +32,7 @@ fn test_robot_planning_pattern_indexing() {
 
     // Build symbol table with pattern indexing
     let uri = Url::parse("file:///test/robot_planning.rho").unwrap();
-    let builder = MettaSymbolTableBuilder::new(uri.clone());
+    let builder = MettaSymbolTableBuilder::new_simple(uri.clone());
     let table = builder.build(&nodes);
 
     println!("\n=== Symbol Table Stats ===");
@@ -96,7 +96,7 @@ fn test_robot_planning_call_site_matching() {
     let nodes = parser.parse_to_ir(&metta_code).expect("Failed to parse MeTTa");
 
     let uri = Url::parse("file:///test/robot_planning.rho").unwrap();
-    let builder = MettaSymbolTableBuilder::new(uri.clone());
+    let builder = MettaSymbolTableBuilder::new_simple(uri.clone());
     let table = builder.build(&nodes);
 
     // Find a call to is_connected in the IR
@@ -173,7 +173,7 @@ fn test_multiple_find_any_path_definitions() {
     let nodes = parser.parse_to_ir(&metta_code).expect("Failed to parse MeTTa");
 
     let uri = Url::parse("file:///test/robot_planning.rho").unwrap();
-    let builder = MettaSymbolTableBuilder::new(uri.clone());
+    let builder = MettaSymbolTableBuilder::new_simple(uri.clone());
     let table = builder.build(&nodes);
 
     // Get all find_any_path definitions

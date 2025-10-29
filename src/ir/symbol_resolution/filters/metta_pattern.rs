@@ -1,8 +1,12 @@
 //! MeTTa pattern matching filter
 //!
-//! Filters symbol candidates using MeTTa's pattern matching system.
-//! If the call site has a pattern (name + arity), only return definitions
-//! that match the pattern. If no patterns match, return unfiltered.
+//! Filters symbol candidates using MeTTa's hybrid pattern matching system:
+//! - **MORK-based pattern matching** for definitions from simple strings (O(1) lookup)
+//! - **Name+arity matching** for definitions from concatenated strings (fallback)
+//!
+//! The filter automatically partitions definitions by provenance (simple vs concatenated)
+//! and applies the appropriate matching strategy. If no patterns match, returns unfiltered
+//! candidates to ensure goto_definition always provides results.
 
 use std::sync::Arc;
 use tracing::{debug, trace};
@@ -11,14 +15,19 @@ use crate::ir::metta_node::MettaNode;
 use crate::ir::metta_pattern_matching::MettaPatternMatcher;
 use crate::ir::symbol_resolution::{SymbolFilter, SymbolLocation, FilterContext};
 
-/// Filter that uses MeTTa pattern matching to refine symbol candidates
+/// Filter that uses MeTTa's hybrid pattern matching to refine symbol candidates
 ///
-/// This filter:
-/// 1. Extracts the call site (SExpr) from FilterContext
-/// 2. Computes the pattern signature (name + arity)
-/// 3. Filters candidates to only those matching the pattern
+/// **Hybrid Matching Strategy**:
+/// - For definitions from **simple strings**: Uses MORK-based O(1) pattern lookup
+/// - For definitions from **concatenated strings**: Falls back to name+arity matching
+/// - Automatically partitions by provenance and applies appropriate strategy
+///
+/// **Behavior**:
+/// 1. Extracts the call site MettaNode from FilterContext
+/// 2. Delegates to `MettaPatternMatcher::find_matching_definitions()` (hybrid approach)
+/// 3. Filters candidates to only those whose locations match pattern results
 /// 4. Returns None (passthrough) if no call site info available
-/// 5. Returns unfiltered candidates if pattern matching finds nothing
+/// 5. Returns unfiltered candidates if pattern matching finds nothing (ensures results)
 pub struct MettaPatternFilter {
     /// Pattern matcher for looking up matching definitions
     pattern_matcher: Arc<MettaPatternMatcher>,
@@ -70,37 +79,45 @@ impl SymbolFilter for MettaPatternFilter {
             }
         };
 
-        // Extract call pattern (name + arity)
-        let (name, arity) = match self.extract_call_info(call_site) {
-            Some(info) => info,
+        // Downcast to MettaNode for pattern matching
+        let metta_node = match call_site.downcast_ref::<MettaNode>() {
+            Some(node) => node,
             None => {
-                trace!("MettaPatternFilter: Could not extract call info, passing through");
+                trace!("MettaPatternFilter: Call site is not a MettaNode, passing through");
                 return None;
             }
         };
 
-        debug!(
-            "MettaPatternFilter: Filtering for pattern '{}' with arity {}",
-            name, arity
-        );
+        // Extract call pattern for logging
+        let call_info = self.extract_call_info(call_site);
+        if let Some((name, arity)) = call_info {
+            debug!(
+                "MettaPatternFilter: Filtering for pattern '{}' with arity {}",
+                name, arity
+            );
+        }
 
-        // Get matching definitions from pattern matcher
-        let pattern_matches = self.pattern_matcher.get_definitions_by_name(&name);
+        // Use hybrid pattern matching (MORK + fallback to name+arity)
+        // This automatically handles:
+        // - MORK-based pattern lookup for simple definitions
+        // - Name+arity matching for concatenated definitions
+        // - Provenance-aware partitioning
+        let matched_locations = self.pattern_matcher.find_matching_definitions(metta_node);
 
-        if pattern_matches.is_empty() {
-            debug!("MettaPatternFilter: No patterns found for '{}', returning unfiltered", name);
-            // No patterns in index - return unfiltered candidates
+        if matched_locations.is_empty() {
+            debug!("MettaPatternFilter: No pattern matches found, returning unfiltered");
+            // No patterns match - return unfiltered candidates
             // This handles cases where symbols aren't function definitions
             return Some(candidates);
         }
 
-        // Filter candidates by arity match
+        // Filter candidates to only those whose locations match the pattern matcher results
         let filtered: Vec<SymbolLocation> = candidates
             .into_iter()
             .filter(|loc| {
-                // Check if this location matches one of the pattern definitions
-                pattern_matches.iter().any(|pm| {
-                    pm.location.range == loc.range && pm.arity == arity
+                // Check if this location is in the pattern match results
+                matched_locations.iter().any(|matched_loc| {
+                    matched_loc.uri == loc.uri && matched_loc.range == loc.range
                 })
             })
             .collect();
@@ -114,7 +131,7 @@ impl SymbolFilter for MettaPatternFilter {
             None
         } else {
             debug!(
-                "MettaPatternFilter: Filtered to {} matching patterns",
+                "MettaPatternFilter: Filtered to {} matching patterns (hybrid MORK + fallback)",
                 filtered.len()
             );
             Some(filtered)

@@ -21,7 +21,7 @@ fn test_multiple_definitions_separate_scopes() {
     let mut parser = MettaParser::new().expect("Failed to create parser");
     let nodes = parser.parse_to_ir(metta_code).expect("Failed to parse");
 
-    let builder = MettaSymbolTableBuilder::new(Url::parse("file:///test.metta").unwrap());
+    let builder = MettaSymbolTableBuilder::new_simple(Url::parse("file:///test.metta").unwrap());
     let table = builder.build(&nodes);
 
     // Should have global scope + 2 definition scopes = 3 scopes
@@ -72,7 +72,7 @@ fn test_find_references_respects_scope_boundaries() {
     let mut parser = MettaParser::new().expect("Failed to create parser");
     let nodes = parser.parse_to_ir(metta_code).expect("Failed to parse");
 
-    let builder = MettaSymbolTableBuilder::new(Url::parse("file:///test.metta").unwrap());
+    let builder = MettaSymbolTableBuilder::new_simple(Url::parse("file:///test.metta").unwrap());
     let table = builder.build(&nodes);
 
     // Get all 'from' occurrences

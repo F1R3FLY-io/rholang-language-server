@@ -143,6 +143,8 @@ pub struct MettaSymbolTableBuilder {
     pattern_matcher: MettaPatternMatcher,
     /// Document URI
     uri: Url,
+    /// Whether this virtual document comes from concatenated strings
+    is_concatenated: bool,
 }
 
 impl MettaSymbolTableBuilder {
@@ -150,7 +152,8 @@ impl MettaSymbolTableBuilder {
     ///
     /// # Arguments
     /// * `uri` - The document URI (for creating definition locations)
-    pub fn new(uri: Url) -> Self {
+    /// * `is_concatenated` - Whether this document comes from concatenated strings
+    pub fn new(uri: Url, is_concatenated: bool) -> Self {
         // Create global scope
         let global_scope = MettaScope {
             id: 0,
@@ -165,7 +168,19 @@ impl MettaSymbolTableBuilder {
             positions: HashMap::new(),
             pattern_matcher: MettaPatternMatcher::new(),
             uri,
+            is_concatenated,
         }
+    }
+
+    /// Create a new symbol table builder with default settings (not concatenated)
+    ///
+    /// This is a convenience constructor for tests and simple use cases.
+    ///
+    /// # Arguments
+    /// * `uri` - The document URI (for creating definition locations)
+    #[allow(dead_code)]
+    pub fn new_simple(uri: Url) -> Self {
+        Self::new(uri, false)
     }
 
     /// Build symbol table from MeTTa IR nodes
@@ -256,7 +271,23 @@ impl MettaSymbolTableBuilder {
         };
 
         // Add to pattern matcher
-        if let Err(e) = self.pattern_matcher.add_definition(name, pattern.clone(), location) {
+        // TODO: Track fragment-level provenance for more precise concatenation info
+        let fragment_info = if self.is_concatenated {
+            Some(crate::ir::metta_pattern_matching::FragmentInfo {
+                num_fragments: 0,  // Will be filled in when we track per-fragment info
+                fragment_indices: Vec::new(),
+            })
+        } else {
+            None
+        };
+
+        if let Err(e) = self.pattern_matcher.add_definition(
+            name,
+            pattern.clone(),
+            location,
+            self.is_concatenated,
+            fragment_info,
+        ) {
             eprintln!("Warning: Failed to index function definition: {}", e);
         }
     }
@@ -502,7 +533,7 @@ mod tests {
         });
 
         let test_uri = tower_lsp::lsp_types::Url::parse("file:///test.metta").unwrap();
-        let builder = MettaSymbolTableBuilder::new(test_uri);
+        let builder = MettaSymbolTableBuilder::new_simple(test_uri);
         let table = builder.build(&[lambda]);
 
         // Should have 2 scopes: global + lambda
@@ -534,7 +565,7 @@ mod tests {
 
         // Build symbol table
         let test_uri = tower_lsp::lsp_types::Url::parse("file:///test.metta").unwrap();
-        let builder = MettaSymbolTableBuilder::new(test_uri);
+        let builder = MettaSymbolTableBuilder::new_simple(test_uri);
         let table = builder.build(&nodes);
 
         // Should have at least 2 scopes: global + definition
@@ -569,7 +600,7 @@ mod tests {
 
         // Build symbol table
         let test_uri = tower_lsp::lsp_types::Url::parse("file:///test.metta").unwrap();
-        let builder = MettaSymbolTableBuilder::new(test_uri);
+        let builder = MettaSymbolTableBuilder::new_simple(test_uri);
         let table = builder.build(&nodes);
 
         // Should have parsed successfully

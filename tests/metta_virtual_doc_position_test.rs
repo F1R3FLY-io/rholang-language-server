@@ -14,7 +14,7 @@ fn test_symbol_positions_match_virtual_coordinates() {
     let mut parser = MettaParser::new().expect("Failed to create parser");
     let nodes = parser.parse_to_ir(metta_code).expect("Failed to parse");
 
-    let builder = MettaSymbolTableBuilder::new(Url::parse("file:///test.metta").unwrap());
+    let builder = MettaSymbolTableBuilder::new_simple(Url::parse("file:///test.metta").unwrap());
     let table = builder.build(&nodes);
 
     println!("\n=== Symbol Positions ===");

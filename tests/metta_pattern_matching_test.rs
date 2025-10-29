@@ -21,7 +21,7 @@ fn test_pattern_matching_simple_function() {
     let nodes = parser.parse_to_ir(code).expect("Failed to parse");
 
     let test_uri = Url::parse("file:///test.metta").unwrap();
-    let builder = MettaSymbolTableBuilder::new(test_uri);
+    let builder = MettaSymbolTableBuilder::new_simple(test_uri);
     let table = builder.build(&nodes);
 
     println!("\n=== Symbol Table ===");
@@ -67,7 +67,7 @@ fn test_pattern_matching_multiple_definitions() {
     let nodes = parser.parse_to_ir(code).expect("Failed to parse");
 
     let test_uri = Url::parse("file:///test.metta").unwrap();
-    let builder = MettaSymbolTableBuilder::new(test_uri);
+    let builder = MettaSymbolTableBuilder::new_simple(test_uri);
     let table = builder.build(&nodes);
 
     println!("\n=== Symbol Table ===");
@@ -105,7 +105,7 @@ fn test_pattern_matching_find_call() {
     let nodes = parser.parse_to_ir(code).expect("Failed to parse");
 
     let test_uri = Url::parse("file:///test.metta").unwrap();
-    let builder = MettaSymbolTableBuilder::new(test_uri);
+    let builder = MettaSymbolTableBuilder::new_simple(test_uri);
     let table = builder.build(&nodes);
 
     // Check that "is_connected" was indexed
@@ -186,7 +186,7 @@ fn test_arity_filtering() {
     let nodes = parser.parse_to_ir(code).expect("Failed to parse");
 
     let test_uri = Url::parse("file:///test.metta").unwrap();
-    let builder = MettaSymbolTableBuilder::new(test_uri);
+    let builder = MettaSymbolTableBuilder::new_simple(test_uri);
     let table = builder.build(&nodes);
 
     // Create call pattern with arity 2

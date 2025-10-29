@@ -37,7 +37,7 @@ fn test_metta_parser_span_output() {
     println!("Top-level nodes: {}", nodes.len());
 
     // Build symbol table
-    let builder = MettaSymbolTableBuilder::new(Url::parse("file:///test.metta").unwrap());
+    let builder = MettaSymbolTableBuilder::new_simple(Url::parse("file:///test.metta").unwrap());
     let table = builder.build(&nodes);
 
     println!("\n=== Symbol Table ===");

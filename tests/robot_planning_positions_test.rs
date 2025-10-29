@@ -47,7 +47,7 @@ fn test_robot_planning_from_symbol_positions() {
 
     // Build symbol table
     let test_uri = Url::parse("file:///test/robot_planning.rho").unwrap();
-    let builder = MettaSymbolTableBuilder::new(test_uri);
+    let builder = MettaSymbolTableBuilder::new_simple(test_uri);
     let table = builder.build(&nodes);
 
     println!("\n=== Symbol Table ===");

@@ -20,7 +20,7 @@ fn test_function_call_goto_definition() {
     let nodes = parser.parse_to_ir(metta_code).expect("Failed to parse");
 
     let uri = Url::parse("file:///test.metta").unwrap();
-    let builder = MettaSymbolTableBuilder::new(uri.clone());
+    let builder = MettaSymbolTableBuilder::new_simple(uri.clone());
     let table = builder.build(&nodes);
 
     println!("\n=== Symbol Table Stats ===");
