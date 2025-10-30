@@ -244,6 +244,24 @@ impl RholangBackend {
     ///
     /// # Returns
     /// Language adapter for the detected language with real symbol resolvers
+    ///
+    /// # Resolution Strategies
+    ///
+    /// This function routes to three different symbol resolution strategies:
+    ///
+    /// 1. **Rholang**: Uses `RholangSymbolResolver` with hierarchical symbol table
+    ///    - Lexical scoping with parent chain traversal
+    ///    - Local → document → global scope hierarchy
+    ///
+    /// 2. **MeTTa**: Uses `ComposableSymbolResolver` with pattern matching
+    ///    - Lexical scope + arity-based pattern filter + global fallback
+    ///    - Supports MeTTa's pattern matching semantics
+    ///
+    /// 3. **Generic (Other)**: Uses `GenericSymbolResolver` with global scope
+    ///    - Single flat namespace (no lexical hierarchy)
+    ///    - Multiple declarations/definitions per symbol
+    ///    - Cross-document linking via global_virtual_symbols
+    ///    - Default for future embedded languages
     fn get_adapter(&self, context: &LanguageContext) -> Option<LanguageAdapter> {
         match context {
             LanguageContext::Rholang { symbol_table, .. } => {
@@ -256,7 +274,13 @@ impl RholangBackend {
                     parent_uri.clone(),
                 ))
             }
-            LanguageContext::Other { .. } => None,
+            LanguageContext::Other { language, .. } => {
+                // Use generic global scope resolver for unknown languages
+                Some(crate::lsp::features::adapters::create_generic_adapter(
+                    self.workspace.clone(),
+                    language.clone(),
+                ))
+            }
         }
     }
 
@@ -427,10 +451,10 @@ impl RholangBackend {
         // Convert LSP position to IR position
         let ir_position = lsp_to_ir_position(position);
 
-        // Call generic find-references feature (DashMap is lock-free)
+        // Call generic find-references feature (Priority 2: use rholang_symbols instead of global_inverted_index)
         let refs_feature = GenericReferences;
         refs_feature
-            .find_references(root.as_ref(), &ir_position, &doc_uri, &adapter, include_declaration, &self.workspace.global_inverted_index)
+            .find_references(root.as_ref(), &ir_position, &doc_uri, &adapter, include_declaration, &self.workspace.rholang_symbols)
             .await
     }
 
@@ -483,10 +507,10 @@ impl RholangBackend {
         // Convert LSP position to IR position
         let ir_position = lsp_to_ir_position(position);
 
-        // Call generic rename feature (DashMap is lock-free)
+        // Call generic rename feature (Priority 2: use rholang_symbols instead of global_inverted_index)
         let rename_feature = GenericRename;
         rename_feature
-            .rename(root.as_ref(), &ir_position, &doc_uri, &adapter, new_name, &self.workspace.global_inverted_index)
+            .rename(root.as_ref(), &ir_position, &doc_uri, &adapter, new_name, &self.workspace.rholang_symbols)
             .await
     }
 }

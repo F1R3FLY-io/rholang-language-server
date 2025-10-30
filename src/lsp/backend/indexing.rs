@@ -53,10 +53,19 @@ impl RholangBackend {
         version_counter: &Arc<std::sync::atomic::AtomicI32>,
         rholang_symbols: Option<Arc<crate::lsp::rholang_global_symbols::RholangGlobalSymbols>>,
     ) -> Result<CachedDocument, String> {
+        // Priority 1: Incremental symbol updates
         // Clear old symbols for this URI from global_table BEFORE indexing
         // This ensures we don't have stale symbols from previous versions of the file
         // Lock-free retain operation using DashMap
         global_table.symbols.retain(|_, s| &s.declaration_uri != uri);
+
+        // Clear old symbols from rholang_symbols index (incremental update)
+        if let Some(ref rholang_syms) = rholang_symbols {
+            let removed_symbols = rholang_syms.remove_symbols_from_uri(uri);
+            let removed_refs = rholang_syms.remove_references_from_uri(uri);
+            debug!("Incremental update for {}: removed {} symbols and {} references",
+                   uri, removed_symbols, removed_refs);
+        }
 
         let mut pipeline = Pipeline::new();
 

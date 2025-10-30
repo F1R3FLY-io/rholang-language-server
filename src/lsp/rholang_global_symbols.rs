@@ -329,6 +329,68 @@ impl RholangGlobalSymbols {
             .map(|entry| entry.value().clone())
             .collect()
     }
+
+    /// Remove all symbols declared in a specific URI (incremental update support)
+    ///
+    /// This is used when a file is modified or deleted - we remove all symbols
+    /// that were declared in that file, then re-index it.
+    ///
+    /// # Arguments
+    /// - `uri`: Document URI to remove symbols from
+    ///
+    /// # Returns
+    /// - Number of symbols removed
+    pub fn remove_symbols_from_uri(&self, uri: &Url) -> usize {
+        let mut removed_count = 0;
+
+        // Collect symbol names to remove (avoid holding iter while mutating)
+        let to_remove: Vec<String> = self.symbols
+            .iter()
+            .filter(|entry| &entry.value().declaration.uri == uri)
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        // Remove collected symbols
+        for name in &to_remove {
+            self.symbols.remove(name);
+            removed_count += 1;
+        }
+
+        removed_count
+    }
+
+    /// Remove references from a specific URI for all symbols (incremental update support)
+    ///
+    /// This is used when a file is modified - we remove all references originating
+    /// from that file, then re-index those references.
+    ///
+    /// # Arguments
+    /// - `uri`: Document URI to remove references from
+    ///
+    /// # Returns
+    /// - Number of references removed across all symbols
+    pub fn remove_references_from_uri(&self, uri: &Url) -> usize {
+        let mut removed_count = 0;
+
+        // Iterate all symbols and remove references from the given URI
+        for mut entry in self.symbols.iter_mut() {
+            let symbol = entry.value_mut();
+            let before_len = symbol.references.len();
+            symbol.references.retain(|ref_loc| &ref_loc.uri != uri);
+            removed_count += before_len - symbol.references.len();
+        }
+
+        removed_count
+    }
+
+    /// Remove a specific symbol by name (for fine-grained delta tracking)
+    ///
+    /// # Returns
+    /// - `Some(SymbolDeclaration)` if symbol existed and was removed
+    /// - `None` if symbol didn't exist
+    pub fn remove_symbol(&self, name: &str) -> Option<SymbolDeclaration> {
+        self.symbols.remove(name).map(|(_, v)| v)
+    }
 }
 
 impl Default for RholangGlobalSymbols {

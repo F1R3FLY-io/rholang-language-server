@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use dashmap::DashMap;
 use tower_lsp::lsp_types::{TextEdit, Url, WorkspaceEdit, Position as LspPosition, Range};
 use tracing::{debug, trace};
 
@@ -14,6 +13,7 @@ use super::references::GenericReferences;
 use super::node_finder::find_node_at_position;
 use crate::ir::semantic_node::{Position, SemanticNode};
 use crate::ir::symbol_resolution::{ResolutionContext};
+use crate::lsp::rholang_global_symbols::RholangGlobalSymbols;
 
 /// Generic rename implementation for any language
 ///
@@ -30,7 +30,7 @@ impl GenericRename {
     /// * `uri` - URI of the document
     /// * `adapter` - Language-specific adapter
     /// * `new_name` - The new name for the symbol
-    /// * `inverted_index` - Inverted index mapping definitions to usage sites
+    /// * `rholang_symbols` - Global Rholang symbol storage (Priority 2: replaces inverted_index)
     ///
     /// # Returns
     /// WorkspaceEdit containing all the text edits needed to rename the symbol
@@ -41,7 +41,7 @@ impl GenericRename {
         uri: &Url,
         adapter: &LanguageAdapter,
         new_name: &str,
-        inverted_index: &Arc<DashMap<(Url, Position), Vec<(Url, Position)>>>,
+        rholang_symbols: &Arc<RholangGlobalSymbols>,
     ) -> Option<WorkspaceEdit> {
         debug!(
             "Renaming symbol at {}:{} in {} to '{}'",
@@ -51,7 +51,7 @@ impl GenericRename {
         // Use GenericReferences to find all occurrences
         let references_finder = GenericReferences;
         let locations = references_finder
-            .find_references(root, position, uri, adapter, true, inverted_index) // include_declaration = true
+            .find_references(root, position, uri, adapter, true, rholang_symbols) // include_declaration = true
             .await?;
 
         if locations.is_empty() {

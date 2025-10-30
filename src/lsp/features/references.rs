@@ -3,7 +3,6 @@
 //! Provides language-agnostic reference finding using the SymbolResolver trait.
 
 use std::sync::Arc;
-use dashmap::DashMap;
 use tower_lsp::lsp_types::{Location, Position as LspPosition, Range, Url};
 use tracing::debug;
 
@@ -11,6 +10,7 @@ use crate::ir::semantic_node::{Position, SemanticNode};
 use crate::ir::symbol_resolution::ResolutionContext;
 use crate::lsp::features::node_finder::{find_node_at_position, ir_to_lsp_position};
 use crate::lsp::features::traits::LanguageAdapter;
+use crate::lsp::rholang_global_symbols::RholangGlobalSymbols;
 
 /// Generic find-references feature
 pub struct GenericReferences;
@@ -24,7 +24,7 @@ impl GenericReferences {
     /// * `uri` - URI of the document
     /// * `adapter` - Language adapter
     /// * `include_declaration` - Whether to include the declaration in results
-    /// * `inverted_index` - Inverted index mapping definitions to usage sites
+    /// * `rholang_symbols` - Global Rholang symbol storage (Priority 2: replaces inverted_index)
     ///
     /// # Returns
     /// `Some(Vec<Location>)` with all reference locations, or `None` if symbol not found
@@ -35,7 +35,7 @@ impl GenericReferences {
         uri: &Url,
         adapter: &LanguageAdapter,
         include_declaration: bool,
-        inverted_index: &Arc<DashMap<(Url, Position), Vec<(Url, Position)>>>,
+        rholang_symbols: &Arc<RholangGlobalSymbols>,
     ) -> Option<Vec<Location>> {
         debug!(
             "GenericReferences::find_references at {:?} in {} (include_decl: {})",
@@ -72,47 +72,43 @@ impl GenericReferences {
 
         debug!("Found {} definition(s) for '{}'", definitions.len(), symbol_name);
 
+        // Priority 2: Look up symbol in rholang_symbols (replaces inverted_index lookup)
+        let symbol_decl = rholang_symbols.lookup(symbol_name)?;
+
+        debug!("Found symbol declaration for '{}' with {} reference(s)",
+               symbol_name, symbol_decl.references.len());
+
         // Collect all reference locations
         let mut locations: Vec<Location> = Vec::new();
 
-        // For each definition, find all usages in the inverted index
-        for def in &definitions {
-            let def_pos = Position {
-                row: def.range.start.line as usize,
-                column: def.range.start.character as usize,
-                byte: 0, // Normalized to 0 for consistent lookups (see symbols.rs)
-            };
-            let key = (def.uri.clone(), def_pos);
+        // Include the declaration if requested
+        if include_declaration {
+            let decl_lsp_pos = ir_to_lsp_position(&symbol_decl.declaration.position);
+            locations.push(Location {
+                uri: symbol_decl.declaration.uri.clone(),
+                range: Range {
+                    start: decl_lsp_pos,
+                    end: LspPosition {
+                        line: decl_lsp_pos.line,
+                        character: decl_lsp_pos.character + symbol_name.len() as u32,
+                    },
+                },
+            });
+        }
 
-            debug!("Looking up inverted index for definition at {:?}", key);
-
-            // Include the declaration if requested
-            if include_declaration {
-                locations.push(Location {
-                    uri: def.uri.clone(),
-                    range: def.range,
-                });
-            }
-
-            // Look up all usage sites in the inverted index
-            if let Some(usages) = inverted_index.get(&key) {
-                debug!("Found {} usage(s) in inverted index", usages.len());
-                for (usage_uri, usage_pos) in usages.value() {
-                    let usage_lsp_pos = ir_to_lsp_position(usage_pos);
-                    locations.push(Location {
-                        uri: usage_uri.clone(),
-                        range: Range {
-                            start: usage_lsp_pos,
-                            end: LspPosition {
-                                line: usage_lsp_pos.line,
-                                character: usage_lsp_pos.character + symbol_name.len() as u32,
-                            },
-                        },
-                    });
-                }
-            } else {
-                debug!("No usages found in inverted index for {:?}", key);
-            }
+        // Add all references from rholang_symbols (replaces inverted_index lookup)
+        for ref_loc in &symbol_decl.references {
+            let ref_lsp_pos = ir_to_lsp_position(&ref_loc.position);
+            locations.push(Location {
+                uri: ref_loc.uri.clone(),
+                range: Range {
+                    start: ref_lsp_pos,
+                    end: LspPosition {
+                        line: ref_lsp_pos.line,
+                        character: ref_lsp_pos.character + symbol_name.len() as u32,
+                    },
+                },
+            });
         }
 
         debug!("Found {} total reference location(s)", locations.len());
@@ -257,6 +253,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_find_references_found() {
+        use crate::ir::symbol_table::SymbolType;
+
         let adapter = LanguageAdapter::new(
             "test",
             Arc::new(MockResolver { has_refs: true }),
@@ -270,10 +268,16 @@ mod tests {
         let pos = Position { row: 0, column: 5, byte: 5 };
         let uri = Url::parse("file:///test.rho").unwrap();
 
-        // Create empty inverted index for test
-        let inverted_index = HashMap::new();
+        // Create mock rholang_symbols with a test symbol
+        let rholang_symbols = Arc::new(RholangGlobalSymbols::new());
+        rholang_symbols.add_symbol(
+            "test_var".to_string(),
+            SymbolType::NewBind,
+            uri.clone(),
+            pos.clone(),
+        );
 
-        let result = refs.find_references(&node, &pos, &uri, &adapter, true, &inverted_index).await;
+        let result = refs.find_references(&node, &pos, &uri, &adapter, true, &rholang_symbols).await;
 
         assert!(result.is_some());
         let locs = result.unwrap();
@@ -296,10 +300,10 @@ mod tests {
         let pos = Position { row: 0, column: 5, byte: 5 };
         let uri = Url::parse("file:///test.rho").unwrap();
 
-        // Create empty inverted index for test
-        let inverted_index = HashMap::new();
+        // Create empty rholang_symbols
+        let rholang_symbols = Arc::new(RholangGlobalSymbols::new());
 
-        let result = refs.find_references(&node, &pos, &uri, &adapter, true, &inverted_index).await;
+        let result = refs.find_references(&node, &pos, &uri, &adapter, true, &rholang_symbols).await;
 
         assert!(result.is_none());
     }
