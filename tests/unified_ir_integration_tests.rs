@@ -10,7 +10,7 @@ use ropey::Rope;
 
 #[test]
 fn test_unified_ir_creation_from_rholang() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     let rho_code = r#"new x in { x!(42) }"#;
     let tree = parse_code(rho_code);
@@ -33,7 +33,7 @@ fn test_unified_ir_creation_from_rholang() {
 
 #[test]
 fn test_unified_ir_preserves_semantics() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     let rho_code = r#"new x, y in { x!(true) | y!(123) }"#;
     let tree = parse_code(rho_code);
@@ -53,7 +53,7 @@ fn test_unified_ir_preserves_semantics() {
 
 #[test]
 fn test_unified_ir_traversal() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     let rho_code = r#"new ch in { ch!(1, 2, 3) }"#;
     let tree = parse_code(rho_code);
@@ -82,7 +82,7 @@ fn test_unified_ir_traversal() {
 
 #[test]
 fn test_unified_ir_semantic_categories() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     let rho_code = r#"
         new ch in {
@@ -148,7 +148,7 @@ fn test_language_detection() {
 
 #[test]
 fn test_unified_ir_literal_conversion() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     let rho_code = r#"new ch in { ch!(true, 42, "hello", `rho:test`) }"#;
     let tree = parse_code(rho_code);

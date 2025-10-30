@@ -46,14 +46,27 @@ fn find_node_at_position_recursive<'a>(
     target: &Position,
     prev_end: &Position,
 ) -> Option<&'a dyn SemanticNode> {
+    use tracing::trace;
+
     // Compute this node's absolute start and end positions
     let start = node.absolute_position(*prev_end);
     let end = node.absolute_end(start);
 
+    trace!(
+        "Checking node type={}, start=({}, {}), end=({}, {}), target=({}, {})",
+        node.type_name(),
+        start.row, start.column,
+        end.row, end.column,
+        target.row, target.column
+    );
+
     // Check if target position is within this node's span
     if !position_in_range(target, &start, &end) {
+        trace!("Position not in range, skipping");
         return None;
     }
+
+    trace!("Position IS in range, checking {} children", node.children_count());
 
     // This node contains the position - check children for more specific match
     let mut child_prev_end = start;
@@ -61,6 +74,7 @@ fn find_node_at_position_recursive<'a>(
         if let Some(child) = node.child_at(i) {
             // Recursively search child
             if let Some(found) = find_node_at_position_recursive(child, target, &child_prev_end) {
+                trace!("Found in child: {}", found.type_name());
                 return Some(found); // Found more specific node in child
             }
             // Update prev_end for next sibling
@@ -69,19 +83,45 @@ fn find_node_at_position_recursive<'a>(
         }
     }
 
+    trace!("No child found, returning this node: {}", node.type_name());
     // No child contains the position, so this node is the most specific
     Some(node)
 }
 
 /// Check if a position is within a range (inclusive start, exclusive end)
 fn position_in_range(pos: &Position, start: &Position, end: &Position) -> bool {
-    // Position must be >= start
-    if pos.byte < start.byte {
+    // Only use byte offset comparison if the target position has a computed byte offset
+    // (i.e., byte > 0). If target has byte == 0, it means the byte offset was not computed
+    // from the LSP position, so we must use line/column comparison.
+    if pos.byte > 0 && start.byte > 0 && end.byte > 0 {
+        // All positions have byte offsets - use them for precise comparison
+        // Position must be >= start
+        if pos.byte < start.byte {
+            return false;
+        }
+
+        // Position must be < end
+        if pos.byte >= end.byte {
+            return false;
+        }
+
+        return true;
+    }
+
+    // Fall back to line/column comparison when byte offsets are unavailable
+    // Position must be >= start (line-first comparison)
+    if pos.row < start.row {
+        return false;
+    }
+    if pos.row == start.row && pos.column < start.column {
         return false;
     }
 
-    // Position must be < end
-    if pos.byte >= end.byte {
+    // Position must be < end (line-first comparison)
+    if pos.row > end.row {
+        return false;
+    }
+    if pos.row == end.row && pos.column >= end.column {
         return false;
     }
 

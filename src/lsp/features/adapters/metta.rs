@@ -182,13 +182,24 @@ mod tests {
 
     #[test]
     fn test_create_metta_adapter() {
-        let symbol_table = Arc::new(MettaSymbolTable::new(Url::parse("file:///test.rho#metta:0").unwrap()));
+        let uri = Url::parse("file:///test.rho#metta:0").unwrap();
+        let symbol_table = Arc::new(MettaSymbolTable {
+            scopes: vec![],
+            all_occurrences: vec![],
+            pattern_matcher: Arc::new(crate::ir::metta_pattern_matching::MettaPatternMatcher::new()),
+            uri: uri.clone(),
+            ir_nodes: vec![],
+        });
         let workspace = Arc::new(WorkspaceState {
             documents: Arc::new(DashMap::new()),
             global_symbols: Arc::new(DashMap::new()),
-            global_table: Arc::new(tokio::sync::RwLock::new(crate::ir::symbol_table::SymbolTable::new())),
-            global_inverted_index: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            global_virtual_symbols: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            global_table: Arc::new(tokio::sync::RwLock::new(crate::ir::symbol_table::SymbolTable::new(None))),
+            global_inverted_index: Arc::new(DashMap::new()),
+            global_contracts: Arc::new(DashMap::new()),
+            global_calls: Arc::new(DashMap::new()),
+            global_index: Arc::new(std::sync::RwLock::new(crate::ir::global_index::GlobalSymbolIndex::new())),
+            global_virtual_symbols: Arc::new(DashMap::new()),
+            indexing_state: Arc::new(tokio::sync::RwLock::new(crate::lsp::models::IndexingState::Idle)),
         });
         let parent_uri = Url::parse("file:///test.rho").unwrap();
 

@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn test_generic_symbol_collector_rholang() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
 
         let rho_code = r#"new x, y in { x!(42) | y!(100) }"#;
         let tree = parse_code(rho_code);
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn test_generic_symbol_collector_with_unified_ir() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
 
         let rho_code = r#"new ch in { ch!(true, 42) }"#;
         let tree = parse_code(rho_code);

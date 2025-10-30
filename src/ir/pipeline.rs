@@ -155,7 +155,7 @@ mod tests {
         use crate::ir::transforms::generic_symbol_collector::GenericSymbolCollector;
         use tower_lsp::lsp_types::Url;
 
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
 
         // Parse some Rholang code
         let code = r#"new x in { x!(42) }"#;

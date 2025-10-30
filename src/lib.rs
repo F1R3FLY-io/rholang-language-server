@@ -8,3 +8,5 @@ pub mod parsers;
 pub mod rnode_apis;
 pub mod tree_sitter;
 pub mod validators;
+pub mod wire_logger;
+pub mod wire_logger_middleware;

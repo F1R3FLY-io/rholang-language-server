@@ -89,7 +89,7 @@ impl TransformVisitor for CountingTransform {
 
 #[test]
 fn test_identity_transformation() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     let rho_code = r#"new x in { x!(42) }"#;
     let tree = parse_code(rho_code);
@@ -108,7 +108,7 @@ fn test_identity_transformation() {
 
 #[test]
 fn test_negate_integers() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     let rho_code = r#"new x in { x!(5) | x!(10) }"#;
     let tree = parse_code(rho_code);
@@ -153,7 +153,7 @@ fn test_negate_integers() {
 
 #[test]
 fn test_flip_booleans() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     let rho_code = r#"new x in { x!(true, false, true) }"#;
     let tree = parse_code(rho_code);
@@ -198,7 +198,7 @@ fn test_flip_booleans() {
 
 #[test]
 fn test_counting_transform() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     let rho_code = r#"
         new x, y in {
@@ -241,7 +241,7 @@ fn test_counting_transform() {
 
 #[test]
 fn test_transform_preserves_structure() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     let rho_code = r#"new x in { for (@val <- x) { Nil } }"#;
     let tree = parse_code(rho_code);
@@ -271,7 +271,7 @@ fn test_transform_preserves_structure() {
 
 #[test]
 fn test_transform_nested_structures() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     let rho_code = r#"[1, [2, [3, [4]]]]"#;
     let tree = parse_code(rho_code);
@@ -308,7 +308,7 @@ fn test_transform_nested_structures() {
 
 #[test]
 fn test_transform_empty_code() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     let rho_code = r#"Nil"#;
     let tree = parse_code(rho_code);
@@ -325,7 +325,7 @@ fn test_transform_empty_code() {
 
 #[test]
 fn test_transform_mixed_types() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     let rho_code = r#"
         new ch in {

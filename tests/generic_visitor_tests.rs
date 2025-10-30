@@ -146,7 +146,7 @@ impl GenericVisitor for TreeIntegrityChecker {
 
 #[test]
 fn test_generic_visitor_counts_rholang() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     let rho_code = r#"new x in { x!(1) | for (@val <- x) { Nil } }"#;
     let tree = parse_code(rho_code);
@@ -185,7 +185,7 @@ fn test_generic_visitor_counts_rholang() {
 
 #[test]
 fn test_generic_visitor_finds_literals() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     let rho_code = r#"new ch in { ch!(true, 42, "hello", `rho:registry:lookup`) }"#;
     let tree = parse_code(rho_code);
@@ -218,7 +218,7 @@ fn test_generic_visitor_finds_literals() {
 
 #[test]
 fn test_index_based_traversal_integrity() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     let rho_code = r#"
         new x, y, z in {
@@ -271,7 +271,7 @@ fn test_index_based_traversal_integrity() {
 
 #[test]
 fn test_generic_visitor_nested_structures() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     // Test deeply nested structure
     let rho_code = r#"
@@ -304,7 +304,7 @@ fn test_generic_visitor_nested_structures() {
 
 #[test]
 fn test_generic_visitor_empty_structures() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     let rho_code = r#"Nil"#;
     let tree = parse_code(rho_code);
@@ -325,7 +325,7 @@ fn test_generic_visitor_empty_structures() {
 
 #[test]
 fn test_generic_visitor_complex_pattern_matching() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     let rho_code = r#"
         match [1, 2, 3] {
@@ -355,7 +355,7 @@ fn test_generic_visitor_complex_pattern_matching() {
 
 #[test]
 fn test_semantic_category_distribution() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     let rho_code = r#"
         new x, y in {
@@ -398,7 +398,7 @@ fn test_semantic_category_distribution() {
 
 #[test]
 fn test_visitor_doesnt_loop_infinitely() {
-    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false);
+    let _ = rholang_language_server::logging::init_logger(false, Some("warn"), false, false);
 
     // Test with potentially problematic circular-looking structure
     let rho_code = r#"

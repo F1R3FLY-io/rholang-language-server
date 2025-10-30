@@ -25,11 +25,31 @@ pub struct RelativePosition {
 
 /// Represents an absolute position in the source code, computed when needed from relative positions.
 /// Coordinates are zero-based (row, column, byte).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
+///
+/// Note: Hash and Eq are based on (row, column) only. The byte field is metadata for O(1) seeking.
+/// Two positions are considered equal if they refer to the same (row, column) location.
+#[derive(Debug, Clone, Copy, Ord, PartialOrd)]
 pub struct Position {
     pub row: usize,    // Line number (0-based)
     pub column: usize, // Column number (0-based)
-    pub byte: usize,   // Byte offset from the start of the source code
+    pub byte: usize,   // Byte offset from the start of the source code (metadata, not part of equality)
+}
+
+// Custom equality: positions match on (row, col) only
+impl PartialEq for Position {
+    fn eq(&self, other: &Self) -> bool {
+        self.row == other.row && self.column == other.column
+    }
+}
+
+impl Eq for Position {}
+
+// Custom hash: hash only (row, col), not byte
+impl std::hash::Hash for Position {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.row.hash(state);
+        self.column.hash(state);
+    }
 }
 
 /// Base structure for all Intermediate Representation (IR) nodes, encapsulating positional and textual metadata.

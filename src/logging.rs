@@ -7,6 +7,8 @@ use time::UtcOffset;
 use tracing_subscriber::{self, fmt, prelude::*};
 use tracing_appender::non_blocking::WorkerGuard;
 
+use crate::wire_logger::WireLogger;
+
 const LOG_RETENTION_DAYS: u64 = 7;
 
 /// Get the log directory path in the user-specific OS cache directory
@@ -42,7 +44,8 @@ fn cleanup_old_logs(log_dir: &PathBuf) -> io::Result<()> {
             if let Ok(metadata) = entry.metadata() {
                 if metadata.is_file() {
                     if let Some(name) = entry.file_name().to_str() {
-                        if name.starts_with("session-") && name.ends_with(".log") {
+                        // Clean up both session and wire logs
+                        if (name.starts_with("session-") || name.starts_with("wire-")) && name.ends_with(".log") {
                             if let Ok(modified) = metadata.modified() {
                                 if let Ok(age) = now.duration_since(modified) {
                                     if age > retention {
@@ -65,17 +68,19 @@ fn cleanup_old_logs(log_dir: &PathBuf) -> io::Result<()> {
 }
 
 /// Initialize logger with both stderr and file output
-/// Returns a WorkerGuard that must be kept alive for the duration of the program
+/// Returns a tuple of (WorkerGuard, WireLogger) that must be kept alive for the duration of the program
 ///
 /// # Arguments
 /// * `no_color` - Disable ANSI colors in stderr output
-/// * `log_level` - Override log level (otherwise uses RUST_LOG or defaults to "debug")
+/// * `log_level` - Override log level (otherwise uses RUST_LOG or defaults to "info")
 /// * `enable_file_logging` - Enable file logging to temp directory (disable for tests)
+/// * `enable_wire_logging` - Enable wire protocol logging to separate file
 ///
 /// # Logging Behavior
-/// - **Stderr**: Only logs at the configured level (from --log-level, RUST_LOG, or default "debug")
-/// - **File**: Logs at DEBUG level by default
-pub fn init_logger(no_color: bool, log_level: Option<&str>, enable_file_logging: bool) -> io::Result<WorkerGuard> {
+/// - **Stderr/Console**: Logs at the configured level (default "info") - shows method names and key identifiers, NOT full payloads
+/// - **Session File**: Logs at DEBUG level - includes detailed diagnostics with full parameters
+/// - **Wire Log**: If enabled, logs all LSP JSON-RPC messages with Content-Length headers (LSP framing format)
+pub fn init_logger(no_color: bool, log_level: Option<&str>, enable_file_logging: bool, enable_wire_logging: bool) -> io::Result<(WorkerGuard, WireLogger)> {
     let timer = fmt::time::OffsetTime::new(
         UtcOffset::UTC,
         format_description!("[[[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z]"),
@@ -88,9 +93,10 @@ pub fn init_logger(no_color: bool, log_level: Option<&str>, enable_file_logging:
             tracing_subscriber::EnvFilter::new(level)
         }
         None => {
-            // If --log-level is not provided, fall back to RUST_LOG or default to "debug"
+            // If --log-level is not provided, fall back to RUST_LOG or default to "info"
+            // This provides cleaner logs by default while still allowing verbose debugging via RUST_LOG
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug"))
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
         }
     };
 
@@ -104,20 +110,30 @@ pub fn init_logger(no_color: bool, log_level: Option<&str>, enable_file_logging:
     // File logs at DEBUG level by default
     let file_filter = tracing_subscriber::EnvFilter::new("debug");
 
-    // Conditionally enable file logging
+    // Conditionally enable file logging and wire logging
     if enable_file_logging {
         // Get log directory and clean up old logs
         let log_dir = get_log_dir()?;
         cleanup_old_logs(&log_dir)?;
 
-        // Create session-specific log filename with timestamp and PID
+        // Create session-specific identifier (shared between session log and wire log)
         let timestamp = time::OffsetDateTime::now_utc()
             .format(&time::format_description::parse(
                 "[year][month][day]-[hour][minute][second]"
             ).unwrap())
             .unwrap();
         let pid = std::process::id();
-        let log_filename = format!("session-{}-{}.log", timestamp, pid);
+        let session_id = format!("{}-{}", timestamp, pid);
+
+        // Create wire logger with matching session identifier
+        let wire_logger = if enable_wire_logging {
+            WireLogger::new_with_session_id(true, Some(log_dir.clone()), session_id.clone())?
+        } else {
+            WireLogger::new(false, None)?
+        };
+
+        // Create session-specific log filename
+        let log_filename = format!("session-{}.log", session_id);
         let log_path = log_dir.join(&log_filename);
 
         // Log to file with non-blocking writer
@@ -143,13 +159,13 @@ pub fn init_logger(no_color: bool, log_level: Option<&str>, enable_file_logging:
         match result {
             Ok(()) => {
                 eprintln!("Logging to file: {:?}", log_path);
-                Ok(guard)
+                Ok((guard, wire_logger))
             }
             Err(e) => {
                 // Ignore errors due to the subscriber or logger already being set
                 if e.to_string().contains("already been set") || e.to_string().contains("SetLoggerError") {
                     eprintln!("Logging to file: {:?}", log_path);
-                    Ok(guard)
+                    Ok((guard, wire_logger))
                 } else {
                     // Propagate unexpected errors
                     Err(io::Error::new(io::ErrorKind::Other, e))
@@ -157,8 +173,9 @@ pub fn init_logger(no_color: bool, log_level: Option<&str>, enable_file_logging:
             }
         }
     } else {
-        // No file logging - use a dummy guard
+        // No file logging - use a dummy guard and disabled wire logger
         let (_, guard) = tracing_appender::non_blocking(std::io::sink());
+        let wire_logger = WireLogger::new(false, None)?;
 
         // Combine the layers using a registry (stderr only)
         // Note: stderr_layer already has its own filter
@@ -167,11 +184,11 @@ pub fn init_logger(no_color: bool, log_level: Option<&str>, enable_file_logging:
             .try_init();
 
         match result {
-            Ok(()) => Ok(guard),
+            Ok(()) => Ok((guard, wire_logger)),
             Err(e) => {
                 // Ignore errors due to the subscriber or logger already being set
                 if e.to_string().contains("already been set") || e.to_string().contains("SetLoggerError") {
-                    Ok(guard)
+                    Ok((guard, wire_logger))
                 } else {
                     // Propagate unexpected errors
                     Err(io::Error::new(io::ErrorKind::Other, e))

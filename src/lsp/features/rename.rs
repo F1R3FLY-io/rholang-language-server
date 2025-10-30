@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use dashmap::DashMap;
 use tower_lsp::lsp_types::{TextEdit, Url, WorkspaceEdit, Position as LspPosition, Range};
 use tracing::{debug, trace};
 
@@ -29,6 +30,7 @@ impl GenericRename {
     /// * `uri` - URI of the document
     /// * `adapter` - Language-specific adapter
     /// * `new_name` - The new name for the symbol
+    /// * `inverted_index` - Inverted index mapping definitions to usage sites
     ///
     /// # Returns
     /// WorkspaceEdit containing all the text edits needed to rename the symbol
@@ -39,6 +41,7 @@ impl GenericRename {
         uri: &Url,
         adapter: &LanguageAdapter,
         new_name: &str,
+        inverted_index: &Arc<DashMap<(Url, Position), Vec<(Url, Position)>>>,
     ) -> Option<WorkspaceEdit> {
         debug!(
             "Renaming symbol at {}:{} in {} to '{}'",
@@ -48,7 +51,7 @@ impl GenericRename {
         // Use GenericReferences to find all occurrences
         let references_finder = GenericReferences;
         let locations = references_finder
-            .find_references(root, position, uri, adapter, true) // include_declaration = true
+            .find_references(root, position, uri, adapter, true, inverted_index) // include_declaration = true
             .await?;
 
         if locations.is_empty() {
@@ -95,6 +98,7 @@ impl GenericRename {
     /// * `position` - Position to check
     /// * `uri` - URI of the document
     /// * `adapter` - Language-specific adapter
+    /// * `inverted_index` - Inverted index mapping definitions to usage sites
     ///
     /// # Returns
     /// Option containing the range and placeholder text for the rename
@@ -104,6 +108,7 @@ impl GenericRename {
         position: &Position,
         uri: &Url,
         adapter: &LanguageAdapter,
+        inverted_index: &Arc<DashMap<(Url, Position), Vec<(Url, Position)>>>,
     ) -> Option<(Range, String)> {
         debug!(
             "Preparing rename at {}:{} in {}",
@@ -113,7 +118,7 @@ impl GenericRename {
         // Find the symbol at this position
         let references_finder = GenericReferences;
         let locations = references_finder
-            .find_references(root, position, uri, adapter, false) // include_declaration = false
+            .find_references(root, position, uri, adapter, false, inverted_index) // include_declaration = false
             .await?;
 
         if locations.is_empty() {
@@ -137,10 +142,33 @@ impl GenericRename {
         Some((first_location.range, symbol_name.to_string()))
     }
 
-    /// Extract symbol name from a node
+    /// Extract symbol name from a node or its structure
     ///
-    /// Tries multiple metadata keys to find the symbol name.
+    /// Tries multiple metadata keys and node structure to find the symbol name.
     fn extract_symbol_name<'a>(&self, node: &'a dyn SemanticNode) -> Option<&'a str> {
+        use crate::ir::rholang_node::RholangNode;
+
+        // Special case: For NameDecl nodes, extract name from the Var child
+        if node.type_name() == "Rholang::NameDecl" {
+            if let Some(rholang_node) = node.as_any().downcast_ref::<RholangNode>() {
+                if let RholangNode::NameDecl { var, .. } = rholang_node {
+                    if let RholangNode::Var { name, .. } = var.as_ref() {
+                        return Some(name.as_str());
+                    }
+                }
+            }
+        }
+
+        // Special case: For Var nodes, extract name directly
+        if node.type_name() == "Rholang::Var" {
+            if let Some(rholang_node) = node.as_any().downcast_ref::<RholangNode>() {
+                if let RholangNode::Var { name, .. } = rholang_node {
+                    return Some(name.as_str());
+                }
+            }
+        }
+
+        // Try metadata keys
         if let Some(metadata) = node.metadata() {
             // Try symbol_name first
             if let Some(name_any) = metadata.get("symbol_name") {
@@ -276,7 +304,10 @@ mod tests {
         let position = Position { row: 0, column: 5, byte: 5 };
         let rename = GenericRename;
 
-        let result = rename.rename(&node, &position, &uri, &adapter, "new_name").await;
+        // Create empty inverted index for test
+        let inverted_index = HashMap::new();
+
+        let result = rename.rename(&node, &position, &uri, &adapter, "new_name", &inverted_index).await;
 
         assert!(result.is_some());
         let workspace_edit = result.unwrap();
@@ -307,7 +338,10 @@ mod tests {
         let uri = Url::parse("file:///test.rho").unwrap();
         let rename = GenericRename;
 
-        let result = rename.rename(&node, &position, &uri, &adapter, "new_name").await;
+        // Create empty inverted index for test
+        let inverted_index = HashMap::new();
+
+        let result = rename.rename(&node, &position, &uri, &adapter, "new_name", &inverted_index).await;
 
         assert!(result.is_none());
     }

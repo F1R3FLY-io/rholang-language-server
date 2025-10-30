@@ -113,8 +113,24 @@ impl SymbolResolver for RholangSymbolResolver {
         use crate::ir::symbol_resolution::{SymbolLocation, SymbolKind, ResolutionConfidence};
         use tower_lsp::lsp_types::{Position as LspPosition, Range};
 
+        tracing::debug!(
+            "RholangSymbolResolver: Looking up symbol '{}' (language={}, uri={})",
+            symbol_name,
+            context.language,
+            context.uri
+        );
+
         // Look up symbol in the symbol table (walks parent chain automatically)
         if let Some(symbol) = self.symbol_table.lookup(symbol_name) {
+            tracing::debug!(
+                "Found symbol '{}' at line {}, col {} (type={:?}, uri={})",
+                symbol.name,
+                symbol.declaration_location.row,
+                symbol.declaration_location.column,
+                symbol.symbol_type,
+                symbol.declaration_uri
+            );
+
             // Prefer definition_location if available, otherwise use declaration_location
             let location = symbol.definition_location.as_ref()
                 .unwrap_or(&symbol.declaration_location);
@@ -148,6 +164,7 @@ impl SymbolResolver for RholangSymbolResolver {
                 metadata: None,
             }]
         } else {
+            tracing::debug!("Symbol '{}' not found in symbol table", symbol_name);
             // Symbol not found in scope
             Vec::new()
         }
@@ -197,7 +214,7 @@ mod tests {
 
     #[test]
     fn test_create_rholang_adapter() {
-        let symbol_table = Arc::new(SymbolTable::new());
+        let symbol_table = Arc::new(SymbolTable::new(None));
         let adapter = create_rholang_adapter(symbol_table);
 
         assert_eq!(adapter.language_name(), "rholang");

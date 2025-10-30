@@ -53,7 +53,8 @@ use crate::lsp::models::{LspDocument, LspDocumentHistory, LspDocumentState};
 impl LanguageServer for RholangBackend {
     /// Handles the LSP initialize request, setting up capabilities and indexing workspace files.
     async fn initialize(&self, params: InitializeParams) -> jsonrpc::Result<InitializeResult> {
-        info!("Received initialize: {:?}", params);
+        info!("Received initialize request");
+        debug!("Initialize params: {:?}", params);
 
         if let Some(client_pid) = params.process_id {
             {
@@ -214,7 +215,8 @@ impl LanguageServer for RholangBackend {
 
     /// Handles the LSP initialized notification.
     async fn initialized(&self, params: InitializedParams) {
-        info!("Initialized: {:?}", params);
+        info!("Initialized");
+        debug!("Initialized params: {:?}", params);
     }
 
     /// Handles the LSP shutdown request.
@@ -314,9 +316,10 @@ impl LanguageServer for RholangBackend {
 
     /// Handles changes to a text document, applying incremental updates and re-validating.
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        info!("textDocument/didChange: {:?}", params);
         let uri = params.text_document.uri.clone();
         let version = params.text_document.version;
+        info!("textDocument/didChange: uri={}, version={}", uri, version);
+        debug!("didChange params: {:?}", params);
         // DashMap::get returns a guard that dereferences to the value
         if let Some(document) = self.documents_by_uri.get(&uri).map(|r| r.value().clone()) {
             if let Some((text, tree)) = document.apply(params.content_changes, version).await {
@@ -350,14 +353,16 @@ impl LanguageServer for RholangBackend {
 
     /// Handles saving a text document (no-op since validation is on change).
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
-        info!("textDocument/didSave: {:?}", params);
+        info!("textDocument/didSave: uri={}", params.text_document.uri);
+        debug!("didSave params: {:?}", params);
         // Validation occurs on open and change; no additional action needed here
     }
 
     /// Handles closing a text document, removing it from state and clearing diagnostics.
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        info!("textDocument/didClose: {:?}", params);
-        let uri = params.text_document.uri;
+        let uri = params.text_document.uri.clone();
+        info!("textDocument/didClose: uri={}", uri);
+        debug!("didClose params: {:?}", params);
         // DashMap::remove returns Option<(K, V)>
         if let Some((_key, document)) = self.documents_by_uri.remove(&uri) {
             self.documents_by_id.remove(&document.id);
@@ -376,6 +381,12 @@ impl LanguageServer for RholangBackend {
     async fn rename(&self, params: RenameParams) -> LspResult<Option<WorkspaceEdit>> {
         debug!("rename request for {:?}", params);
 
+        // Eagerly ensure symbols are linked before rename operation
+        if self.needs_symbol_linking().await {
+            debug!("Eagerly linking symbols for rename operation");
+            self.link_symbols().await;
+        }
+
         // Use unified handler (Phase 4c: replaces 70+ lines of language-specific logic)
         Ok(self.unified_rename(params).await)
     }
@@ -387,10 +398,29 @@ impl LanguageServer for RholangBackend {
         debug!("goto_definition request for {} at {:?}", uri, position);
 
         // Use unified handler (Phase 4c: replaces 300+ lines of language-specific logic)
-        let result = Ok(self.unified_goto_definition(uri, position).await);
-        
+        let goto_result = self.unified_goto_definition(uri, position).await;
+
+        // Log the result for debugging
+        match &goto_result {
+            Some(GotoDefinitionResponse::Scalar(loc)) => {
+                debug!("goto_definition -> Location {{ uri: {}, range: {:?} }}", loc.uri, loc.range);
+            }
+            Some(GotoDefinitionResponse::Array(locs)) => {
+                debug!("goto_definition -> {} locations", locs.len());
+                for loc in locs {
+                    debug!("  - Location {{ uri: {}, range: {:?} }}", loc.uri, loc.range);
+                }
+            }
+            Some(GotoDefinitionResponse::Link(_)) => {
+                debug!("goto_definition -> LocationLink (omitted from log)");
+            }
+            None => {
+                debug!("goto_definition -> None");
+            }
+        }
+
         info!("goto_definition completed in {:.3}ms", start.elapsed().as_secs_f64() * 1000.0);
-        result
+        Ok(goto_result)
     }
 
     /// Handles going to a symbol's declaration.
@@ -418,6 +448,12 @@ impl LanguageServer for RholangBackend {
     /// Handles finding all references to a symbol.
     async fn references(&self, params: ReferenceParams) -> LspResult<Option<Vec<Location>>> {
         debug!("references request for {:?}", params);
+
+        // Eagerly ensure symbols are linked before references operation
+        if self.needs_symbol_linking().await {
+            debug!("Eagerly linking symbols for references operation");
+            self.link_symbols().await;
+        }
 
         // Use unified handler (Phase 4c: replaces 180+ lines of language-specific logic)
         Ok(self.unified_references(params).await)

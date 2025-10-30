@@ -2798,7 +2798,7 @@ mod tests {
 
     #[test]
     fn test_position_computation() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
         let code = "ch!(\"msg\")\nNil";
         let tree = parse_code(code);
         let rope = Rope::from_str(code);
@@ -2828,7 +2828,7 @@ mod tests {
 
     #[test]
     fn test_nested_position() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
         let code = r#"new x in { x!("msg") }"#;
         let tree = parse_code(code);
         let rope = Rope::from_str(code);
@@ -2881,7 +2881,7 @@ mod tests {
 
     #[test]
     fn test_multi_line_positions() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
         let code = "ch!(\n\"msg\"\n)";
         let tree = parse_code(code);
         let rope = Rope::from_str(code);
@@ -2898,7 +2898,7 @@ mod tests {
 
     #[test]
     fn test_match_positioning() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
         let code = r#"match "target" { "pat" => Nil }"#;
         let tree = parse_code(code);
         let rope = Rope::from_str(code);

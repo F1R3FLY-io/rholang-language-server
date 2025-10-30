@@ -2,6 +2,8 @@
 //!
 //! Provides language-agnostic reference finding using the SymbolResolver trait.
 
+use std::sync::Arc;
+use dashmap::DashMap;
 use tower_lsp::lsp_types::{Location, Position as LspPosition, Range, Url};
 use tracing::debug;
 
@@ -22,6 +24,7 @@ impl GenericReferences {
     /// * `uri` - URI of the document
     /// * `adapter` - Language adapter
     /// * `include_declaration` - Whether to include the declaration in results
+    /// * `inverted_index` - Inverted index mapping definitions to usage sites
     ///
     /// # Returns
     /// `Some(Vec<Location>)` with all reference locations, or `None` if symbol not found
@@ -32,6 +35,7 @@ impl GenericReferences {
         uri: &Url,
         adapter: &LanguageAdapter,
         include_declaration: bool,
+        inverted_index: &Arc<DashMap<(Url, Position), Vec<(Url, Position)>>>,
     ) -> Option<Vec<Location>> {
         debug!(
             "GenericReferences::find_references at {:?} in {} (include_decl: {})",
@@ -66,21 +70,52 @@ impl GenericReferences {
             return None;
         }
 
-        // For now, return the definition location(s) as "references"
-        // In a full implementation, this would:
-        // 1. Find the definition location
-        // 2. Query an inverted index to find all usage sites
-        // 3. Optionally include the definition based on include_declaration
+        debug!("Found {} definition(s) for '{}'", definitions.len(), symbol_name);
 
-        let mut locations: Vec<Location> = definitions
-            .into_iter()
-            .map(|sym_loc| Location {
-                uri: sym_loc.uri,
-                range: sym_loc.range,
-            })
-            .collect();
+        // Collect all reference locations
+        let mut locations: Vec<Location> = Vec::new();
 
-        debug!("Found {} reference location(s)", locations.len());
+        // For each definition, find all usages in the inverted index
+        for def in &definitions {
+            let def_pos = Position {
+                row: def.range.start.line as usize,
+                column: def.range.start.character as usize,
+                byte: 0, // Normalized to 0 for consistent lookups (see symbols.rs)
+            };
+            let key = (def.uri.clone(), def_pos);
+
+            debug!("Looking up inverted index for definition at {:?}", key);
+
+            // Include the declaration if requested
+            if include_declaration {
+                locations.push(Location {
+                    uri: def.uri.clone(),
+                    range: def.range,
+                });
+            }
+
+            // Look up all usage sites in the inverted index
+            if let Some(usages) = inverted_index.get(&key) {
+                debug!("Found {} usage(s) in inverted index", usages.len());
+                for (usage_uri, usage_pos) in usages.value() {
+                    let usage_lsp_pos = ir_to_lsp_position(usage_pos);
+                    locations.push(Location {
+                        uri: usage_uri.clone(),
+                        range: Range {
+                            start: usage_lsp_pos,
+                            end: LspPosition {
+                                line: usage_lsp_pos.line,
+                                character: usage_lsp_pos.character + symbol_name.len() as u32,
+                            },
+                        },
+                    });
+                }
+            } else {
+                debug!("No usages found in inverted index for {:?}", key);
+            }
+        }
+
+        debug!("Found {} total reference location(s)", locations.len());
 
         if locations.is_empty() {
             None
@@ -89,8 +124,31 @@ impl GenericReferences {
         }
     }
 
-    /// Extract symbol name from node metadata
+    /// Extract symbol name from node metadata or structure
     fn extract_symbol_name<'a>(&self, node: &'a dyn SemanticNode) -> Option<&'a str> {
+        use crate::ir::rholang_node::RholangNode;
+
+        // Special case: For NameDecl nodes, extract name from the Var child
+        if node.type_name() == "Rholang::NameDecl" {
+            if let Some(rholang_node) = node.as_any().downcast_ref::<RholangNode>() {
+                if let RholangNode::NameDecl { var, .. } = rholang_node {
+                    if let RholangNode::Var { name, .. } = var.as_ref() {
+                        return Some(name.as_str());
+                    }
+                }
+            }
+        }
+
+        // Special case: For Var nodes, extract name directly
+        if node.type_name() == "Rholang::Var" {
+            if let Some(rholang_node) = node.as_any().downcast_ref::<RholangNode>() {
+                if let RholangNode::Var { name, .. } = rholang_node {
+                    return Some(name.as_str());
+                }
+            }
+        }
+
+        // Try metadata keys
         if let Some(metadata) = node.metadata() {
             if let Some(name_any) = metadata.get("symbol_name") {
                 if let Some(name_ref) = name_any.downcast_ref::<String>() {
@@ -212,11 +270,14 @@ mod tests {
         let pos = Position { row: 0, column: 5, byte: 5 };
         let uri = Url::parse("file:///test.rho").unwrap();
 
-        let result = refs.find_references(&node, &pos, &uri, &adapter, true).await;
+        // Create empty inverted index for test
+        let inverted_index = HashMap::new();
+
+        let result = refs.find_references(&node, &pos, &uri, &adapter, true, &inverted_index).await;
 
         assert!(result.is_some());
         let locs = result.unwrap();
-        assert_eq!(locs.len(), 1);
+        assert_eq!(locs.len(), 1); // Just the declaration
         assert_eq!(locs[0].uri.as_str(), "file:///test.rho");
     }
 
@@ -235,7 +296,10 @@ mod tests {
         let pos = Position { row: 0, column: 5, byte: 5 };
         let uri = Url::parse("file:///test.rho").unwrap();
 
-        let result = refs.find_references(&node, &pos, &uri, &adapter, true).await;
+        // Create empty inverted index for test
+        let inverted_index = HashMap::new();
+
+        let result = refs.find_references(&node, &pos, &uri, &adapter, true, &inverted_index).await;
 
         assert!(result.is_none());
     }

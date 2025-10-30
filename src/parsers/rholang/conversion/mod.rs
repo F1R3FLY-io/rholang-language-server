@@ -17,6 +17,7 @@ use crate::ir::rholang_node::{
     BinOperator, RholangBundleType, RholangNode, NodeBase, RholangSendType,
     UnaryOperator, RholangVarRefKind, Position, RelativePosition,
 };
+use crate::ir::semantic_node::SemanticNode;
 use crate::parsers::position_utils::create_node_base_from_absolute;
 
 use super::helpers::{
@@ -132,15 +133,12 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             } else if all_nodes.len() == 2 {
                 // Exactly 2 top-level processes - use binary Par
                 debug!("source_file: creating binary Par for 2 top-level nodes");
-                let par_base = NodeBase::new_simple(
-                    RelativePosition {
-                        delta_lines: 0,
-                        delta_columns: 0,
-                        delta_bytes: 0,
-                    },
-                    0,  // length
-                    0,  // span_lines
-                    0,  // span_columns
+                // Par must span from file start to current_prev_end to enable position lookups
+                let par_base = create_correct_node_base(
+                    absolute_start,
+                    current_prev_end,
+                    current_prev_end,
+                    Position { row: 0, column: 0, byte: 0 },
                 );
                 Arc::new(RholangNode::Par {
                     base: par_base,
@@ -152,15 +150,12 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             } else {
                 // More than 2 top-level processes - use n-ary Par (O(1) depth instead of O(n))
                 debug!("source_file: creating n-ary Par for {} top-level nodes", all_nodes.len());
-                let par_base = NodeBase::new_simple(
-                    RelativePosition {
-                        delta_lines: 0,
-                        delta_columns: 0,
-                        delta_bytes: 0,
-                    },
-                    0,  // length
-                    0,  // span_lines
-                    0,  // span_columns
+                // Par must span from file start to current_prev_end to enable position lookups
+                let par_base = create_correct_node_base(
+                    absolute_start,
+                    current_prev_end,
+                    current_prev_end,
+                    Position { row: 0, column: 0, byte: 0 },
                 );
                 Arc::new(RholangNode::Par {
                     base: par_base,
@@ -558,15 +553,20 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 process_nodes[0].clone()
             } else if process_nodes.len() == 2 {
                 // Exactly 2 children - use binary Par
-                let par_base = NodeBase::new_simple(
-                    RelativePosition {
-                        delta_lines: 0,
-                        delta_columns: 0,
-                        delta_bytes: 0,
-                    },
-                    0,  // length - Par has no content of its own
-                    0,  // span_lines
-                    0,  // span_columns
+                // Get the first child's absolute start for Par's start position
+                let first_child_start = SemanticNode::absolute_position(process_nodes[0].as_ref(), absolute_start);
+                // Get the last child's end for Par's end position
+                let last_child_end = {
+                    let first_child_end = SemanticNode::absolute_end(process_nodes[0].as_ref(), first_child_start);
+                    let last_child_start = SemanticNode::absolute_position(process_nodes[1].as_ref(), first_child_end);
+                    SemanticNode::absolute_end(process_nodes[1].as_ref(), last_child_start)
+                };
+                // Par must span from first child to last child to enable position lookups
+                let par_base = create_correct_node_base(
+                    first_child_start,
+                    last_child_end,
+                    last_child_end,
+                    absolute_start,
                 );
                 Arc::new(RholangNode::Par {
                     base: par_base,
@@ -577,15 +577,23 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 })
             } else {
                 // More than 2 children - use n-ary Par (O(1) depth instead of O(n))
-                let par_base = NodeBase::new_simple(
-                    RelativePosition {
-                        delta_lines: 0,
-                        delta_columns: 0,
-                        delta_bytes: 0,
-                    },
-                    0,  // length - Par has no content of its own
-                    0,  // span_lines
-                    0,  // span_columns
+                // Get the first child's absolute start for Par's start position
+                let first_child_start = SemanticNode::absolute_position(process_nodes[0].as_ref(), absolute_start);
+                // Get the last child's end for Par's end position
+                let last_child_end = {
+                    let mut prev = first_child_start;
+                    for child in process_nodes.iter() {
+                        let child_start = SemanticNode::absolute_position(child.as_ref(), prev);
+                        prev = SemanticNode::absolute_end(child.as_ref(), child_start);
+                    }
+                    prev
+                };
+                // Par must span from first child to last child to enable position lookups
+                let par_base = create_correct_node_base(
+                    first_child_start,
+                    last_child_end,
+                    last_child_end,
+                    absolute_start,
                 );
                 Arc::new(RholangNode::Par {
                     base: par_base,

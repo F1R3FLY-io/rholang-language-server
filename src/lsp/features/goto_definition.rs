@@ -127,32 +127,84 @@ impl GenericGotoDefinition {
     fn extract_symbol_name<'a>(&self, node: &'a dyn SemanticNode) -> Option<&'a str> {
         // Try to get symbol name from metadata
         if let Some(metadata) = node.metadata() {
-            // Check for "symbol_name" key (common convention)
+            debug!(
+                "Node has metadata with keys: {:?}",
+                metadata.keys().collect::<Vec<_>>()
+            );
+
+            // Priority 1: Check for "referenced_symbol" key (most authoritative - used by SymbolTableBuilder)
+            if let Some(sym_any) = metadata.get("referenced_symbol") {
+                if let Some(symbol) = sym_any.downcast_ref::<Arc<crate::ir::symbol_table::Symbol>>() {
+                    debug!("Found referenced_symbol in metadata: {}", symbol.name);
+                    return Some(&symbol.name);
+                }
+            }
+
+            // Priority 2: Check for "symbol_name" key (common convention)
             if let Some(name_any) = metadata.get("symbol_name") {
                 if let Some(name_ref) = name_any.downcast_ref::<String>() {
+                    debug!("Found symbol_name in metadata: {}", name_ref);
                     return Some(name_ref.as_str());
                 }
                 if let Some(name_ref) = name_any.downcast_ref::<Arc<String>>() {
+                    debug!("Found symbol_name (Arc) in metadata: {}", name_ref);
                     return Some(name_ref.as_str());
                 }
                 if let Some(name_ref) = name_any.downcast_ref::<&str>() {
+                    debug!("Found symbol_name (&str) in metadata: {}", name_ref);
                     return Some(*name_ref);
                 }
             }
 
-            // Check for "name" key (alternative convention)
+            // Priority 3: Check for "name" key (alternative convention)
             if let Some(name_any) = metadata.get("name") {
                 if let Some(name_ref) = name_any.downcast_ref::<String>() {
+                    debug!("Found name in metadata: {}", name_ref);
                     return Some(name_ref.as_str());
                 }
                 if let Some(name_ref) = name_any.downcast_ref::<Arc<String>>() {
+                    debug!("Found name (Arc) in metadata: {}", name_ref);
                     return Some(name_ref.as_str());
                 }
             }
         }
 
-        // TODO: For leaf nodes (variables, etc.), might need to extract from source text
-        // This would require the original source text to be passed in
+        // Priority 4: Extract directly from node structure based on type
+        // Try to downcast to RholangNode
+        if let Some(rho_node) = node.as_any().downcast_ref::<crate::ir::rholang_node::RholangNode>() {
+            use crate::ir::rholang_node::RholangNode;
+            match rho_node {
+                RholangNode::Var { name, .. } => {
+                    debug!("Extracted symbol name from RholangNode::Var: {}", name);
+                    return Some(name.as_str());
+                }
+                RholangNode::VarRef { var, .. } => {
+                    // Recursively extract from the var inside VarRef
+                    if let RholangNode::Var { name, .. } = &**var {
+                        debug!("Extracted symbol name from RholangNode::VarRef->Var: {}", name);
+                        return Some(name.as_str());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Try to downcast to MettaNode (for virtual documents)
+        if let Some(metta_node) = node.as_any().downcast_ref::<crate::ir::metta_node::MettaNode>() {
+            use crate::ir::metta_node::MettaNode;
+            match metta_node {
+                MettaNode::Atom { name, .. } => {
+                    debug!("Extracted symbol name from MettaNode::Atom: {}", name);
+                    return Some(name.as_str());
+                }
+                MettaNode::Variable { name, .. } => {
+                    debug!("Extracted symbol name from MettaNode::Variable: {}", name);
+                    return Some(name.as_str());
+                }
+                _ => {}
+            }
+        }
+
         debug!(
             "Could not extract symbol name from node type={}, category={:?}",
             node.type_name(),

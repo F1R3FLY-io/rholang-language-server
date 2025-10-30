@@ -54,7 +54,8 @@ impl RholangBackend {
     ) -> Result<CachedDocument, String> {
         // Clear old symbols for this URI from global_table BEFORE indexing
         // This ensures we don't have stale symbols from previous versions of the file
-        global_table.symbols.write().unwrap().retain(|_, s| &s.declaration_uri != uri);
+        // Lock-free retain operation using DashMap
+        global_table.symbols.retain(|_, s| &s.declaration_uri != uri);
 
         let mut pipeline = Pipeline::new();
 
@@ -664,18 +665,15 @@ impl RholangBackend {
         // Remove old global symbols for this URI
         self.workspace.global_symbols.retain(|_, (u, _)| u != uri);
 
-        // Remove old inverted index entries for this URI (needs lock - bulk operation)
-        {
-            let mut inverted_index = self.workspace.global_inverted_index.write().await;
-            inverted_index.retain(|(d_uri, _), us| {
-                if d_uri == uri {
-                    false
-                } else {
-                    us.retain(|(u_uri, _)| u_uri != uri);
-                    !us.is_empty()
-                }
-            });
-        }
+        // Remove old inverted index entries for this URI (DashMap is lock-free)
+        self.workspace.global_inverted_index.retain(|(d_uri, _), us| {
+            if d_uri == uri {
+                false
+            } else {
+                us.retain(|(u_uri, _)| u_uri != uri);
+                !us.is_empty()
+            }
+        });
 
         // Lock-free contract and call updates
         self.workspace.global_contracts.remove(uri);

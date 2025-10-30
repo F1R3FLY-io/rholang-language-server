@@ -52,8 +52,13 @@ impl RholangBackend {
     /// 4. Updates the global inverted index for cross-file navigation
     /// 5. Broadcasts workspace change event via hot observable
     pub(crate) async fn link_symbols(&self) {
+        use std::time::Instant;
+        let start_time = Instant::now();
+        debug!("link_symbols: Starting symbol linking");
+
         // Lock-free document collection via DashMap
         // Clone global_table separately (still needs lock for consistency)
+        let phase1_start = Instant::now();
         let global_table = self.workspace.global_table.read().await;
 
         // Collect all global contract symbols from workspace.global_table
@@ -61,8 +66,9 @@ impl RholangBackend {
         // which only inserts top-level contracts (is_top_level check at line 370 of symbol_table_builder.rs)
         let mut global_symbols_map = HashMap::new();
 
-        // Get all contract symbols from the global table
-        for (name, symbol) in global_table.symbols.read().unwrap().iter() {
+        // Get all contract symbols from the global table (lock-free iteration)
+        for entry in global_table.symbols.iter() {
+            let (name, symbol) = entry.pair();
             if matches!(symbol.symbol_type, crate::ir::symbol_table::SymbolType::Contract) {
                 debug!("link_symbols: Adding global contract '{}' from {} at {:?}",
                        name, symbol.declaration_uri, symbol.declaration_location);
@@ -73,12 +79,13 @@ impl RholangBackend {
             }
         }
         drop(global_table); // Release lock early
+        debug!("link_symbols: Phase 1 (collect global symbols) took {:?}", phase1_start.elapsed());
 
         debug!("link_symbols: Collected {} global contract symbols from global_table", global_symbols_map.len());
         debug!("link_symbols: Processing {} documents", self.workspace.documents.len());
-        info!("Linked symbols across {} files", self.workspace.documents.len());
 
-        // Resolve potential global references (lock-free iteration)
+        // Phase 2: Resolve potential global references (lock-free iteration)
+        let phase2_start = Instant::now();
         let mut resolutions = Vec::new();
         for entry in self.workspace.documents.iter() {
             let doc_uri = entry.key();
@@ -99,9 +106,14 @@ impl RholangBackend {
                 }
             }
         }
+        debug!("link_symbols: Phase 2 (resolve cross-file refs) took {:?}, found {} resolutions",
+               phase2_start.elapsed(), resolutions.len());
 
-        // Build global inverted index
+        // Phase 3: Build global inverted index from both cross-file refs and local refs
+        let phase3_start = Instant::now();
         let mut global_inverted_index_map = HashMap::new();
+
+        // First, add all cross-file global contract references
         for ((def_uri, def_pos), (use_uri, use_pos)) in resolutions {
             global_inverted_index_map
                 .entry((def_uri, def_pos))
@@ -109,27 +121,69 @@ impl RholangBackend {
                 .push((use_uri, use_pos));
         }
 
-        // Update global symbols (lock-free batch insert)
+        // Second, merge in local inverted indexes from each document
+        // These contain within-file symbol usages (new bindings, let bindings, etc.)
+        for entry in self.workspace.documents.iter() {
+            let doc_uri = entry.key();
+            let doc = entry.value();
+
+            debug!("Merging inverted index from {}: {} definitions", doc_uri, doc.inverted_index.len());
+
+            // Each document's inverted_index maps local Position -> Vec<Position>
+            // We need to convert to (Url, Position) -> Vec<(Url, Position)> format
+            // IMPORTANT: Normalize byte offset to 0 for lookup compatibility
+            for (def_pos, use_positions) in &doc.inverted_index {
+                debug!("  Definition at {:?} has {} usages", def_pos, use_positions.len());
+                let normalized_def_pos = IrPosition {
+                    row: def_pos.row,
+                    column: def_pos.column,
+                    byte: 0, // Normalize to 0 for consistent lookups
+                };
+                let key = (doc_uri.clone(), normalized_def_pos);
+                let uses: Vec<(Url, IrPosition)> = use_positions.iter()
+                    .map(|use_pos| (doc_uri.clone(), *use_pos))
+                    .collect();
+
+                global_inverted_index_map
+                    .entry(key)
+                    .or_insert_with(Vec::new)
+                    .extend(uses);
+            }
+        }
+        debug!("link_symbols: Phase 3 (build inverted index) took {:?}", phase3_start.elapsed());
+
+        debug!("Built global inverted index with {} definition entries", global_inverted_index_map.len());
+
+        // Phase 4: Update global symbols (lock-free batch insert)
+        let phase4_start = Instant::now();
         self.workspace.global_symbols.clear();
         for (name, location) in global_symbols_map {
             self.workspace.global_symbols.insert(name, location);
         }
+        debug!("link_symbols: Phase 4 (update global symbols) took {:?}", phase4_start.elapsed());
 
-        // Update global inverted index (requires lock for consistency)
-        {
-            let mut global_inverted_index = self.workspace.global_inverted_index.write().await;
-            *global_inverted_index = global_inverted_index_map;
+        // Phase 5: Update global inverted index (lock-free with DashMap)
+        let phase5_start = Instant::now();
+        self.workspace.global_inverted_index.clear();
+        for (key, value) in global_inverted_index_map {
+            self.workspace.global_inverted_index.insert(key, value);
         }
+        debug!("link_symbols: Phase 5 (populate inverted index) took {:?}", phase5_start.elapsed());
 
         let file_count = self.workspace.documents.len();
         let symbol_count = self.workspace.global_symbols.len();
 
-        // Broadcast workspace change event (ReactiveX Phase 2)
+        // Phase 6: Broadcast workspace change event (ReactiveX Phase 2)
+        let phase6_start = Instant::now();
         let _ = self.workspace_changes.send(WorkspaceChangeEvent {
             file_count,
             symbol_count,
             change_type: WorkspaceChangeType::SymbolsLinked,
         });
+        debug!("link_symbols: Phase 6 (broadcast event) took {:?}", phase6_start.elapsed());
+
+        info!("link_symbols: Total time: {:?} for {} files, {} symbols",
+              start_time.elapsed(), file_count, symbol_count);
     }
 
     /// Links symbols across all virtual documents in the workspace.

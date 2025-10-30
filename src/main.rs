@@ -29,6 +29,8 @@ use clap::Parser;
 use rholang_language_server::lsp::backend::RholangBackend;
 use rholang_language_server::logging::init_logger;
 use rholang_language_server::rnode_apis::lsp::lsp_client::LspClient;
+use rholang_language_server::wire_logger::WireLogger;
+use rholang_language_server::wire_logger_middleware::{LoggingReader, LoggingWriter};
 
 // Define communication mode enum for ServerConfig
 #[derive(Debug, Clone, PartialEq)]
@@ -50,6 +52,7 @@ struct ServerConfig {
     client_process_id: Option<u32>,
     no_rnode: bool,
     validator_backend: Option<String>,
+    wire_log: bool,
 }
 
 impl ServerConfig {
@@ -76,8 +79,8 @@ impl ServerConfig {
         struct Args {
             #[arg(
                 long,
-                default_value = "debug",
-                help = "Set the logging level for the server",
+                default_value = "info",
+                help = "Set the logging level for the server (can also use RUST_LOG for module-specific levels, e.g., RUST_LOG=rholang_language_server::lsp::backend=debug)",
                 value_parser = ["error", "warn", "info", "debug", "trace"]
             )]
             log_level: String,
@@ -137,6 +140,11 @@ impl ServerConfig {
                 value_name = "BACKEND"
             )]
             validator_backend: Option<String>,
+            #[arg(
+                long,
+                help = "Enable wire protocol logging (logs all LSP messages to separate wire.log file)"
+            )]
+            wire_log: bool,
         }
 
         let args = Args::parse();
@@ -203,6 +211,7 @@ impl ServerConfig {
             client_process_id: args.client_process_id,
             no_rnode: args.no_rnode,
             validator_backend,
+            wire_log: args.wire_log,
         })
     }
 }
@@ -501,6 +510,7 @@ async fn serve_connection<R, W>(
     client_process_id: Option<u32>,
     pid_channel: Option<tokio::sync::mpsc::Sender<u32>>,
     validator_backend: Option<String>,
+    wire_logger: WireLogger,
 ) where
     R: tokio::io::AsyncRead + Send + Unpin + 'static,
     W: tokio::io::AsyncWrite + Send + Unpin + 'static,
@@ -528,15 +538,32 @@ async fn serve_connection<R, W>(
 
     let shutdown_notify = conn_manager.shutdown_notify.clone();
     let task = tokio::spawn(async move {
-        let server = Server::new(read, write, socket);
-        tokio::select! {
-            _ = server.serve(service) => {
-                info!("Connection from {} closed normally", addr);
+        // Conditionally wrap streams with wire logger middleware only if enabled
+        if wire_logger.is_enabled() {
+            let logging_read = LoggingReader::new(read, wire_logger.clone());
+            let logging_write = LoggingWriter::new(write, wire_logger);
+            let server = Server::new(logging_read, logging_write, socket);
+            tokio::select! {
+                _ = server.serve(service) => {
+                    info!("Connection from {} closed normally", addr);
+                }
+                _ = conn_rx => {
+                    info!("Shutdown signal received for connection from {}", addr);
+                    shutdown_notify.notified().await;
+                    info!("Exit processed for connection from {}", addr);
+                }
             }
-            _ = conn_rx => {
-                info!("Shutdown signal received for connection from {}", addr);
-                shutdown_notify.notified().await;
-                info!("Exit processed for connection from {}", addr);
+        } else {
+            let server = Server::new(read, write, socket);
+            tokio::select! {
+                _ = server.serve(service) => {
+                    info!("Connection from {} closed normally", addr);
+                }
+                _ = conn_rx => {
+                    info!("Shutdown signal received for connection from {}", addr);
+                    shutdown_notify.notified().await;
+                    info!("Exit processed for connection from {}", addr);
+                }
             }
         }
     });
@@ -592,7 +619,8 @@ async fn monitor_client_process(client_pid: u32, conn_manager: ConnectionManager
 async fn run_stdio_server(
     rnode_client: Option<LspClient<tonic::transport::Channel>>,
     config: ServerConfig,
-    conn_manager: ConnectionManager
+    conn_manager: ConnectionManager,
+    wire_logger: WireLogger,
 ) -> io::Result<()> {
     info!("Starting server with stdin/stdout communication.");
 
@@ -636,13 +664,28 @@ async fn run_stdio_server(
 
     let shutdown_notify = conn_manager.shutdown_notify.clone();
     let server_task = tokio::spawn(async move {
-        let server = Server::new(stdin, stdout, socket);
-        tokio::select! {
-            _ = server.serve(service) => {
-                info!("Stdio server terminated normally");
+        // Conditionally wrap streams with wire logger middleware only if enabled
+        if config.wire_log {
+            let logging_stdin = LoggingReader::new(stdin, wire_logger.clone());
+            let logging_stdout = LoggingWriter::new(stdout, wire_logger);
+            let server = Server::new(logging_stdin, logging_stdout, socket);
+            tokio::select! {
+                _ = server.serve(service) => {
+                    info!("Stdio server terminated normally");
+                }
+                _ = shutdown_notify.notified() => {
+                    info!("Shutdown signal received, stopping stdio server");
+                }
             }
-            _ = shutdown_notify.notified() => {
-                info!("Shutdown signal received, stopping stdio server");
+        } else {
+            let server = Server::new(stdin, stdout, socket);
+            tokio::select! {
+                _ = server.serve(service) => {
+                    info!("Stdio server terminated normally");
+                }
+                _ = shutdown_notify.notified() => {
+                    info!("Shutdown signal received, stopping stdio server");
+                }
             }
         }
     });
@@ -659,7 +702,8 @@ async fn run_socket_server(
     rnode_client: Option<LspClient<tonic::transport::Channel>>,
     config: ServerConfig,
     conn_manager: ConnectionManager,
-    port: u16
+    port: u16,
+    wire_logger: WireLogger,
 ) -> io::Result<()> {
     info!("Starting server with TCP socket communication on port {}.", port);
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
@@ -683,7 +727,7 @@ async fn run_socket_server(
                         let buffered_read = BufReader::with_capacity(BUFFER_SIZE, read);
                         let buffered_write = tokio::io::BufWriter::with_capacity(BUFFER_SIZE, write);
 
-                        serve_connection(buffered_read, buffered_write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None, config.validator_backend.clone()).await;
+                        serve_connection(buffered_read, buffered_write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None, config.validator_backend.clone(), wire_logger.clone()).await;
                         conn_manager.remove_closed_connections().await;
                     }
                     Err(e) => {
@@ -706,7 +750,8 @@ async fn run_websocket_server(
     rnode_client: Option<LspClient<tonic::transport::Channel>>,
     config: ServerConfig,
     conn_manager: ConnectionManager,
-    port: u16
+    port: u16,
+    wire_logger: WireLogger,
 ) -> io::Result<()> {
     info!("Starting server with WebSocket communication on port {}.", port);
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
@@ -721,7 +766,7 @@ async fn run_websocket_server(
                             Ok(ws_stream) => {
                                 let ws_adapter = WebSocketStreamAdapter::new(ws_stream);
                                 let (read, write) = tokio::io::split(ws_adapter);
-                                serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None, config.validator_backend.clone()).await;
+                                serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None, config.validator_backend.clone(), wire_logger.clone()).await;
                                 conn_manager.remove_closed_connections().await;
                             }
                             Err(e) => {
@@ -749,7 +794,8 @@ async fn run_named_pipe_server(
     rnode_client: Option<LspClient<tonic::transport::Channel>>,
     config: &ServerConfig,
     conn_manager: ConnectionManager,
-    pipe_path: &String
+    pipe_path: &String,
+    wire_logger: WireLogger,
 ) -> io::Result<()> {
     #[cfg(windows)]
     {
@@ -760,7 +806,7 @@ async fn run_named_pipe_server(
                 _ = server.connect() => {
                     let addr = format!("named_pipe:{}", pipe_path);
                     let (read, write) = tokio::io::split(server);
-                    serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None, config.validator_backend.clone()).await;
+                    serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None, config.validator_backend.clone(), wire_logger.clone()).await;
                     conn_manager.remove_closed_connections().await;
                 }
                 _ = conn_manager.shutdown_notify.notified() => {
@@ -793,7 +839,7 @@ async fn run_named_pipe_server(
                         Ok((stream, addr)) => {
                             let addr = format!("unix_socket:{:?}", addr);
                             let (read, write) = tokio::io::split(stream);
-                            serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None, config.validator_backend.clone()).await;
+                            serve_connection(read, write, addr, rnode_client.clone(), &conn_manager, config.client_process_id, None, config.validator_backend.clone(), wire_logger.clone()).await;
                             conn_manager.remove_closed_connections().await;
                         }
                         Err(e) => {
@@ -823,7 +869,7 @@ async fn run_named_pipe_server(
 }
 
 async fn run_server(config: ServerConfig, conn_manager: ConnectionManager) -> io::Result<()> {
-    let _log_guard = init_logger(config.no_color, Some(&config.log_level), true)?;
+    let (_log_guard, wire_logger) = init_logger(config.no_color, Some(&config.log_level), true, config.wire_log)?;
 
     // Log build metadata for version tracking
     let git_hash = env!("BUILD_GIT_HASH");
@@ -869,10 +915,10 @@ async fn run_server(config: ServerConfig, conn_manager: ConnectionManager) -> io
     }
 
     match config.comm_mode {
-        CommMode::Stdio => run_stdio_server(rnode_client_opt, config, conn_manager).await?,
-        CommMode::Socket(port) => run_socket_server(rnode_client_opt, config, conn_manager, port).await?,
-        CommMode::WebSocket(port) => run_websocket_server(rnode_client_opt, config, conn_manager, port).await?,
-        CommMode::Pipe(ref pipe_path) => run_named_pipe_server(rnode_client_opt, &config, conn_manager, pipe_path).await?,
+        CommMode::Stdio => run_stdio_server(rnode_client_opt, config, conn_manager, wire_logger).await?,
+        CommMode::Socket(port) => run_socket_server(rnode_client_opt, config, conn_manager, port, wire_logger).await?,
+        CommMode::WebSocket(port) => run_websocket_server(rnode_client_opt, config, conn_manager, port, wire_logger).await?,
+        CommMode::Pipe(ref pipe_path) => run_named_pipe_server(rnode_client_opt, &config, conn_manager, pipe_path, wire_logger).await?,
     }
 
     info!("Server terminated.");

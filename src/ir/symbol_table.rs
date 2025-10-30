@@ -1,5 +1,5 @@
-use std::sync::RwLock;
-use rustc_hash::FxHashMap;  // Phase 2 optimization: ~2x faster than HashMap for internal use
+use dashmap::DashMap;
+use rustc_hash::FxBuildHasher;  // Phase 2 optimization: ~2x faster than default hasher
 use std::sync::Arc;
 use crate::ir::rholang_node::{Position, RholangNode};
 use tower_lsp::lsp_types::Url;
@@ -164,54 +164,56 @@ impl PatternSignature {
 
 /// A hierarchical symbol table with parent-child scoping.
 /// Includes PathMap-based pattern indexing for efficient contract lookups.
+/// Uses lock-free DashMap for concurrent access from multiple threads.
 #[derive(Debug, Clone)]
 pub struct SymbolTable {
-    /// Phase 2 optimization: FxHashMap is ~2x faster than HashMap for internal use
-    pub symbols: Arc<RwLock<FxHashMap<String, Arc<Symbol>>>>,
-    /// PathMap index: maps (name, arity) -> list of contract symbols with that signature
+    /// Lock-free concurrent symbol storage with FxHasher for performance
+    /// Eliminates lock contention during symbol lookups from multiple LSP requests
+    pub symbols: Arc<DashMap<String, Arc<Symbol>, FxBuildHasher>>,
+    /// Lock-free pattern index: maps (name, arity) -> list of contract symbols
     /// Enables O(1) lookup of contracts by pattern instead of O(n) iteration
-    /// Phase 2 optimization: FxHashMap is ~2x faster than HashMap
-    pattern_index: Arc<RwLock<FxHashMap<PatternSignature, Vec<Arc<Symbol>>>>>,
+    pattern_index: Arc<DashMap<PatternSignature, Vec<Arc<Symbol>>, FxBuildHasher>>,
     parent: Option<Arc<SymbolTable>>,
 }
 
 impl SymbolTable {
     /// Creates a new symbol table with an optional parent.
+    /// Uses lock-free DashMap with FxHasher for optimal concurrent performance.
     pub fn new(parent: Option<Arc<SymbolTable>>) -> Self {
         SymbolTable {
-            symbols: Arc::new(RwLock::new(FxHashMap::default())),
-            pattern_index: Arc::new(RwLock::new(FxHashMap::default())),
+            symbols: Arc::new(DashMap::with_hasher(FxBuildHasher::default())),
+            pattern_index: Arc::new(DashMap::with_hasher(FxBuildHasher::default())),
             parent,
         }
     }
 
     /// Inserts a symbol into the current scope.
     /// If the symbol is a contract, also updates the pattern index.
+    /// Lock-free operation using DashMap.
     pub fn insert(&self, symbol: Arc<Symbol>) {
         let name = symbol.name.clone();
-        self.symbols.write().unwrap().insert(name, symbol.clone());
+        self.symbols.insert(name, symbol.clone());
 
         // Update pattern index for contract symbols
         if let Some(sig) = PatternSignature::from_symbol(&symbol) {
-            let mut index = self.pattern_index.write().unwrap();
-            index.entry(sig).or_insert_with(Vec::new).push(symbol);
+            self.pattern_index.entry(sig).or_insert_with(Vec::new).push(symbol);
         }
     }
 
     /// Looks up contracts by pattern signature (name + arity).
     /// This provides O(1) lookup for pattern matching instead of O(n) iteration.
     /// Traverses up the scope chain if necessary.
+    /// Lock-free iteration using DashMap.
     pub fn lookup_contracts_by_pattern(&self, name: &str, arg_count: usize) -> Vec<Arc<Symbol>> {
         let mut results = Vec::new();
 
-        // Search current scope's pattern index
-        let index = self.pattern_index.read().unwrap();
-        for (sig, symbols) in index.iter() {
+        // Search current scope's pattern index (lock-free iteration)
+        for entry in self.pattern_index.iter() {
+            let (sig, symbols) = entry.pair();
             if sig.name == name && sig.matches_arity(arg_count) {
                 results.extend(symbols.iter().cloned());
             }
         }
-        drop(index);
 
         // Search parent scope if available
         if let Some(parent) = &self.parent {
@@ -223,16 +225,17 @@ impl SymbolTable {
 
     /// Looks up all contract overloads for a given name (all arities).
     /// Useful for code completion and documentation.
+    /// Lock-free iteration using DashMap.
     pub fn lookup_all_contract_overloads(&self, name: &str) -> Vec<Arc<Symbol>> {
         let mut results = Vec::new();
 
-        let index = self.pattern_index.read().unwrap();
-        for (sig, symbols) in index.iter() {
+        // Lock-free iteration
+        for entry in self.pattern_index.iter() {
+            let (sig, symbols) = entry.pair();
             if sig.name == name {
                 results.extend(symbols.iter().cloned());
             }
         }
-        drop(index);
 
         if let Some(parent) = &self.parent {
             results.extend(parent.lookup_all_contract_overloads(name));
@@ -242,31 +245,36 @@ impl SymbolTable {
     }
 
     /// Looks up a symbol by name, traversing up the scope chain if necessary.
+    /// Lock-free lookup using DashMap.
     pub fn lookup(&self, name: &str) -> Option<Arc<Symbol>> {
-        self.symbols.read().unwrap().get(name).cloned()
+        self.symbols.get(name).map(|entry| entry.value().clone())
             .or_else(|| self.parent.as_ref().and_then(|p| p.lookup(name)))
     }
 
     /// Updates the definition location of an existing symbol.
+    /// Lock-free mutation using DashMap.
     pub fn update_definition(&self, name: &str, location: Position) {
-        if let Some(symbol) = self.symbols.write().unwrap().get_mut(name) {
-            Arc::make_mut(symbol).definition_location = Some(location);
+        if let Some(mut entry) = self.symbols.get_mut(name) {
+            Arc::make_mut(entry.value_mut()).definition_location = Some(location);
         } else if let Some(parent) = &self.parent {
             parent.update_definition(name, location);
         }
     }
 
     /// Collects all symbols in the current scope and its parents for code completion.
+    /// Lock-free iteration using DashMap.
     pub fn collect_all_symbols(&self) -> Vec<Arc<Symbol>> {
-        let mut symbols = self.symbols.read().unwrap().values().cloned().collect::<Vec<_>>();
+        let mut symbols: Vec<Arc<Symbol>> = self.symbols.iter().map(|entry| entry.value().clone()).collect();
         if let Some(parent) = &self.parent {
             symbols.extend(parent.collect_all_symbols());
         }
         symbols
     }
 
+    /// Returns all symbols in the current scope only (no parent traversal).
+    /// Lock-free iteration using DashMap.
     pub fn current_symbols(&self) -> Vec<Arc<Symbol>> {
-        self.symbols.read().unwrap().values().cloned().collect()
+        self.symbols.iter().map(|entry| entry.value().clone()).collect()
     }
 
     /// Returns the parent symbol table, if any.

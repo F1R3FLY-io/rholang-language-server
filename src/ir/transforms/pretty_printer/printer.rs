@@ -883,7 +883,7 @@ mod tests {
 
     #[test]
     fn test_pretty_printer_aligned() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
         let rholang_code = r#"true|42"#;
         let tree = crate::tree_sitter::parse_code(rholang_code);
         let rope = Rope::from_str(rholang_code);
@@ -920,7 +920,7 @@ mod tests {
 
     #[test]
     fn test_pretty_printer_unaligned() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
         let rholang_code = r#"true|42"#;
         let tree = crate::tree_sitter::parse_code(rholang_code);
         let rope = Rope::from_str(rholang_code);
@@ -933,7 +933,7 @@ mod tests {
 
     #[test]
     fn test_pretty_print_send() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
         let rholang_code = r#"ch!("msg")"#;
         let tree = crate::tree_sitter::parse_code(rholang_code);
         let rope = Rope::from_str(rholang_code);
@@ -972,7 +972,7 @@ mod tests {
 
     #[test]
     fn test_pretty_print_special_chars() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
         let rholang_code = r#"ch!("Hello\nWorld")"#;
         let tree = crate::tree_sitter::parse_code(rholang_code);
         let rope = Rope::from_str(rholang_code);
@@ -1011,7 +1011,7 @@ mod tests {
 
     #[test]
     fn test_pretty_print_decl() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
         let rholang_code = r#"let x = "hello" in { Nil }"#;
         let tree = crate::tree_sitter::parse_code(rholang_code);
         let rope = Rope::from_str(rholang_code);
@@ -1073,7 +1073,7 @@ mod tests {
 
     #[test]
     fn test_pretty_print_new() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
         let rholang_code = r#"new x in { x!("hello") }"#;
         let tree = crate::tree_sitter::parse_code(rholang_code);
         let rope = Rope::from_str(rholang_code);
@@ -1145,7 +1145,7 @@ mod tests {
 
     #[test]
     fn test_pretty_print_ifelse() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
         let rholang_code = r#"if (true) { Nil } else { Nil }"#;
         let tree = crate::tree_sitter::parse_code(rholang_code);
         let rope = Rope::from_str(rholang_code);
@@ -1206,7 +1206,7 @@ mod tests {
 
     #[test]
     fn test_pretty_print_match() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
         let rholang_code = r#"match "hello" { "hello" => Nil }"#;
         let tree = crate::tree_sitter::parse_code(rholang_code);
         let rope = Rope::from_str(rholang_code);
@@ -1251,7 +1251,7 @@ mod tests {
 
     #[test]
     fn test_pretty_print_contract() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
         let rholang_code = r#"contract myContract(param) = { Nil }"#;
         let tree = crate::tree_sitter::parse_code(rholang_code);
         let rope = Rope::from_str(rholang_code);
@@ -1306,7 +1306,7 @@ mod tests {
 
     #[test]
     fn test_pretty_print_input() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
         let rholang_code = r#"for (x <- ch) { Nil }"#;
         let tree = crate::tree_sitter::parse_code(rholang_code);
         let rope = Rope::from_str(rholang_code);
@@ -1369,7 +1369,7 @@ mod tests {
 
     #[test]
     fn test_pretty_print_binop() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
         let rholang_code = r#"1 + 2"#;
         let tree = crate::tree_sitter::parse_code(rholang_code);
         let rope = Rope::from_str(rholang_code);
@@ -1407,7 +1407,7 @@ mod tests {
 
     #[test]
     fn test_pretty_print_list() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
         let rholang_code = r#"[1, 2, 3]"#;
         let tree = crate::tree_sitter::parse_code(rholang_code);
         let rope = Rope::from_str(rholang_code);
@@ -1452,7 +1452,7 @@ mod tests {
 
     #[test]
     fn test_pretty_print_comment() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
         let rholang_code = r#"// This is a comment
 Nil"#;
         let tree = crate::tree_sitter::parse_code(rholang_code);
@@ -1475,7 +1475,7 @@ Nil"#;
 
     #[test]
     fn test_pretty_print_match_fixed() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
         let code = r#"match "target" { "pat" => Nil }"#;
         let tree = crate::tree_sitter::parse_code(code);
         let rope = Rope::from_str(code);
@@ -1520,7 +1520,7 @@ Nil"#;
 
     #[test]
     fn test_pretty_print_input_fixed() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
         let code = r#"for (x <- ch) { Nil }"#;
         let tree = crate::tree_sitter::parse_code(code);
         let rope = Rope::from_str(code);

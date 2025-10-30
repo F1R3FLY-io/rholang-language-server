@@ -282,6 +282,8 @@ impl RholangBackend {
         uri: &Url,
         position: LspPosition,
     ) -> Option<GotoDefinitionResponse> {
+        use crate::lsp::features::goto_definition::GenericGotoDefinition;
+
         debug!("unified_goto_definition: uri={}, position={:?}", uri, position);
 
         // Detect language at position
@@ -303,7 +305,7 @@ impl RholangBackend {
         // Convert LSP position to IR position
         let ir_position = lsp_to_ir_position(position);
 
-        // Call generic goto-definition feature
+        // Call generic goto-definition feature (uses tree-based position finding)
         let goto_def_feature = GenericGotoDefinition;
         goto_def_feature
             .goto_definition(root.as_ref(), &ir_position, &doc_uri, &adapter)
@@ -425,10 +427,10 @@ impl RholangBackend {
         // Convert LSP position to IR position
         let ir_position = lsp_to_ir_position(position);
 
-        // Call generic find-references feature
+        // Call generic find-references feature (DashMap is lock-free)
         let refs_feature = GenericReferences;
         refs_feature
-            .find_references(root.as_ref(), &ir_position, &doc_uri, &adapter, include_declaration)
+            .find_references(root.as_ref(), &ir_position, &doc_uri, &adapter, include_declaration, &self.workspace.global_inverted_index)
             .await
     }
 
@@ -481,10 +483,10 @@ impl RholangBackend {
         // Convert LSP position to IR position
         let ir_position = lsp_to_ir_position(position);
 
-        // Call generic rename feature
+        // Call generic rename feature (DashMap is lock-free)
         let rename_feature = GenericRename;
         rename_feature
-            .rename(root.as_ref(), &ir_position, &doc_uri, &adapter, new_name)
+            .rename(root.as_ref(), &ir_position, &doc_uri, &adapter, new_name, &self.workspace.global_inverted_index)
             .await
     }
 }
@@ -509,10 +511,12 @@ mod tests {
                         delta_bytes: 0
                     },
                     0,
+                    0,
+                    0,
                 ),
                 metadata: None,
             }) as Arc<dyn SemanticNode>,
-            symbol_table: Arc::new(crate::ir::symbol_table::SymbolTable::new()),
+            symbol_table: Arc::new(crate::ir::symbol_table::SymbolTable::new(None)),
         };
     }
 }

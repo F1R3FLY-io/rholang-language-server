@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn test_find_semantic_node_at_position() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
 
         // Parse some Rholang code
         let code = r#"new x in { x!(42) }"#;
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn test_extract_variable_name() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
 
         // Parse Rholang code with a variable
         let code = r#"x"#;
@@ -218,7 +218,7 @@ mod tests {
 
     #[test]
     fn test_is_binding_node() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
 
         // Parse Rholang code with a binding (new)
         let code = r#"new x in { Nil }"#;
@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn test_is_invocation_node() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
 
         // Note: In Rholang, Send is currently categorized as LanguageSpecific
         // rather than Invocation. This test demonstrates the categorization.
@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn test_find_semantic_node_with_unified_ir() {
-        let _ = crate::logging::init_logger(false, Some("warn"), false);
+        let _ = crate::logging::init_logger(false, Some("warn"), false, false);
 
         // Parse Rholang and convert to UnifiedIR
         let code = r#"new x in { x!(42) }"#;

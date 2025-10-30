@@ -159,8 +159,9 @@ pub struct WorkspaceState {
     pub global_table: Arc<tokio::sync::RwLock<SymbolTable>>,
 
     /// Inverted index for cross-file references
-    /// Infrequent updates (only during workspace indexing)
-    pub global_inverted_index: Arc<tokio::sync::RwLock<HashMap<(Url, IrPosition), Vec<(Url, IrPosition)>>>>,
+    /// Lock-free for concurrent reads during LSP operations
+    /// Key: (definition_uri, definition_position), Value: list of (usage_uri, usage_position)
+    pub global_inverted_index: Arc<DashMap<(Url, IrPosition), Vec<(Url, IrPosition)>>>,
 
     /// Lock-free contract tracking by URI
     /// Allows concurrent contract discovery without blocking
@@ -193,7 +194,7 @@ impl WorkspaceState {
             documents: Arc::new(DashMap::new()),
             global_symbols: Arc::new(DashMap::new()),
             global_table: Arc::new(tokio::sync::RwLock::new(SymbolTable::new(None))),
-            global_inverted_index: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            global_inverted_index: Arc::new(DashMap::new()),
             global_contracts: Arc::new(DashMap::new()),
             global_calls: Arc::new(DashMap::new()),
             global_index: Arc::new(std::sync::RwLock::new(GlobalSymbolIndex::new())),
