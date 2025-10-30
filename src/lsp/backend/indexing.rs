@@ -51,6 +51,7 @@ impl RholangBackend {
         global_table: Arc<SymbolTable>,
         global_index: Arc<std::sync::RwLock<crate::ir::global_index::GlobalSymbolIndex>>,
         version_counter: &Arc<std::sync::atomic::AtomicI32>,
+        rholang_symbols: Option<Arc<crate::lsp::rholang_global_symbols::RholangGlobalSymbols>>,
     ) -> Result<CachedDocument, String> {
         // Clear old symbols for this URI from global_table BEFORE indexing
         // This ensures we don't have stale symbols from previous versions of the file
@@ -60,7 +61,8 @@ impl RholangBackend {
         let mut pipeline = Pipeline::new();
 
         // Symbol table builder for local symbol tracking
-        let builder = Arc::new(SymbolTableBuilder::new(ir.clone(), uri.clone(), global_table.clone()));
+        // Phase 3.4: Pass rholang_symbols for direct indexing
+        let builder = Arc::new(SymbolTableBuilder::new(ir.clone(), uri.clone(), global_table.clone(), rholang_symbols));
         pipeline.add_transform(crate::ir::pipeline::Transform {
             id: "symbol_table_builder".to_string(),
             dependencies: vec![],
@@ -78,7 +80,7 @@ impl RholangBackend {
         let mut index_builder = SymbolIndexBuilder::new(global_index.clone(), uri.clone(), positions.clone());
         index_builder.index_tree(&transformed_ir);
         let inverted_index = builder.get_inverted_index();
-        let potential_global_refs = builder.get_potential_global_refs();
+        // Phase 4: Removed get_potential_global_refs() and resolve_local_potentials() - now handled by rholang_symbols
         let symbol_table = transformed_ir.metadata()
             .and_then(|m| m.get("symbol_table"))
             .map(|st| Arc::clone(st.downcast_ref::<Arc<SymbolTable>>().unwrap()))
@@ -86,7 +88,6 @@ impl RholangBackend {
                 debug!("No symbol table found on root for {}, using default empty table", uri);
                 Arc::new(SymbolTable::new(Some(global_table.clone())))
             });
-        builder.resolve_local_potentials(&symbol_table);
         let version = version_counter.fetch_add(1, Ordering::SeqCst);
 
         debug!("Processed document {}: {} symbols, {} usages, version {}",
@@ -139,7 +140,6 @@ impl RholangBackend {
             version,
             text: text.clone(),
             positions,
-            potential_global_refs,
             symbol_index,
             content_hash,
         })
@@ -153,6 +153,7 @@ impl RholangBackend {
         // Lock and clone global_table for use in blocking task
         let global_table = Arc::new(self.workspace.global_table.read().await.clone());
         let global_index = self.workspace.global_index.clone();
+        let rholang_symbols = Some(self.workspace.rholang_symbols.clone());
 
         // Delegate CPU-intensive work to blocking thread pool
         let uri_clone = uri.clone();
@@ -168,6 +169,7 @@ impl RholangBackend {
                 global_table,
                 global_index,
                 &version_counter,
+                rholang_symbols,
             )
         })
         .await
@@ -183,7 +185,8 @@ impl RholangBackend {
         let global_index = self.workspace.global_index.clone();
 
         // Symbol table builder for local symbol tracking
-        let builder = Arc::new(SymbolTableBuilder::new(ir.clone(), uri.clone(), global_table.clone()));
+        // TODO Phase 3: Pass Some(rholang_symbols) for direct indexing (deprecated method)
+        let builder = Arc::new(SymbolTableBuilder::new(ir.clone(), uri.clone(), global_table.clone(), None));
         pipeline.add_transform(crate::ir::pipeline::Transform {
             id: "symbol_table_builder".to_string(),
             dependencies: vec![],
@@ -204,7 +207,7 @@ impl RholangBackend {
         let mut index_builder = SymbolIndexBuilder::new(global_index.clone(), uri.clone(), positions.clone());
         index_builder.index_tree(&transformed_ir);
         let inverted_index = builder.get_inverted_index();
-        let potential_global_refs = builder.get_potential_global_refs();
+        // Phase 4: Removed get_potential_global_refs() and resolve_local_potentials() - now handled by rholang_symbols
         let symbol_table = transformed_ir.metadata()
             .and_then(|m| m.get("symbol_table"))
             .map(|st| Arc::clone(st.downcast_ref::<Arc<SymbolTable>>().unwrap()))
@@ -212,7 +215,6 @@ impl RholangBackend {
                 debug!("No symbol table found on root for {}, using default empty table", uri);
                 Arc::new(SymbolTable::new(Some(global_table.clone())))
             });
-        builder.resolve_local_potentials(&symbol_table);
         let version = self.version_counter.fetch_add(1, Ordering::SeqCst);
 
         debug!("Processed document {}: {} symbols, {} usages, version {}",
@@ -268,7 +270,6 @@ impl RholangBackend {
             version,
             text: text.clone(),
             positions,
-            potential_global_refs,
             symbol_index,
             content_hash,
         })
@@ -427,7 +428,7 @@ impl RholangBackend {
         let global_table = Arc::new(self.workspace.global_table.read().await.clone());
         let symbol_table = Arc::new(SymbolTable::new(Some(global_table)));
         let inverted_index = HashMap::new();
-        let potential_global_refs = Vec::new();
+        // Phase 4: Removed potential_global_refs - now handled by rholang_symbols
 
         // Create empty symbol index
         let symbol_index = Arc::new(crate::lsp::symbol_index::SymbolIndex::new(Vec::new()));
@@ -446,7 +447,6 @@ impl RholangBackend {
             version,
             text: rope,
             positions,
-            potential_global_refs,
             symbol_index,
             content_hash,
         };
@@ -559,6 +559,7 @@ impl RholangBackend {
         let global_table = Arc::new(self.workspace.global_table.read().await.clone());
         let global_index = self.workspace.global_index.clone();
         let version_counter = self.version_counter.clone();
+        let rholang_symbols = Some(self.workspace.rholang_symbols.clone());
 
         let results: Vec<(Url, Result<CachedDocument, String>)> = tokio::task::spawn_blocking(move || {
             paths
@@ -591,6 +592,7 @@ impl RholangBackend {
                                 global_table.clone(),
                                 global_index.clone(),
                                 &version_counter,
+                                rholang_symbols.clone(),
                             );
 
                             return Some((uri, result));

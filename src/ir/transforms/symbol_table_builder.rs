@@ -14,62 +14,52 @@ use crate::ir::visitor::Visitor;
 /// Maps symbol declaration positions to their usage locations within a file.
 pub type InvertedIndex = HashMap<Position, Vec<Position>>;
 
-/// Builds hierarchical symbol tables and an inverted index for Rholang IR trees.
+/// Builds hierarchical symbol tables and populates global symbol storage for Rholang IR trees.
 /// Manages scope creation for nodes like `new`, `let`, `contract`, `input`, `case`, and `branch`.
+///
+/// Phase 3 Refactoring: Now directly populates RholangGlobalSymbols during parsing,
+/// eliminating the need for separate link_symbols phase.
+///
+/// Phase 4: Removed potential_global_refs - now handled directly by rholang_symbols.
 #[derive(Debug)]
 pub struct SymbolTableBuilder {
     root: Arc<RholangNode>,  // Root IR node with static lifetime
     current_uri: Url,          // URI of the current file
     current_table: RwLock<Arc<SymbolTable>>,  // Current scope's symbol table
-    inverted_index: RwLock<InvertedIndex>,    // Tracks local symbol usages
-    potential_global_refs: RwLock<Vec<(String, Position)>>,  // Potential unresolved global contract calls (name, use_pos)
-    global_table: Arc<SymbolTable>,  // Global scope for cross-file symbols (passed but not used as parent)
+    inverted_index: RwLock<InvertedIndex>,    // Tracks local symbol usages (TODO: Phase 4.3 - remove)
+    global_table: Arc<SymbolTable>,  // Global scope for cross-file symbols
+    rholang_symbols: Option<Arc<crate::lsp::rholang_global_symbols::RholangGlobalSymbols>>,  // Direct global symbol storage (Phase 3+)
 }
 
 impl SymbolTableBuilder {
     /// Creates a new builder with a root IR node, file URI, and global symbol table.
-    pub fn new(root: Arc<RholangNode>, uri: Url, global_table: Arc<SymbolTable>) -> Self {
-        let local_table = Arc::new(SymbolTable::new(Some(global_table.clone())));  // Chain local to global
+    ///
+    /// # Arguments
+    /// * `root` - Root IR node
+    /// * `uri` - Current file URI
+    /// * `global_table` - Global symbol table for scope chain
+    /// * `rholang_symbols` - Optional global symbol storage for direct indexing (Phase 3+)
+    pub fn new(
+        root: Arc<RholangNode>,
+        uri: Url,
+        global_table: Arc<SymbolTable>,
+        rholang_symbols: Option<Arc<crate::lsp::rholang_global_symbols::RholangGlobalSymbols>>,
+    ) -> Self {
+        let local_table = Arc::new(SymbolTable::new(Some(global_table.clone())));
         Self {
             root,
             current_uri: uri,
             current_table: RwLock::new(local_table),
             inverted_index: RwLock::new(HashMap::new()),
-            potential_global_refs: RwLock::new(Vec::new()),
             global_table,
+            rholang_symbols,
         }
     }
 
     /// Returns a clone of the local inverted index.
+    /// TODO: Phase 4.3 - Remove this along with inverted_index field
     pub fn get_inverted_index(&self) -> InvertedIndex {
         self.inverted_index.read().unwrap().clone()
-    }
-
-    /// Returns a clone of the potential global references.
-    pub fn get_potential_global_refs(&self) -> Vec<(String, Position)> {
-        self.potential_global_refs.read().unwrap().clone()
-    }
-
-    /// Resolves potentials that can be bound locally after full traversal (e.g., forward references in same file).
-    pub fn resolve_local_potentials(&self, symbol_table: &Arc<SymbolTable>) {
-        let potentials = self.potential_global_refs.write().expect("Failed to lock potential_global_refs").clone();
-        let mut to_remove = Vec::new();
-        for (i, (name, use_pos)) in potentials.iter().enumerate() {
-            if let Some(symbol) = symbol_table.lookup(name) {
-                if symbol.declaration_uri == self.current_uri {
-                    self.inverted_index.write().expect("Failed to lock inverted_index")
-                        .entry(symbol.declaration_location)
-                        .or_insert_with(Vec::new)
-                        .push(*use_pos);
-                    trace!("Resolved local potential '{}' at {:?}", name, use_pos);
-                    to_remove.push(i);
-                }
-            }
-        }
-        let mut potentials_guard = self.potential_global_refs.write().expect("Failed to lock potential_global_refs");
-        for &i in to_remove.iter().rev() {
-            potentials_guard.swap_remove(i);
-        }
     }
 
     /// Pushes a new scope onto the stack, linking it to the current scope as its parent.
@@ -391,6 +381,9 @@ impl Visitor for SymbolTableBuilder {
             };
             drop(current_table_guard);
 
+            // Clone decl_uri before it's moved (needed for rholang_symbols later)
+            let decl_uri_for_global = decl_uri.clone();
+
             // Create contract symbol with pattern information
             let mut symbol = Symbol::new_contract(
                 contract_name.clone(),
@@ -407,6 +400,33 @@ impl Visitor for SymbolTableBuilder {
 
             // Insert into symbol table (automatically updates pattern index)
             insert_table.insert(symbol.clone());
+
+            // Phase 3.2: If rholang_symbols is available and this is top-level, insert directly
+            if is_top_level {
+                if let Some(ref rholang_symbols) = self.rholang_symbols {
+                    use crate::lsp::rholang_global_symbols::SymbolLocation;
+
+                    let global_decl_loc = SymbolLocation::new(
+                        decl_uri_for_global,
+                        decl_location,
+                    );
+
+                    // Insert declaration (ignore errors - may already exist from forward ref)
+                    let _ = rholang_symbols.insert_declaration(
+                        contract_name.clone(),
+                        SymbolType::Contract,
+                        global_decl_loc.clone(),
+                    );
+
+                    // Contract body is the definition location
+                    if contract_pos != global_decl_loc.position {
+                        let def_location = SymbolLocation::new(self.current_uri.clone(), contract_pos);
+                        let _ = rholang_symbols.set_definition(&contract_name, def_location);
+                    }
+
+                    trace!("Indexed global contract '{}' in rholang_symbols at {:?}", contract_name, contract_pos);
+                }
+            }
 
             Some(symbol)
         } else {
@@ -696,15 +716,40 @@ impl Visitor for SymbolTableBuilder {
                                 trace!("Recorded local usage of '{}' at {:?} under definition", name, usage_location);
                             }
                         }
+
+                        // Phase 3.3: If rholang_symbols available, add reference
+                        if let Some(ref rholang_symbols) = self.rholang_symbols {
+                            use crate::lsp::rholang_global_symbols::SymbolLocation;
+                            let ref_location = SymbolLocation::new(self.current_uri.clone(), usage_location);
+                            let _ = rholang_symbols.add_reference(name, ref_location);
+                            trace!("Added reference to rholang_symbols for '{}' at {:?}", name, usage_location);
+                        }
                     } else {
-                        self.potential_global_refs.write().unwrap().push((name.clone(), usage_location));
-                        trace!("Added global reference for '{}' at {:?}", name, usage_location);
+                        // Phase 4: Removed potential_global_refs push - now handled by rholang_symbols
+                        trace!("Cross-file reference for '{}' at {:?}", name, usage_location);
+
+                        // Phase 3.3: If rholang_symbols available, try to add reference for cross-file symbols
+                        if let Some(ref rholang_symbols) = self.rholang_symbols {
+                            use crate::lsp::rholang_global_symbols::SymbolLocation;
+                            let ref_location = SymbolLocation::new(self.current_uri.clone(), usage_location);
+                            let _ = rholang_symbols.add_reference(name, ref_location);
+                            trace!("Added cross-file reference to rholang_symbols for '{}' at {:?}", name, usage_location);
+                        }
                     }
                 }
             } else {
                 let usage_location = node.absolute_start(&self.root);
-                self.potential_global_refs.write().unwrap().push((name.clone(), usage_location));
-                trace!("Added potential unbound reference for '{}' at {:?}", name, usage_location);
+                // Phase 4: Removed potential_global_refs push - now handled by rholang_symbols
+                trace!("Unbound reference for '{}' at {:?}", name, usage_location);
+
+                // Phase 3.3: If rholang_symbols available, try to add reference
+                // (may fail if symbol not yet declared - that's OK, forward refs handled separately)
+                if let Some(ref rholang_symbols) = self.rholang_symbols {
+                    use crate::lsp::rholang_global_symbols::SymbolLocation;
+                    let ref_location = SymbolLocation::new(self.current_uri.clone(), usage_location);
+                    let _ = rholang_symbols.add_reference(name, ref_location);
+                    trace!("Tried to add reference to rholang_symbols for unbound '{}' at {:?}", name, usage_location);
+                }
             }
         } else {
             trace!("Skipped empty variable name in var usage at {:?}", node.absolute_start(&self.root));

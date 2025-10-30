@@ -62,6 +62,8 @@ pub struct VersionedChanges {
 }
 
 /// Represents a cached document with IR, symbol table, and metadata for LSP queries.
+///
+/// Phase 4: Removed potential_global_refs - now handled by rholang_symbols in WorkspaceState.
 #[derive(Debug)]
 pub struct CachedDocument {
     /// Language-specific IR (RholangNode or MettaNode)
@@ -76,7 +78,7 @@ pub struct CachedDocument {
     pub tree: Arc<Tree>,
     /// Symbol table for this document
     pub symbol_table: Arc<SymbolTable>,
-    /// Inverted index for rename/references
+    /// Inverted index for rename/references (TODO: Phase 4.3 - remove)
     pub inverted_index: InvertedIndex,
     /// Document version number
     pub version: i32,
@@ -84,8 +86,6 @@ pub struct CachedDocument {
     pub text: Rope,
     /// Position mappings for IR nodes
     pub positions: Arc<std::collections::HashMap<usize, (IrPosition, IrPosition)>>,
-    /// Potential cross-file symbol references
-    pub potential_global_refs: Vec<(String, IrPosition)>,
     /// Suffix array-based symbol index for O(m log n + k) substring search
     pub symbol_index: Arc<SymbolIndex>,
     /// Fast hash of document content for change detection
@@ -182,6 +182,11 @@ pub struct WorkspaceState {
     /// Example: global_virtual_symbols.get("metta").get("get_neighbors") = [(virtual_uri_1, range1), ...]
     pub global_virtual_symbols: Arc<DashMap<String, Arc<DashMap<String, Vec<(Url, tower_lsp::lsp_types::Range)>>>>>,
 
+    /// NEW: Unified Rholang symbol storage (replaces global_symbols + global_table + global_inverted_index)
+    /// Lock-free, single-source-of-truth for all Rholang symbols
+    /// Enforces Rholang constraints: 1 declaration + 0-1 definition + N references
+    pub rholang_symbols: Arc<crate::lsp::rholang_global_symbols::RholangGlobalSymbols>,
+
     /// Phase 2 optimization: Track workspace indexing state for lazy initialization
     /// Wrapped in RwLock as it's updated infrequently (only during indexing lifecycle changes)
     pub indexing_state: Arc<tokio::sync::RwLock<IndexingState>>,
@@ -199,6 +204,7 @@ impl WorkspaceState {
             global_calls: Arc::new(DashMap::new()),
             global_index: Arc::new(std::sync::RwLock::new(GlobalSymbolIndex::new())),
             global_virtual_symbols: Arc::new(DashMap::new()),
+            rholang_symbols: Arc::new(crate::lsp::rholang_global_symbols::RholangGlobalSymbols::new()),
             indexing_state: Arc::new(tokio::sync::RwLock::new(IndexingState::Idle)),
         }
     }
