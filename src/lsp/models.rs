@@ -150,10 +150,6 @@ pub struct WorkspaceState {
     /// Most frequently accessed - needs zero-contention reads
     pub documents: Arc<DashMap<Url, Arc<CachedDocument>>>,
 
-    /// Lock-free global symbol lookup
-    /// Hot path for goto_definition and references
-    pub global_symbols: Arc<DashMap<String, (Url, IrPosition)>>,
-
     /// Symbol table for global scope
     /// Infrequent updates (only during workspace indexing)
     pub global_table: Arc<tokio::sync::RwLock<SymbolTable>>,
@@ -197,7 +193,6 @@ impl WorkspaceState {
     pub fn new() -> Self {
         Self {
             documents: Arc::new(DashMap::new()),
-            global_symbols: Arc::new(DashMap::new()),
             global_table: Arc::new(tokio::sync::RwLock::new(SymbolTable::new(None))),
             global_inverted_index: Arc::new(DashMap::new()),
             global_contracts: Arc::new(DashMap::new()),

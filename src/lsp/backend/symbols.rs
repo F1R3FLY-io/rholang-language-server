@@ -30,9 +30,9 @@ impl RholangBackend {
     /// like rename, goto-definition, and references to avoid race conditions
     /// with the debounced symbol linker.
     pub(crate) async fn needs_symbol_linking(&self) -> bool {
-        // Lock-free access via DashMap
+        // Phase 6: Use rholang_symbols instead of global_symbols
         let doc_count = self.workspace.documents.len();
-        let symbol_count = self.workspace.global_symbols.len();
+        let symbol_count = self.workspace.rholang_symbols.len();
 
         // If we have documents but no global symbols, we definitely need linking
         // This handles the race condition where documents are indexed but
@@ -47,39 +47,22 @@ impl RholangBackend {
     ///
     /// Phase 4 Refactored: Simplified symbol linking using rholang_symbols
     ///
+    /// Phase 6: Simplified symbol linking after migration to rholang_symbols.
+    ///
     /// Instead of the old 6-phase algorithm that collected symbols from multiple sources,
     /// this now syncs from the single source of truth (rholang_symbols) to legacy structures.
     ///
-    /// Legacy structures maintained for backward compatibility during Phase 5 migration:
-    /// - workspace.global_symbols: DashMap<String, (Url, Position)>
+    /// Legacy structures maintained for backward compatibility:
     /// - workspace.global_inverted_index: DashMap<(Url, Position), Vec<(Url, Position)>>
+    ///   (Used by virtual document features and local symbol references)
     ///
-    /// These will be removed once all consumers are updated to use rholang_symbols directly.
+    /// Phase 6 removed workspace.global_symbols - all consumers now use rholang_symbols directly.
     pub(crate) async fn link_symbols(&self) {
         use std::time::Instant;
         let start_time = Instant::now();
         debug!("link_symbols: Starting simplified symbol sync from rholang_symbols");
 
-        // Phase 1: Sync rholang_symbols → global_symbols (for goto-definition backward compat)
-        let phase1_start = Instant::now();
-        self.workspace.global_symbols.clear();
-
-        for symbol_name in self.workspace.rholang_symbols.symbol_names() {
-            if let Some(symbol_decl) = self.workspace.rholang_symbols.lookup(&symbol_name) {
-                // Only contracts are in global_symbols (Rholang semantic rule)
-                if matches!(symbol_decl.symbol_type, crate::ir::symbol_table::SymbolType::Contract) {
-                    self.workspace.global_symbols.insert(
-                        symbol_name.clone(),
-                        (symbol_decl.declaration.uri.clone(), symbol_decl.declaration.position),
-                    );
-                    trace!("Synced contract '{}' to global_symbols", symbol_name);
-                }
-            }
-        }
-        debug!("link_symbols: Phase 1 (sync to global_symbols) took {:?}, {} contracts",
-               phase1_start.elapsed(), self.workspace.global_symbols.len());
-
-        // Phase 2: Build inverted index from rholang_symbols references
+        // Phase 1: Build inverted index from rholang_symbols references
         let phase2_start = Instant::now();
         let mut global_inverted_index_map = HashMap::new();
 
@@ -130,21 +113,21 @@ impl RholangBackend {
             }
         }
 
-        debug!("link_symbols: Phase 2 (build inverted index) took {:?}, {} entries",
+        debug!("link_symbols: Phase 1 (build inverted index) took {:?}, {} entries",
                phase2_start.elapsed(), global_inverted_index_map.len());
 
-        // Phase 3: Populate global_inverted_index
+        // Phase 2: Populate global_inverted_index
         let phase3_start = Instant::now();
         self.workspace.global_inverted_index.clear();
         for (key, value) in global_inverted_index_map {
             self.workspace.global_inverted_index.insert(key, value);
         }
-        debug!("link_symbols: Phase 3 (populate global_inverted_index) took {:?}", phase3_start.elapsed());
+        debug!("link_symbols: Phase 2 (populate global_inverted_index) took {:?}", phase3_start.elapsed());
 
         let file_count = self.workspace.documents.len();
-        let symbol_count = self.workspace.global_symbols.len();
+        let symbol_count = self.workspace.rholang_symbols.len();
 
-        // Phase 4: Broadcast workspace change event (ReactiveX Phase 2)
+        // Phase 3: Broadcast workspace change event (ReactiveX Phase 2)
         let phase4_start = Instant::now();
         let _ = self.workspace_changes.send(WorkspaceChangeEvent {
             file_count,
@@ -430,19 +413,18 @@ impl RholangBackend {
                     if var_name == name {
                         // This Var is a contract name - handle as global symbol
                         debug!("Var '{}' is a contract name", name);
-                        // Lock-free global symbol lookup
-                        if let Some(entry) = self.workspace.global_symbols.get(name) {
-                            let (def_uri, def_pos) = entry.value().clone();
+                        // Phase 5: Use rholang_symbols directly instead of global_symbols
+                        if let Some(symbol_decl) = self.workspace.rholang_symbols.lookup(name) {
                             debug!(
                                 "Found global contract symbol '{}' at {}:{} in {}",
                                 name, position.line, position.character, uri
                             );
                             return Some(Arc::new(Symbol {
                                 name: name.to_string(),
-                                symbol_type: SymbolType::Contract,
-                                declaration_uri: def_uri.clone(),
-                                declaration_location: def_pos,
-                                definition_location: Some(def_pos),
+                                symbol_type: symbol_decl.symbol_type,
+                                declaration_uri: symbol_decl.declaration.uri.clone(),
+                                declaration_location: symbol_decl.declaration.position,
+                                definition_location: symbol_decl.definition.as_ref().map(|d| d.position),
                                 contract_pattern: None,
                             }));
                         }
@@ -460,19 +442,18 @@ impl RholangBackend {
             return Some(symbol);
         }
 
-        // Search global symbols for unbound references (lock-free)
-        if let Some(entry) = self.workspace.global_symbols.get(name) {
-            let (def_uri, def_pos) = entry.value().clone();
+        // Phase 5: Search rholang_symbols for unbound references (lock-free)
+        if let Some(symbol_decl) = self.workspace.rholang_symbols.lookup(name) {
             debug!(
                 "Found global symbol '{}' for unbound reference at {}:{} in {}",
                 name, position.line, position.character, uri
             );
             return Some(Arc::new(Symbol {
                 name: name.to_string(),
-                symbol_type: SymbolType::Contract,
-                declaration_uri: def_uri.clone(),
-                declaration_location: def_pos,
-                definition_location: Some(def_pos),
+                symbol_type: symbol_decl.symbol_type,
+                declaration_uri: symbol_decl.declaration.uri.clone(),
+                declaration_location: symbol_decl.declaration.position,
+                definition_location: symbol_decl.definition.as_ref().map(|d| d.position),
                 contract_pattern: None,
             }));
         }
@@ -498,19 +479,18 @@ impl RholangBackend {
             _ => None,
         }?;
 
-        // Lock-free global symbol lookup
-        if let Some(entry) = self.workspace.global_symbols.get(&contract_name) {
-            let (def_uri, def_pos) = entry.value().clone();
+        // Phase 5: Use rholang_symbols directly instead of global_symbols
+        if let Some(symbol_decl) = self.workspace.rholang_symbols.lookup(&contract_name) {
             debug!(
                 "Found contract symbol '{}' at {}:{} in {}",
                 contract_name, position.line, position.character, uri
             );
             return Some(Arc::new(Symbol {
                 name: contract_name.to_string(),
-                symbol_type: SymbolType::Contract,
-                declaration_uri: def_uri.clone(),
-                declaration_location: def_pos,
-                definition_location: Some(def_pos),
+                symbol_type: symbol_decl.symbol_type,
+                declaration_uri: symbol_decl.declaration.uri.clone(),
+                declaration_location: symbol_decl.declaration.position,
+                definition_location: symbol_decl.definition.as_ref().map(|d| d.position),
                 contract_pattern: None,
             }));
         }
@@ -542,19 +522,18 @@ impl RholangBackend {
             // Position is within the channel, extract the name
             if let RholangNode::Var { name: channel_name, .. } = &**channel {
                 debug!("Send channel is Var '{}'", channel_name);
-                // Lock-free global symbol lookup
-                if let Some(entry) = self.workspace.global_symbols.get(channel_name) {
-                    let (def_uri, def_pos) = entry.value().clone();
+                // Phase 5: Use rholang_symbols directly instead of global_symbols
+                if let Some(symbol_decl) = self.workspace.rholang_symbols.lookup(channel_name) {
                     debug!(
                         "Found global contract symbol '{}' for Send at {}:{} in {}",
                         channel_name, position.line, position.character, uri
                     );
                     return Some(Arc::new(Symbol {
                         name: channel_name.to_string(),
-                        symbol_type: SymbolType::Contract,
-                        declaration_uri: def_uri.clone(),
-                        declaration_location: def_pos,
-                        definition_location: Some(def_pos),
+                        symbol_type: symbol_decl.symbol_type,
+                        declaration_uri: symbol_decl.declaration.uri.clone(),
+                        declaration_location: symbol_decl.declaration.position,
+                        definition_location: symbol_decl.definition.as_ref().map(|d| d.position),
                         contract_pattern: None,
                     }));
                 }
@@ -586,19 +565,18 @@ impl RholangBackend {
             );
 
             if q_start.byte <= byte && byte <= q_end.byte {
-                // Lock-free global symbol lookup
-                if let Some(entry) = self.workspace.global_symbols.get(quoted_name) {
-                    let (def_uri, def_pos) = entry.value().clone();
+                // Phase 5: Use rholang_symbols directly instead of global_symbols
+                if let Some(symbol_decl) = self.workspace.rholang_symbols.lookup(quoted_name) {
                     debug!(
                         "Found global contract symbol '{}' for Quote at {}:{} in {}",
                         quoted_name, position.line, position.character, uri
                     );
                     return Some(Arc::new(Symbol {
                         name: quoted_name.to_string(),
-                        symbol_type: SymbolType::Contract,
-                        declaration_uri: def_uri.clone(),
-                        declaration_location: def_pos,
-                        definition_location: Some(def_pos),
+                        symbol_type: symbol_decl.symbol_type,
+                        declaration_uri: symbol_decl.declaration.uri.clone(),
+                        declaration_location: symbol_decl.declaration.position,
+                        definition_location: symbol_decl.definition.as_ref().map(|d| d.position),
                         contract_pattern: None,
                     }));
                 }

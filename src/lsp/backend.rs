@@ -618,20 +618,13 @@ impl RholangBackend {
             }
         }
 
-        // Add global usages if the symbol is a contract (DashMap is lock-free)
+        // Phase 5: Add global references using rholang_symbols (lock-free)
         if symbol.symbol_type == SymbolType::Contract {
-            // Normalize byte offset to 0 for consistent lookup (matches index key format)
-            let normalized_decl_pos = IrPosition {
-                row: decl_pos.row,
-                column: decl_pos.column,
-                byte: 0,
-            };
-            if let Some(global_usages) = self.workspace.global_inverted_index.get(&(decl_uri.clone(), normalized_decl_pos)) {
-                for &(ref use_uri, use_pos) in global_usages.value() {
-                    let range = Self::position_to_range(use_pos, name_len);
-                    locations.push((use_uri.clone(), range));
-                    debug!("Added global usage of '{}' at {}:{:?}", symbol.name, use_uri, use_pos);
-                }
+            let global_refs = self.workspace.rholang_symbols.get_references(&symbol.name);
+            for ref_loc in global_refs {
+                let range = Self::position_to_range(ref_loc.position, name_len);
+                locations.push((ref_loc.uri.clone(), range));
+                debug!("Added global usage of '{}' at {}:{:?}", symbol.name, ref_loc.uri, ref_loc.position);
             }
         }
 

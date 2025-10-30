@@ -453,7 +453,7 @@ impl RholangBackend {
 
         // Broadcast workspace change event (ReactiveX Phase 2)
         let file_count = self.workspace.documents.len();
-        let symbol_count = self.workspace.global_symbols.len();
+        let symbol_count = self.workspace.rholang_symbols.len();
 
         let _ = self.workspace_changes.send(WorkspaceChangeEvent {
             file_count,
@@ -664,8 +664,7 @@ impl RholangBackend {
         // 3. Clearing here would delete symbols that were just added by SymbolTableBuilder
         // 4. global_table uses interior mutability, so changes are visible across all Arc clones
 
-        // Remove old global symbols for this URI
-        self.workspace.global_symbols.retain(|_, (u, _)| u != uri);
+        // Phase 6: No need to remove global_symbols - now handled by rholang_symbols directly
 
         // Remove old inverted index entries for this URI (DashMap is lock-free)
         self.workspace.global_inverted_index.retain(|(d_uri, _), us| {
@@ -697,7 +696,7 @@ impl RholangBackend {
         }
 
         let file_count = self.workspace.documents.len();
-        let symbol_count = self.workspace.global_symbols.len();
+        let symbol_count = self.workspace.rholang_symbols.len();
 
         // Broadcast workspace change event (outside lock)
         let _ = self.workspace_changes.send(WorkspaceChangeEvent {

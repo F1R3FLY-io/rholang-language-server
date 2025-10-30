@@ -192,13 +192,13 @@ mod tests {
         });
         let workspace = Arc::new(WorkspaceState {
             documents: Arc::new(DashMap::new()),
-            global_symbols: Arc::new(DashMap::new()),
             global_table: Arc::new(tokio::sync::RwLock::new(crate::ir::symbol_table::SymbolTable::new(None))),
             global_inverted_index: Arc::new(DashMap::new()),
             global_contracts: Arc::new(DashMap::new()),
             global_calls: Arc::new(DashMap::new()),
             global_index: Arc::new(std::sync::RwLock::new(crate::ir::global_index::GlobalSymbolIndex::new())),
             global_virtual_symbols: Arc::new(DashMap::new()),
+            rholang_symbols: Arc::new(crate::lsp::rholang_global_symbols::RholangGlobalSymbols::new()),
             indexing_state: Arc::new(tokio::sync::RwLock::new(crate::lsp::models::IndexingState::Idle)),
         });
         let parent_uri = Url::parse("file:///test.rho").unwrap();
