@@ -679,11 +679,23 @@ impl Visitor for SymbolTableBuilder {
                     trace!("Skipped recording for {} of '{}' at {:?}", if is_declaration {"declaration"} else {"definition"}, name, usage_location);
                 } else {
                     if symbol.declaration_uri == self.current_uri {
+                        // Record usage under declaration location
                         self.inverted_index.write().unwrap()
                             .entry(symbol.declaration_location)
                             .or_insert(Vec::new())
                             .push(usage_location);
-                        trace!("Recorded local usage of '{}' at {:?}", name, usage_location);
+                        trace!("Recorded local usage of '{}' at {:?} under declaration", name, usage_location);
+
+                        // If definition location differs from declaration, also record under definition
+                        if let Some(def_location) = symbol.definition_location {
+                            if def_location != symbol.declaration_location {
+                                self.inverted_index.write().unwrap()
+                                    .entry(def_location)
+                                    .or_insert(Vec::new())
+                                    .push(usage_location);
+                                trace!("Recorded local usage of '{}' at {:?} under definition", name, usage_location);
+                            }
+                        }
                     } else {
                         self.potential_global_refs.write().unwrap().push((name.clone(), usage_location));
                         trace!("Added global reference for '{}' at {:?}", name, usage_location);

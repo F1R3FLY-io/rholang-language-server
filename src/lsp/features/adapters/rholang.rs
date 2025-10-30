@@ -131,23 +131,6 @@ impl SymbolResolver for RholangSymbolResolver {
                 symbol.declaration_uri
             );
 
-            // Prefer definition_location if available, otherwise use declaration_location
-            let location = symbol.definition_location.as_ref()
-                .unwrap_or(&symbol.declaration_location);
-
-            // Convert IR Position to LSP Range
-            let lsp_pos = LspPosition {
-                line: location.row as u32,
-                character: location.column as u32,
-            };
-            let range = Range {
-                start: lsp_pos,
-                end: LspPosition {
-                    line: lsp_pos.line,
-                    character: lsp_pos.character + symbol.name.len() as u32,
-                },
-            };
-
             // Determine symbol kind from Rholang symbol type
             let kind = match symbol.symbol_type {
                 crate::ir::symbol_table::SymbolType::Contract => SymbolKind::Function,
@@ -156,13 +139,53 @@ impl SymbolResolver for RholangSymbolResolver {
                 _ => SymbolKind::Other,
             };
 
-            vec![SymbolLocation {
+            let mut locations = Vec::new();
+
+            // Always include declaration location
+            let decl_lsp_pos = LspPosition {
+                line: symbol.declaration_location.row as u32,
+                character: symbol.declaration_location.column as u32,
+            };
+            let decl_range = Range {
+                start: decl_lsp_pos,
+                end: LspPosition {
+                    line: decl_lsp_pos.line,
+                    character: decl_lsp_pos.character + symbol.name.len() as u32,
+                },
+            };
+            locations.push(SymbolLocation {
                 uri: symbol.declaration_uri.clone(),
-                range,
+                range: decl_range,
                 kind,
                 confidence: ResolutionConfidence::Exact,
                 metadata: None,
-            }]
+            });
+
+            // If definition location differs from declaration, include it too
+            if let Some(def_location) = &symbol.definition_location {
+                if def_location != &symbol.declaration_location {
+                    let def_lsp_pos = LspPosition {
+                        line: def_location.row as u32,
+                        character: def_location.column as u32,
+                    };
+                    let def_range = Range {
+                        start: def_lsp_pos,
+                        end: LspPosition {
+                            line: def_lsp_pos.line,
+                            character: def_lsp_pos.character + symbol.name.len() as u32,
+                        },
+                    };
+                    locations.push(SymbolLocation {
+                        uri: symbol.declaration_uri.clone(),
+                        range: def_range,
+                        kind,
+                        confidence: ResolutionConfidence::Exact,
+                        metadata: None,
+                    });
+                }
+            }
+
+            locations
         } else {
             tracing::debug!("Symbol '{}' not found in symbol table", symbol_name);
             // Symbol not found in scope
