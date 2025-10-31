@@ -23,15 +23,33 @@ jobs:
       fail-fast: false
       matrix:
         platform:
-          # - name: Windows
-          #   os: windows-latest
-          #   rustflags: "-C target-feature=+aes,+sse2"
-          - name: macOS
-            os: macos-latest
-            rustflags: "-C target-feature=+aes,+neon"  # Apple Silicon ARM64
-          - name: Ubuntu
+          - name: Linux x86_64
             os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
             rustflags: "-C target-feature=+aes,+sse2"
+            artifact_name: rholang-language-server-linux-x86_64
+            use_cross: false
+
+          - name: Linux ARM64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            rustflags: "-C target-feature=+aes,+neon"
+            artifact_name: rholang-language-server-linux-arm64
+            use_cross: false
+
+          - name: macOS x86_64
+            os: macos-13
+            target: x86_64-apple-darwin
+            rustflags: "-C target-feature=+aes,+sse2"
+            artifact_name: rholang-language-server-macos-x86_64
+            use_cross: false
+
+          - name: macOS ARM64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            rustflags: "-C target-feature=+aes,+neon"
+            artifact_name: rholang-language-server-macos-arm64
+            use_cross: false
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -47,6 +65,20 @@ jobs:
         git clone --depth=1 --branch dylon/rholang-language-server https://github.com/F1R3FLY-io/MeTTa-Compiler.git MeTTa-Compiler
         git clone --depth=1 --branch dylon/named-comment-nodes https://github.com/F1R3FLY-io/rholang-rs.git rholang-rs
         cd rholang-language-server
+      shell: bash
+
+    - name: Generate Rholang Tree-Sitter grammar with named comments
+      run: |
+        echo "::group::Generating Rholang Tree-Sitter grammar"
+        cd ../rholang-rs/rholang-tree-sitter
+        echo "Current directory: $(pwd)"
+        echo "Generating grammar with RHOLANG_NAMED_COMMENTS=1"
+        RHOLANG_NAMED_COMMENTS=1 tree-sitter generate
+        # Create marker file to indicate named comments are enabled
+        echo "named-comments-enabled" > .named_comments_enabled
+        echo "✓ Grammar generated successfully with named comments"
+        cd ../../rholang-language-server
+        echo "::endgroup::"
       shell: bash
 
     # - name: Configure local path overrides for CI
@@ -164,7 +196,7 @@ jobs:
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: test-results-${{ matrix.platform.name }}
+        name: test-results-${{ matrix.platform.os }}
         path: |
           target/debug/
           *.log

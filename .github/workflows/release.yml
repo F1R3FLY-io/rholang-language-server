@@ -70,6 +70,19 @@ jobs:
           git clone --depth=1 --branch dylon/named-comment-nodes https://github.com/F1R3FLY-io/rholang-rs.git rholang-rs
           cd rholang-language-server
 
+      - name: Generate Rholang Tree-Sitter grammar with named comments
+        run: |
+          echo "::group::Generating Rholang Tree-Sitter grammar"
+          cd ../rholang-rs/rholang-tree-sitter
+          echo "Current directory: $(pwd)"
+          echo "Generating grammar with RHOLANG_NAMED_COMMENTS=1"
+          RHOLANG_NAMED_COMMENTS=1 npx tree-sitter generate
+          # Create marker file to indicate named comments are enabled
+          echo "named-comments-enabled" > .named_comments_enabled
+          echo "✓ Grammar generated successfully with named comments"
+          cd ../../rholang-language-server
+          echo "::endgroup::"
+
       # - name: Configure local path overrides for CI
       #   run: |
       #     # Append patch sections to existing .cargo/config.toml
