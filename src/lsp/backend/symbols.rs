@@ -47,97 +47,130 @@ impl RholangBackend {
     ///
     /// Phase 4 Refactored: Simplified symbol linking using rholang_symbols
     ///
-    /// Phase 6: Simplified symbol linking after migration to rholang_symbols.
+    /// Priority 2b: Simplified symbol linking - resolves forward references and broadcasts event.
     ///
-    /// Instead of the old 6-phase algorithm that collected symbols from multiple sources,
-    /// this now syncs from the single source of truth (rholang_symbols) to legacy structures.
+    /// All symbols (both global and local) are now in rholang_symbols.
+    /// No need to build global_inverted_index since all consumers now use rholang_symbols directly.
     ///
-    /// Legacy structures maintained for backward compatibility:
-    /// - workspace.global_inverted_index: DashMap<(Url, Position), Vec<(Url, Position)>>
-    ///   (Used by virtual document features and local symbol references)
+    /// This function resolves forward references by:
+    /// 1. Collecting all contract declarations from rholang_symbols
+    /// 2. Scanning all documents for references to those contracts
+    /// 3. Adding any missing references (e.g., references that appeared before declaration)
     ///
-    /// Phase 6 removed workspace.global_symbols - all consumers now use rholang_symbols directly.
+    /// Removed (Priority 2b):
+    /// - workspace.global_inverted_index (replaced by rholang_symbols)
+    /// - per-document inverted_index (now in rholang_symbols with local keys)
     pub(crate) async fn link_symbols(&self) {
-        use std::time::Instant;
-        let start_time = Instant::now();
-        debug!("link_symbols: Starting simplified symbol sync from rholang_symbols");
+        debug!("link_symbols: Resolving forward references and broadcasting event");
 
-        // Phase 1: Build inverted index from rholang_symbols references
-        let phase2_start = Instant::now();
-        let mut global_inverted_index_map = HashMap::new();
+        // Get all contract names from rholang_symbols
+        let contract_names = self.workspace.rholang_symbols.contract_names();
+        debug!("link_symbols: Found {} contracts to link", contract_names.len());
 
-        for symbol_name in self.workspace.rholang_symbols.symbol_names() {
-            if let Some(symbol_decl) = self.workspace.rholang_symbols.lookup(&symbol_name) {
-                // Build inverted index: declaration → all references
-                let decl_key = (
-                    symbol_decl.declaration.uri.clone(),
-                    symbol_decl.declaration.position,
-                );
+        // Iterate through all workspace documents to find unlinked references
+        let document_uris: Vec<Url> = self.workspace.documents.iter()
+            .map(|entry| entry.key().clone())
+            .collect();
 
-                let references: Vec<(Url, IrPosition)> = symbol_decl.references.iter()
-                    .map(|ref_loc| (ref_loc.uri.clone(), ref_loc.position))
-                    .collect();
+        use crate::lsp::rholang_contracts::SymbolLocation;
+        let mut references_added = 0;
 
-                if !references.is_empty() {
-                    global_inverted_index_map.insert(decl_key.clone(), references.clone());
-                    trace!("Symbol '{}' at {:?} has {} references",
-                           symbol_name, decl_key.1, references.len());
-                }
+        for uri in &document_uris {
+            // Get the document's IR and positions
+            let doc_opt = self.workspace.documents.get(uri).map(|entry| entry.value().clone());
+            if doc_opt.is_none() {
+                continue;
+            }
+            let doc = doc_opt.unwrap();
 
-                // Also add definition → references mapping if definition differs from declaration
-                if let Some(def_loc) = &symbol_decl.definition {
-                    if def_loc != &symbol_decl.declaration {
-                        let def_key = (def_loc.uri.clone(), def_loc.position);
-                        global_inverted_index_map.insert(def_key, references);
+            // Walk the IR tree to find all contract call references
+            use crate::ir::rholang_node::RholangNode;
+            fn collect_contract_references(
+                node: &RholangNode,
+                contract_names: &[String],
+                uri: &Url,
+                positions: &HashMap<usize, (IrPosition, IrPosition)>,
+            ) -> Vec<(String, SymbolLocation)> {
+                let mut refs = Vec::new();
+
+                match node {
+                    // Handle Send/SendSync - these are contract calls
+                    RholangNode::Send { channel, inputs, .. } | RholangNode::SendSync { channel, inputs, .. } => {
+                        // Check if channel is a Var that references a contract
+                        if let RholangNode::Var { name, .. } = channel.as_ref() {
+                            if contract_names.contains(name) {
+                                // Get position of the Send node itself (the call site)
+                                let node_key = node as *const RholangNode as usize;
+                                if let Some((start, _)) = positions.get(&node_key) {
+                                    refs.push((
+                                        name.clone(),
+                                        SymbolLocation::new(uri.clone(), *start)
+                                    ));
+                                }
+                            }
+                        }
+                        // Also process arguments recursively
+                        for arg in inputs.iter() {
+                            refs.extend(collect_contract_references(arg, contract_names, uri, positions));
+                        }
                     }
+                    // Recursively process children in other node types
+                    RholangNode::Par { processes, .. } => {
+                        if let Some(procs) = processes {
+                            for proc in procs.iter() {
+                                refs.extend(collect_contract_references(proc, contract_names, uri, positions));
+                            }
+                        }
+                    }
+                    RholangNode::New { proc, .. } => {
+                        refs.extend(collect_contract_references(proc, contract_names, uri, positions));
+                    }
+                    RholangNode::Contract { proc, .. } => {
+                        refs.extend(collect_contract_references(proc, contract_names, uri, positions));
+                    }
+                    RholangNode::Block { proc, .. } => {
+                        refs.extend(collect_contract_references(proc, contract_names, uri, positions));
+                    }
+                    RholangNode::Input { proc, .. } => {
+                        refs.extend(collect_contract_references(proc, contract_names, uri, positions));
+                    }
+                    RholangNode::Match { cases, .. } => {
+                        for (pattern, body) in cases.iter() {
+                            refs.extend(collect_contract_references(pattern, contract_names, uri, positions));
+                            refs.extend(collect_contract_references(body, contract_names, uri, positions));
+                        }
+                    }
+                    _ => {}
+                }
+
+                refs
+            }
+
+            let contract_refs = collect_contract_references(&doc.ir, &contract_names, uri, &*doc.positions);
+
+            // Add these references to rholang_symbols
+            for (contract_name, ref_location) in contract_refs {
+                // Try to add - it's OK if it already exists (add_reference deduplicates)
+                if self.workspace.rholang_symbols.add_reference(&contract_name, ref_location).is_ok() {
+                    references_added += 1;
                 }
             }
         }
 
-        // Also merge in per-document inverted indexes for local (non-global) symbols
-        // These are symbols like local variables, which aren't in rholang_symbols yet
-        for entry in self.workspace.documents.iter() {
-            let doc_uri = entry.key();
-            let doc = entry.value();
-
-            for (def_pos, use_positions) in &doc.inverted_index {
-                let key = (doc_uri.clone(), *def_pos);
-                let uses: Vec<(Url, IrPosition)> = use_positions.iter()
-                    .map(|use_pos| (doc_uri.clone(), *use_pos))
-                    .collect();
-
-                global_inverted_index_map
-                    .entry(key)
-                    .or_insert_with(Vec::new)
-                    .extend(uses);
-            }
-        }
-
-        debug!("link_symbols: Phase 1 (build inverted index) took {:?}, {} entries",
-               phase2_start.elapsed(), global_inverted_index_map.len());
-
-        // Phase 2: Populate global_inverted_index
-        let phase3_start = Instant::now();
-        self.workspace.global_inverted_index.clear();
-        for (key, value) in global_inverted_index_map {
-            self.workspace.global_inverted_index.insert(key, value);
-        }
-        debug!("link_symbols: Phase 2 (populate global_inverted_index) took {:?}", phase3_start.elapsed());
+        debug!("link_symbols: Added {} forward references", references_added);
 
         let file_count = self.workspace.documents.len();
         let symbol_count = self.workspace.rholang_symbols.len();
 
-        // Phase 3: Broadcast workspace change event (ReactiveX Phase 2)
-        let phase4_start = Instant::now();
+        // Broadcast workspace change event
         let _ = self.workspace_changes.send(WorkspaceChangeEvent {
             file_count,
             symbol_count,
             change_type: WorkspaceChangeType::SymbolsLinked,
         });
-        debug!("link_symbols: Phase 4 (broadcast event) took {:?}", phase4_start.elapsed());
 
-        info!("link_symbols: Total time: {:?} for {} files, {} symbols",
-              start_time.elapsed(), file_count, symbol_count);
+        info!("link_symbols: Completed for {} files, {} symbols, {} forward references resolved",
+              file_count, symbol_count, references_added);
     }
 
     /// Links symbols across all virtual documents in the workspace.
@@ -426,6 +459,7 @@ impl RholangBackend {
                                 declaration_location: symbol_decl.declaration.position,
                                 definition_location: symbol_decl.definition.as_ref().map(|d| d.position),
                                 contract_pattern: None,
+                                contract_identifier_node: None,
                             }));
                         }
                     }
@@ -455,6 +489,7 @@ impl RholangBackend {
                 declaration_location: symbol_decl.declaration.position,
                 definition_location: symbol_decl.definition.as_ref().map(|d| d.position),
                 contract_pattern: None,
+                contract_identifier_node: None,
             }));
         }
 
@@ -492,6 +527,7 @@ impl RholangBackend {
                 declaration_location: symbol_decl.declaration.position,
                 definition_location: symbol_decl.definition.as_ref().map(|d| d.position),
                 contract_pattern: None,
+                contract_identifier_node: None,
             }));
         }
 
@@ -535,6 +571,7 @@ impl RholangBackend {
                         declaration_location: symbol_decl.declaration.position,
                         definition_location: symbol_decl.definition.as_ref().map(|d| d.position),
                         contract_pattern: None,
+                        contract_identifier_node: None,
                     }));
                 }
             }
@@ -578,6 +615,7 @@ impl RholangBackend {
                         declaration_location: symbol_decl.declaration.position,
                         definition_location: symbol_decl.definition.as_ref().map(|d| d.position),
                         contract_pattern: None,
+                        contract_identifier_node: None,
                     }));
                 }
             }

@@ -51,7 +51,7 @@ impl RholangBackend {
         global_table: Arc<SymbolTable>,
         global_index: Arc<std::sync::RwLock<crate::ir::global_index::GlobalSymbolIndex>>,
         version_counter: &Arc<std::sync::atomic::AtomicI32>,
-        rholang_symbols: Option<Arc<crate::lsp::rholang_global_symbols::RholangGlobalSymbols>>,
+        rholang_symbols: Option<Arc<crate::lsp::rholang_contracts::RholangContracts>>,
     ) -> Result<CachedDocument, String> {
         // Priority 1: Incremental symbol updates
         // Clear old symbols for this URI from global_table BEFORE indexing
@@ -59,12 +59,12 @@ impl RholangBackend {
         // Lock-free retain operation using DashMap
         global_table.symbols.retain(|_, s| &s.declaration_uri != uri);
 
-        // Clear old symbols from rholang_symbols index (incremental update)
+        // Clear old contracts from rholang_contracts index (incremental update)
         if let Some(ref rholang_syms) = rholang_symbols {
-            let removed_symbols = rholang_syms.remove_symbols_from_uri(uri);
+            let removed_contracts = rholang_syms.remove_contracts_from_uri(uri);
             let removed_refs = rholang_syms.remove_references_from_uri(uri);
-            debug!("Incremental update for {}: removed {} symbols and {} references",
-                   uri, removed_symbols, removed_refs);
+            debug!("Incremental update for {}: removed {} contracts and {} references",
+                   uri, removed_contracts, removed_refs);
         }
 
         let mut pipeline = Pipeline::new();
@@ -88,8 +88,11 @@ impl RholangBackend {
         // Symbol index builder for global pattern-based lookups (needs positions)
         let mut index_builder = SymbolIndexBuilder::new(global_index.clone(), uri.clone(), positions.clone());
         index_builder.index_tree(&transformed_ir);
+
+        // Extract inverted_index from symbol table builder for local variable references
         let inverted_index = builder.get_inverted_index();
-        // Phase 4: Removed get_potential_global_refs() and resolve_local_potentials() - now handled by rholang_symbols
+        debug!("Built inverted index with {} declaration->references mappings", inverted_index.len());
+
         let symbol_table = transformed_ir.metadata()
             .and_then(|m| m.get("symbol_table"))
             .map(|st| Arc::clone(st.downcast_ref::<Arc<SymbolTable>>().unwrap()))
@@ -99,8 +102,9 @@ impl RholangBackend {
             });
         let version = version_counter.fetch_add(1, Ordering::SeqCst);
 
-        debug!("Processed document {}: {} symbols, {} usages, version {}",
-            uri, symbol_table.collect_all_symbols().len(), inverted_index.len(), version);
+        let symbol_count = symbol_table.collect_all_symbols().len();
+        debug!("Processed document {}: {} symbols, version {}",
+            uri, symbol_count, version);
 
         let mut contracts = Vec::new();
         let mut calls = Vec::new();
@@ -215,8 +219,11 @@ impl RholangBackend {
         // have different memory addresses. Using ir would cause position lookups to fail.
         let mut index_builder = SymbolIndexBuilder::new(global_index.clone(), uri.clone(), positions.clone());
         index_builder.index_tree(&transformed_ir);
+
+        // Extract inverted_index from symbol table builder for local variable references
         let inverted_index = builder.get_inverted_index();
-        // Phase 4: Removed get_potential_global_refs() and resolve_local_potentials() - now handled by rholang_symbols
+        debug!("Built inverted index with {} declaration->references mappings", inverted_index.len());
+
         let symbol_table = transformed_ir.metadata()
             .and_then(|m| m.get("symbol_table"))
             .map(|st| Arc::clone(st.downcast_ref::<Arc<SymbolTable>>().unwrap()))
@@ -226,8 +233,9 @@ impl RholangBackend {
             });
         let version = self.version_counter.fetch_add(1, Ordering::SeqCst);
 
-        debug!("Processed document {}: {} symbols, {} usages, version {}",
-            uri, symbol_table.collect_all_symbols().len(), inverted_index.len(), version);
+        let symbol_count = symbol_table.collect_all_symbols().len();
+        debug!("Processed document {}: {} symbols, version {}",
+            uri, symbol_count, version);
 
         let mut contracts = Vec::new();
         let mut calls = Vec::new();
@@ -432,14 +440,13 @@ impl RholangBackend {
             })
         };
 
-        // Create empty symbol table and inverted index for now
+        // Create empty symbol table for now
         // TODO: Implement symbol table building for MeTTa
         let global_table = Arc::new(self.workspace.global_table.read().await.clone());
         let symbol_table = Arc::new(SymbolTable::new(Some(global_table)));
-        let inverted_index = HashMap::new();
-        // Phase 4: Removed potential_global_refs - now handled by rholang_symbols
 
-        // Create empty symbol index
+        // Create empty inverted_index and symbol index for MeTTa (not yet supported)
+        let inverted_index = HashMap::new();
         let symbol_index = Arc::new(crate::lsp::symbol_index::SymbolIndex::new(Vec::new()));
 
         let rope = Rope::from_str(text);
@@ -619,6 +626,10 @@ impl RholangBackend {
             results.len(), elapsed, results.len() as f64 / elapsed.as_secs_f64());
 
         // Phase 3: Batch insert into workspace using batched updates
+        let indexed_uris: Vec<Url> = results.iter()
+            .filter_map(|(uri, result)| if result.is_ok() { Some(uri.clone()) } else { None })
+            .collect();
+
         for (uri, result) in results {
             match result {
                 Ok(cached_doc) => {
@@ -626,6 +637,36 @@ impl RholangBackend {
                     debug!("Indexed file: {}", uri);
                 }
                 Err(e) => warn!("Failed to index file {}: {}", uri, e),
+            }
+        }
+
+        // Phase 3.5: Register and validate virtual documents for all indexed files
+        // This phase must happen BEFORE Phase 5 (link_virtual_symbols)
+        for uri in &indexed_uris {
+            // Detect embedded language regions asynchronously
+            if let Ok(text) = std::fs::read_to_string(uri.path()) {
+                let detection_result = self.detection_worker
+                    .detect(uri.clone(), text)
+                    .await
+                    .unwrap_or_else(|_| {
+                        warn!("Detection worker receiver dropped for {}", uri);
+                        crate::language_regions::async_detection::DetectionResult {
+                            uri: uri.clone(),
+                            regions: vec![],
+                            elapsed_ms: 0,
+                        }
+                    });
+
+                if !detection_result.regions.is_empty() {
+                    debug!("Registering {} virtual documents for {} during workspace indexing",
+                        detection_result.regions.len(), uri);
+                    let mut virtual_docs = self.virtual_docs.write().await;
+                    virtual_docs.register_regions(uri, &detection_result.regions);
+
+                    // Validate virtual documents
+                    let _virtual_diagnostics = virtual_docs.validate_all_for_parent(uri);
+                    debug!("Validated {} virtual documents for {}", detection_result.regions.len(), uri);
+                }
             }
         }
 
@@ -673,17 +714,9 @@ impl RholangBackend {
         // 3. Clearing here would delete symbols that were just added by SymbolTableBuilder
         // 4. global_table uses interior mutability, so changes are visible across all Arc clones
 
-        // Phase 6: No need to remove global_symbols - now handled by rholang_symbols directly
-
-        // Remove old inverted index entries for this URI (DashMap is lock-free)
-        self.workspace.global_inverted_index.retain(|(d_uri, _), us| {
-            if d_uri == uri {
-                false
-            } else {
-                us.retain(|(u_uri, _)| u_uri != uri);
-                !us.is_empty()
-            }
-        });
+        // Priority 2b: Cleanup now handled by rholang_symbols.remove_symbols_from_uri() and
+        // remove_references_from_uri() which are called in process_document_blocking()
+        // No need for global_inverted_index cleanup
 
         // Lock-free contract and call updates
         self.workspace.global_contracts.remove(uri);

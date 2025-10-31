@@ -80,6 +80,7 @@ pub enum LanguageContext {
     Rholang {
         uri: Url,
         root: Arc<dyn SemanticNode>,
+        all_roots: Vec<Arc<dyn SemanticNode>>, // All top-level nodes (typically single Par node)
         symbol_table: Arc<crate::ir::symbol_table::SymbolTable>,
     },
     /// MeTTa embedded in Rholang (virtual document)
@@ -87,7 +88,9 @@ pub enum LanguageContext {
         virtual_uri: Url,
         parent_uri: Url,
         root: Arc<dyn SemanticNode>,
+        all_roots: Vec<Arc<dyn SemanticNode>>, // All top-level MeTTa nodes
         symbol_table: Arc<crate::ir::transforms::metta_symbol_table_builder::MettaSymbolTable>,
+        virtual_doc: Arc<crate::language_regions::VirtualDocument>,
     },
     /// Other embedded language (future)
     #[allow(dead_code)]
@@ -95,7 +98,26 @@ pub enum LanguageContext {
         language: String,
         uri: Url,
         root: Arc<dyn SemanticNode>,
+        all_roots: Vec<Arc<dyn SemanticNode>>, // All top-level nodes
     },
+}
+
+impl LanguageContext {
+    /// Get a short description of the language context for logging
+    /// (avoids Debug formatting large structures which can hang)
+    fn describe(&self) -> String {
+        match self {
+            LanguageContext::Rholang { all_roots, .. } => {
+                format!("Rholang with {} root(s)", all_roots.len())
+            }
+            LanguageContext::MettaVirtual { all_roots, .. } => {
+                format!("MettaVirtual with {} root(s)", all_roots.len())
+            }
+            LanguageContext::Other { language, all_roots, .. } => {
+                format!("Other({}) with {} root(s)", language, all_roots.len())
+            }
+        }
+    }
 }
 
 impl RholangBackend {
@@ -140,8 +162,25 @@ impl RholangBackend {
                         return None;
                     }
 
-                    // Convert Vec<MettaNode> to single root node (use first node as representative)
+                    // Store all top-level nodes + use first node as representative root
+                    // (root is used for backward compatibility, all_roots for correct node finding)
                     let root: Arc<dyn SemanticNode> = ir_vec[0].clone();
+
+                    // Compute positions for all nodes together, tracking prev_end across all roots
+                    use crate::ir::metta_node::compute_positions_with_prev_end;
+                    use crate::ir::semantic_node::Position as IrPosition;
+                    let mut combined_positions = std::collections::HashMap::new();
+                    let mut prev_end = IrPosition { row: 0, column: 0, byte: 0 };
+
+                    for metta_node in ir_vec.iter() {
+                        let (positions, new_prev_end) = compute_positions_with_prev_end(metta_node, prev_end);
+                        combined_positions.extend(positions);
+                        prev_end = new_prev_end;
+                    }
+
+                    let all_roots: Vec<Arc<dyn SemanticNode>> = ir_vec.iter()
+                        .map(|node| node.clone() as Arc<dyn SemanticNode>)
+                        .collect();
 
                     // Get symbol table from virtual document
                     let symbol_table = virtual_doc.get_or_build_symbol_table();
@@ -154,7 +193,9 @@ impl RholangBackend {
                         virtual_uri: uri.clone(),
                         parent_uri: virtual_doc.parent_uri.clone(),
                         root,
+                        all_roots,
                         symbol_table: symbol_table.unwrap(),
+                        virtual_doc: virtual_doc.clone(),
                     });
                 } else {
                     warn!("Failed to parse IR for virtual document");
@@ -199,7 +240,11 @@ impl RholangBackend {
                             continue;
                         }
 
+                        // Store all top-level nodes + use first node as representative root
                         let root: Arc<dyn SemanticNode> = ir_vec[0].clone();
+                        let all_roots: Vec<Arc<dyn SemanticNode>> = ir_vec.iter()
+                            .map(|node| node.clone() as Arc<dyn SemanticNode>)
+                            .collect();
 
                         // Get symbol table from virtual document
                         let symbol_table = virtual_doc.get_or_build_symbol_table();
@@ -212,7 +257,9 @@ impl RholangBackend {
                             virtual_uri: virtual_doc.uri.clone(),
                             parent_uri: virtual_doc.parent_uri.clone(),
                             root,
+                            all_roots,
                             symbol_table: symbol_table.unwrap(),
+                            virtual_doc: virtual_doc.clone(),
                         });
                     } else {
                         warn!("Failed to parse IR for virtual document");
@@ -225,9 +272,12 @@ impl RholangBackend {
             // Not in a virtual document - return Rholang context
             if let Some(doc) = self.workspace.documents.get(uri) {
                 debug!("Detected Rholang document: {}", uri);
+                let root: Arc<dyn SemanticNode> = Arc::new((*doc.ir).clone()) as Arc<dyn SemanticNode>;
+                let all_roots = vec![root.clone()]; // Rholang has single root (Par node)
                 return Some(LanguageContext::Rholang {
                     uri: uri.clone(),
-                    root: Arc::new((*doc.ir).clone()) as Arc<dyn SemanticNode>,
+                    root,
+                    all_roots,
                     symbol_table: doc.symbol_table.clone(),
                 });
             }
@@ -312,28 +362,209 @@ impl RholangBackend {
 
         // Detect language at position
         let context = self.detect_language(uri, &position).await?;
-        debug!("Detected language context for goto_definition: {:?}", context);
+        debug!("Detected language context for goto_definition: {}", context.describe());
 
         // Get adapter for this language
         let adapter = self.get_adapter(&context)?;
 
-        // Extract root and URI from context
-        let (root, doc_uri) = match context {
-            LanguageContext::Rholang { uri, root, .. } => (root, uri),
+        // Extract root, URI, and position from context
+        // For MettaVirtual, we need to map position from parent to virtual coordinates
+        match context {
+            LanguageContext::Rholang { uri, root, all_roots, symbol_table, .. } => {
+                let ir_position = lsp_to_ir_position(position);
+
+                // Check if the adapter has a specialized goto-definition provider
+                if let Some(goto_def_provider) = &adapter.goto_definition {
+                    debug!("Using specialized goto-definition provider for Rholang");
+
+                    // Build context for specialized provider
+                    use crate::lsp::features::traits::GotoDefinitionContext;
+                    let context = GotoDefinitionContext {
+                        uri: uri.clone(),
+                        ir_position,
+                        all_roots: all_roots.clone(),
+                        symbol_table: symbol_table.clone(),
+                        language: "rholang".to_string(),
+                        parent_uri: None,
+                    };
+
+                    return goto_def_provider.goto_definition(&context).await;
+                }
+
+                // Use generic handler (default for Rholang)
+                let goto_def_feature = GenericGotoDefinition;
+                goto_def_feature
+                    .goto_definition(root.as_ref(), &ir_position, &uri, &adapter)
+                    .await
+            }
             LanguageContext::MettaVirtual {
-                virtual_uri, root, ..
-            } => (root, virtual_uri),
-            LanguageContext::Other { uri, root, .. } => (root, uri),
-        };
+                virtual_uri,
+                all_roots,
+                virtual_doc,
+                symbol_table,
+                ..
+            } => {
+                // Convert parent position to virtual position
+                debug!("MettaVirtual handler: About to call map_from_parent with position {:?}, all_roots.len()={}", position, all_roots.len());
+                let virtual_position = match virtual_doc.map_from_parent(position) {
+                    Some(pos) => pos,
+                    None => {
+                        debug!("Position {:?} is outside virtual document range", position);
+                        return None;
+                    }
+                };
+                debug!(
+                    "Mapped parent position {:?} to virtual position {:?}",
+                    position, virtual_position
+                );
+                let ir_position = lsp_to_ir_position(virtual_position);
 
-        // Convert LSP position to IR position
-        let ir_position = lsp_to_ir_position(position);
+                // Check if the adapter has a specialized goto-definition provider
+                if let Some(goto_def_provider) = &adapter.goto_definition {
+                    debug!("Using specialized goto-definition provider for MeTTa");
 
-        // Call generic goto-definition feature (uses tree-based position finding)
-        let goto_def_feature = GenericGotoDefinition;
-        goto_def_feature
-            .goto_definition(root.as_ref(), &ir_position, &doc_uri, &adapter)
-            .await
+                    // Build context for specialized provider
+                    use crate::lsp::features::traits::GotoDefinitionContext;
+                    let context = GotoDefinitionContext {
+                        uri: virtual_uri.clone(),
+                        ir_position,
+                        all_roots: all_roots.clone(),
+                        symbol_table: symbol_table.clone(),
+                        language: "metta".to_string(),
+                        parent_uri: Some(virtual_doc.parent_uri.clone()),
+                    };
+
+                    // Get result from specialized provider (in virtual coordinates)
+                    if let Some(result) = goto_def_provider.goto_definition(&context).await {
+                        debug!("Specialized provider returned result in virtual coordinates, mapping to parent");
+
+                        // Map from virtual to parent coordinates
+                        let mapped_result = match result {
+                            GotoDefinitionResponse::Scalar(loc) => {
+                                let parent_range = virtual_doc.map_range_to_parent(loc.range);
+                                debug!("Mapped virtual range {:?} to parent range {:?}", loc.range, parent_range);
+                                GotoDefinitionResponse::Scalar(Location {
+                                    uri: virtual_doc.parent_uri.clone(),
+                                    range: parent_range,
+                                })
+                            }
+                            GotoDefinitionResponse::Array(locs) => {
+                                let parent_locs: Vec<Location> = locs
+                                    .into_iter()
+                                    .map(|loc| {
+                                        let parent_range = virtual_doc.map_range_to_parent(loc.range);
+                                        Location {
+                                            uri: virtual_doc.parent_uri.clone(),
+                                            range: parent_range,
+                                        }
+                                    })
+                                    .collect();
+                                GotoDefinitionResponse::Array(parent_locs)
+                            }
+                            GotoDefinitionResponse::Link(link) => {
+                                // Links don't need mapping, just return as-is
+                                GotoDefinitionResponse::Link(link)
+                            }
+                        };
+
+                        return Some(mapped_result);
+                    } else {
+                        return None;
+                    }
+                }
+
+                // Fallback to generic handler if no specialized provider
+                debug!("No specialized goto-definition provider, using generic handler");
+
+                // Iterate through all top-level nodes to find one that contains this position
+                // We need to track prev_end as we go through each root since MeTTa uses relative positions
+                use crate::lsp::features::node_finder::find_node_at_position_with_prev_end;
+                use crate::ir::semantic_node::Position as IrPosition;
+
+                let mut prev_end = IrPosition { row: 0, column: 0, byte: 0 };
+                for (i, root) in all_roots.iter().enumerate() {
+                    // Try to find the node in this root with the correct prev_end
+                    if let Some(node) = find_node_at_position_with_prev_end(root.as_ref(), &ir_position, &prev_end) {
+                        debug!("Found node in root {} at position {:?}", i, ir_position);
+
+                        // Now try goto_definition using this specific root and node
+                        let goto_def_feature = GenericGotoDefinition;
+                        if let Some(result) = goto_def_feature
+                            .goto_definition(root.as_ref(), &ir_position, &virtual_uri, &adapter)
+                            .await
+                        {
+                            debug!("Found definition in root node {} (virtual coordinates)", i);
+
+                            // Map the result from virtual to parent coordinates
+                            let mapped_result = match result {
+                                GotoDefinitionResponse::Scalar(loc) => {
+                                    let parent_range = virtual_doc.map_range_to_parent(loc.range);
+                                    debug!("Mapped virtual range {:?} to parent range {:?}", loc.range, parent_range);
+                                    GotoDefinitionResponse::Scalar(Location {
+                                        uri: virtual_doc.parent_uri.clone(),
+                                        range: parent_range,
+                                    })
+                                }
+                                GotoDefinitionResponse::Array(locs) => {
+                                    let parent_locs: Vec<Location> = locs
+                                        .into_iter()
+                                        .map(|loc| {
+                                            let parent_range = virtual_doc.map_range_to_parent(loc.range);
+                                            Location {
+                                                uri: virtual_doc.parent_uri.clone(),
+                                                range: parent_range,
+                                            }
+                                        })
+                                        .collect();
+                                    GotoDefinitionResponse::Array(parent_locs)
+                                }
+                                GotoDefinitionResponse::Link(link) => {
+                                    // Links don't need mapping, just return as-is
+                                    GotoDefinitionResponse::Link(link)
+                                }
+                            };
+
+                            return Some(mapped_result);
+                        }
+                    }
+
+                    // Update prev_end for next root
+                    let start = root.absolute_position(prev_end);
+                    prev_end = root.absolute_end(start);
+                }
+                debug!("No definition found in any of the {} root nodes", all_roots.len());
+                None
+            }
+            LanguageContext::Other { language, uri, root, all_roots, .. } => {
+                let ir_position = lsp_to_ir_position(position);
+
+                // Check if the adapter has a specialized goto-definition provider
+                if let Some(goto_def_provider) = &adapter.goto_definition {
+                    debug!("Using specialized goto-definition provider for {}", language);
+
+                    // Build context for specialized provider
+                    use crate::lsp::features::traits::GotoDefinitionContext;
+                    // Note: We don't have symbol_table for generic "Other" languages yet
+                    // but we can still pass an empty Arc for future extensibility
+                    let context = GotoDefinitionContext {
+                        uri: uri.clone(),
+                        ir_position,
+                        all_roots: all_roots.clone(),
+                        symbol_table: Arc::new(()) as Arc<dyn std::any::Any + Send + Sync>,
+                        language: language.clone(),
+                        parent_uri: None,
+                    };
+
+                    return goto_def_provider.goto_definition(&context).await;
+                }
+
+                // Use generic handler (default for other languages)
+                let goto_def_feature = GenericGotoDefinition;
+                goto_def_feature
+                    .goto_definition(root.as_ref(), &ir_position, &uri, &adapter)
+                    .await
+            }
+        }
     }
 
     /// Unified hover handler
@@ -362,44 +593,105 @@ impl RholangBackend {
 
         // Detect language at position
         let context = self.detect_language(uri, &position).await?;
-        debug!("Detected language context: {:?}", context);
+        debug!("Detected language context for hover: {}", context.describe());
 
         // Get adapter for this language
         let adapter = self.get_adapter(&context)?;
 
-        // Extract root, URI, and parent_uri from context
-        let (root, doc_uri, parent_uri) = match context {
+        // Extract root, URI, position, and parent_uri from context
+        // For MettaVirtual, we need to map position from parent to virtual coordinates
+        match context {
             LanguageContext::Rholang { uri, root, .. } => {
-                (root, uri, None)
+                let ir_position = lsp_to_ir_position(position);
+                let hover_feature = GenericHover;
+                hover_feature
+                    .hover(
+                        root.as_ref(),
+                        &ir_position,
+                        position,
+                        &uri,
+                        &adapter,
+                        None,
+                    )
+                    .await
             }
             LanguageContext::MettaVirtual {
                 virtual_uri,
                 parent_uri,
-                root,
+                all_roots,
+                virtual_doc,
                 ..
             } => {
-                (root, virtual_uri, Some(parent_uri))
+                // Convert parent position to virtual position
+                debug!("MettaVirtual handler: About to call map_from_parent with position {:?}, all_roots.len()={}", position, all_roots.len());
+                let virtual_position = match virtual_doc.map_from_parent(position) {
+                    Some(pos) => pos,
+                    None => {
+                        debug!("Position {:?} is outside virtual document range", position);
+                        return None;
+                    }
+                };
+                debug!(
+                    "Mapped parent position {:?} to virtual position {:?}",
+                    position, virtual_position
+                );
+                let ir_position = lsp_to_ir_position(virtual_position);
+
+                // Iterate through all top-level nodes to find one that contains this position
+                // We need to track prev_end as we go through each root since MeTTa uses relative positions
+                use crate::lsp::features::node_finder::find_node_at_position_with_prev_end;
+                use crate::ir::semantic_node::Position as IrPosition;
+
+                let mut prev_end = IrPosition { row: 0, column: 0, byte: 0 };
+                for (i, root) in all_roots.iter().enumerate() {
+                    // Compute this root's start position
+                    let root_start = root.absolute_position(prev_end);
+
+                    // Try to find the node in this root with the correct prev_end
+                    if let Some(node) = find_node_at_position_with_prev_end(root.as_ref(), &ir_position, &prev_end) {
+                        debug!("Found node in root {} at position {:?}", i, ir_position);
+
+                        // Now try hover using the pre-found node
+                        // We pass the node we already found to avoid re-searching
+                        let hover_feature = GenericHover;
+                        if let Some(result) = hover_feature
+                            .hover_with_node(
+                                Some(node),
+                                root.as_ref(),
+                                &ir_position,
+                                virtual_position,
+                                &virtual_uri,
+                                &adapter,
+                                Some(parent_uri.clone()),
+                            )
+                            .await
+                        {
+                            debug!("Found hover in root node {}", i);
+                            return Some(result);
+                        }
+                    }
+
+                    // Update prev_end for next root
+                    prev_end = root.absolute_end(root_start);
+                }
+                debug!("No hover found in any of the {} root nodes", all_roots.len());
+                None
             }
             LanguageContext::Other { uri, root, .. } => {
-                (root, uri, None)
+                let ir_position = lsp_to_ir_position(position);
+                let hover_feature = GenericHover;
+                hover_feature
+                    .hover(
+                        root.as_ref(),
+                        &ir_position,
+                        position,
+                        &uri,
+                        &adapter,
+                        None,
+                    )
+                    .await
             }
-        };
-
-        // Convert LSP position to IR position
-        let ir_position = lsp_to_ir_position(position);
-
-        // Call generic hover feature
-        let hover_feature = GenericHover;
-        hover_feature
-            .hover(
-                root.as_ref(),
-                &ir_position,
-                position,
-                &doc_uri,
-                &adapter,
-                parent_uri,
-            )
-            .await
+        }
     }
 
     /// Unified find-references handler
@@ -434,7 +726,7 @@ impl RholangBackend {
 
         // Detect language at position
         let context = self.detect_language(uri, &position).await?;
-        debug!("Detected language context for references: {:?}", context);
+        debug!("Detected language context for references: {}", context.describe());
 
         // Get adapter for this language
         let adapter = self.get_adapter(&context)?;
@@ -451,10 +743,22 @@ impl RholangBackend {
         // Convert LSP position to IR position
         let ir_position = lsp_to_ir_position(position);
 
-        // Call generic find-references feature (Priority 2: use rholang_symbols instead of global_inverted_index)
+        // Get cached document to access symbol_table and inverted_index
+        let doc = self.workspace.documents.get(&doc_uri)?;
+
+        // Call generic find-references feature with two-tier resolution
         let refs_feature = GenericReferences;
         refs_feature
-            .find_references(root.as_ref(), &ir_position, &doc_uri, &adapter, include_declaration, &self.workspace.rholang_symbols)
+            .find_references(
+                root.as_ref(),
+                &ir_position,
+                &doc_uri,
+                &adapter,
+                include_declaration,
+                &doc.symbol_table,
+                &doc.inverted_index,
+                &self.workspace.rholang_symbols
+            )
             .await
     }
 
@@ -490,7 +794,7 @@ impl RholangBackend {
 
         // Detect language at position
         let context = self.detect_language(uri, &position).await?;
-        debug!("Detected language context for rename: {:?}", context);
+        debug!("Detected language context for rename: {}", context.describe());
 
         // Get adapter for this language
         let adapter = self.get_adapter(&context)?;
@@ -507,10 +811,22 @@ impl RholangBackend {
         // Convert LSP position to IR position
         let ir_position = lsp_to_ir_position(position);
 
-        // Call generic rename feature (Priority 2: use rholang_symbols instead of global_inverted_index)
+        // Get cached document to access symbol_table and inverted_index
+        let doc = self.workspace.documents.get(&doc_uri)?;
+
+        // Call generic rename feature with two-tier resolution
         let rename_feature = GenericRename;
         rename_feature
-            .rename(root.as_ref(), &ir_position, &doc_uri, &adapter, new_name, &self.workspace.rholang_symbols)
+            .rename(
+                root.as_ref(),
+                &ir_position,
+                &doc_uri,
+                &adapter,
+                new_name,
+                &doc.symbol_table,
+                &doc.inverted_index,
+                &self.workspace.rholang_symbols
+            )
             .await
     }
 }
@@ -525,21 +841,24 @@ mod tests {
         let uri = Url::parse("file:///test.rho").unwrap();
 
         // This is just a type check - actual functionality will be tested via integration tests
+        let root: Arc<dyn SemanticNode> = Arc::new(crate::ir::rholang_node::RholangNode::Nil {
+            base: crate::ir::semantic_node::NodeBase::new_simple(
+                crate::ir::semantic_node::RelativePosition {
+                    delta_lines: 0,
+                    delta_columns: 0,
+                    delta_bytes: 0
+                },
+                0,
+                0,
+                0,
+            ),
+            metadata: None,
+        }) as Arc<dyn SemanticNode>;
+
         let _context = LanguageContext::Rholang {
             uri: uri.clone(),
-            root: Arc::new(crate::ir::rholang_node::RholangNode::Nil {
-                base: crate::ir::semantic_node::NodeBase::new_simple(
-                    crate::ir::semantic_node::RelativePosition {
-                        delta_lines: 0,
-                        delta_columns: 0,
-                        delta_bytes: 0
-                    },
-                    0,
-                    0,
-                    0,
-                ),
-                metadata: None,
-            }) as Arc<dyn SemanticNode>,
+            root: root.clone(),
+            all_roots: vec![root],
             symbol_table: Arc::new(crate::ir::symbol_table::SymbolTable::new(None)),
         };
     }

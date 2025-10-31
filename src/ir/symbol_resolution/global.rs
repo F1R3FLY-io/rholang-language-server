@@ -170,13 +170,13 @@ mod tests {
 
         let workspace = Arc::new(WorkspaceState {
             documents: Arc::new(DashMap::new()),
-            global_symbols: Arc::new(DashMap::new()),
+            // REMOVED (Priority 2b): global_symbols, global_inverted_index
             global_table: Arc::new(tokio::sync::RwLock::new(SymbolTable::new(None))),
-            global_inverted_index: Arc::new(DashMap::new()),
             global_contracts: Arc::new(DashMap::new()),
             global_calls: Arc::new(DashMap::new()),
             global_index: Arc::new(std::sync::RwLock::new(GlobalSymbolIndex::new())),
             global_virtual_symbols,
+            rholang_symbols: Arc::new(crate::lsp::rholang_contracts::RholangContracts::new()),
             indexing_state: Arc::new(tokio::sync::RwLock::new(crate::lsp::models::IndexingState::Idle)),
         });
 

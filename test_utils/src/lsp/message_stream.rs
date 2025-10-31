@@ -1,4 +1,4 @@
-use std::io;
+use std::io::{self, Read};
 
 use crate::lsp::streams::LspStream;
 
@@ -11,7 +11,8 @@ pub trait LspReader {
 // Implement LspReader for BufReader wrapping Box<dyn LspStream>
 impl LspReader for std::io::BufReader<Box<dyn LspStream>> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.get_mut().read(buf)
+        // Use the buffered read instead of bypassing the buffer
+        Read::read(self, buf)
     }
 }
 

@@ -3,6 +3,13 @@ name = "rholang-language-server"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
+description = "Language Server Protocol implementation for Rholang smart contract language"
+repository = "https://github.com/F1R3FLY-io/rholang-language-server"
+homepage = "https://github.com/F1R3FLY-io/rholang-language-server"
+documentation = "https://github.com/F1R3FLY-io/rholang-language-server#readme"
+keywords = ["lsp", "rholang", "rchain", "language-server"]
+categories = ["development-tools"]
+authors = ["F1R3FLY.io <noreply@f1r3fly.io>"]
 
 [dependencies]
 anyhow = "1.0"
@@ -91,3 +98,36 @@ harness = false
 [[bench]]
 name = "real_world_benchmark"
 harness = false
+
+# Debian package metadata
+[package.metadata.deb]
+maintainer = "F1R3FLY.io <noreply@f1r3fly.io>"
+depends = "$auto"
+section = "devel"
+priority = "optional"
+assets = [
+    ["target/release/rholang-language-server", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/rholang-language-server/", "644"],
+    ["LICENSE", "usr/share/doc/rholang-language-server/", "644"],
+]
+extended-description = """
+Language Server Protocol (LSP) implementation for the Rholang smart contract
+language. Provides IDE features such as:
+- Go to definition
+- Find references
+- Code completion
+- Document symbols
+- Hover information
+- Semantic validation
+- Cross-file navigation
+"""
+
+# RPM package metadata
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/rholang-language-server", dest = "/usr/bin/rholang-language-server", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/rholang-language-server/README.md", mode = "644" },
+    { source = "LICENSE", dest = "/usr/share/doc/rholang-language-server/LICENSE", mode = "644" },
+]
+[package.metadata.generate-rpm.requires]
+glibc = "*"

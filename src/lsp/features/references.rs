@@ -10,7 +10,7 @@ use crate::ir::semantic_node::{Position, SemanticNode};
 use crate::ir::symbol_resolution::ResolutionContext;
 use crate::lsp::features::node_finder::{find_node_at_position, ir_to_lsp_position};
 use crate::lsp::features::traits::LanguageAdapter;
-use crate::lsp::rholang_global_symbols::RholangGlobalSymbols;
+use crate::lsp::rholang_contracts::RholangContracts;
 
 /// Generic find-references feature
 pub struct GenericReferences;
@@ -24,7 +24,9 @@ impl GenericReferences {
     /// * `uri` - URI of the document
     /// * `adapter` - Language adapter
     /// * `include_declaration` - Whether to include the declaration in results
-    /// * `rholang_symbols` - Global Rholang symbol storage (Priority 2: replaces inverted_index)
+    /// * `symbol_table` - Per-document symbol table for local variable resolution
+    /// * `inverted_index` - Per-document inverted index for local references
+    /// * `rholang_symbols` - Global contract storage for cross-document resolution
     ///
     /// # Returns
     /// `Some(Vec<Location>)` with all reference locations, or `None` if symbol not found
@@ -35,7 +37,9 @@ impl GenericReferences {
         uri: &Url,
         adapter: &LanguageAdapter,
         include_declaration: bool,
-        rholang_symbols: &Arc<RholangGlobalSymbols>,
+        symbol_table: &Arc<crate::ir::symbol_table::SymbolTable>,
+        inverted_index: &crate::ir::transforms::symbol_table_builder::InvertedIndex,
+        rholang_symbols: &Arc<RholangContracts>,
     ) -> Option<Vec<Location>> {
         debug!(
             "GenericReferences::find_references at {:?} in {} (include_decl: {})",
@@ -49,98 +53,143 @@ impl GenericReferences {
         let symbol_name = self.extract_symbol_name(node)?;
         debug!("Finding references for symbol '{}'", symbol_name);
 
-        // Create resolution context
-        let context = ResolutionContext {
-            uri: uri.clone(),
-            scope_id: None,
-            ir_node: None,
-            language: adapter.language_name().to_string(),
-            parent_uri: None,
-        };
+        // Try to get the scope-specific symbol table from the node's metadata
+        // This allows us to access variables in nested scopes (new, let, for, etc.)
+        let scope_table = node.metadata()
+            .and_then(|m| m.get("symbol_table"))
+            .and_then(|st| st.downcast_ref::<Arc<crate::ir::symbol_table::SymbolTable>>())
+            .cloned()
+            .unwrap_or_else(|| symbol_table.clone());
 
-        // Use resolver to find the definition
-        let definitions = adapter.resolver.resolve_symbol(
-            symbol_name,
-            position,
-            &context,
-        );
+        // Two-tier resolution: Check contracts first, then local variables
 
-        if definitions.is_empty() {
-            debug!("No definition found for '{}'", symbol_name);
-            return None;
-        }
+        // Tier 1: Try to find as a global contract
+        if let Some(contract) = rholang_symbols.lookup(symbol_name) {
+            debug!("Found contract '{}' with {} reference(s)", symbol_name, contract.references.len());
 
-        debug!("Found {} definition(s) for '{}'", definitions.len(), symbol_name);
+            let mut locations: Vec<Location> = Vec::new();
 
-        // Priority 2: Look up symbol in rholang_symbols (replaces inverted_index lookup)
-        let symbol_decl = rholang_symbols.lookup(symbol_name)?;
-
-        debug!("Found symbol declaration for '{}' with {} reference(s)",
-               symbol_name, symbol_decl.references.len());
-
-        // Collect all reference locations
-        let mut locations: Vec<Location> = Vec::new();
-
-        // Include the declaration if requested
-        if include_declaration {
-            let decl_lsp_pos = ir_to_lsp_position(&symbol_decl.declaration.position);
-            locations.push(Location {
-                uri: symbol_decl.declaration.uri.clone(),
-                range: Range {
-                    start: decl_lsp_pos,
-                    end: LspPosition {
-                        line: decl_lsp_pos.line,
-                        character: decl_lsp_pos.character + symbol_name.len() as u32,
+            // Include declaration if requested
+            if include_declaration {
+                let decl_lsp_pos = ir_to_lsp_position(&contract.declaration.position);
+                locations.push(Location {
+                    uri: contract.declaration.uri.clone(),
+                    range: Range {
+                        start: decl_lsp_pos,
+                        end: LspPosition {
+                            line: decl_lsp_pos.line,
+                            character: decl_lsp_pos.character + symbol_name.len() as u32,
+                        },
                     },
-                },
-            });
-        }
+                });
+            }
 
-        // Add all references from rholang_symbols (replaces inverted_index lookup)
-        for ref_loc in &symbol_decl.references {
-            let ref_lsp_pos = ir_to_lsp_position(&ref_loc.position);
-            locations.push(Location {
-                uri: ref_loc.uri.clone(),
-                range: Range {
-                    start: ref_lsp_pos,
-                    end: LspPosition {
-                        line: ref_lsp_pos.line,
-                        character: ref_lsp_pos.character + symbol_name.len() as u32,
+            // Always include definition if it's different from declaration
+            // (definition is considered a "reference" to the declared symbol)
+            if let Some(ref definition) = contract.definition {
+                if definition.position != contract.declaration.position {
+                    let def_lsp_pos = ir_to_lsp_position(&definition.position);
+                    locations.push(Location {
+                        uri: definition.uri.clone(),
+                        range: Range {
+                            start: def_lsp_pos,
+                            end: LspPosition {
+                                line: def_lsp_pos.line,
+                                character: def_lsp_pos.character + symbol_name.len() as u32,
+                            },
+                        },
+                    });
+                }
+            }
+
+            // Add all contract references
+            for ref_loc in &contract.references {
+                let ref_lsp_pos = ir_to_lsp_position(&ref_loc.position);
+                locations.push(Location {
+                    uri: ref_loc.uri.clone(),
+                    range: Range {
+                        start: ref_lsp_pos,
+                        end: LspPosition {
+                            line: ref_lsp_pos.line,
+                            character: ref_lsp_pos.character + symbol_name.len() as u32,
+                        },
                     },
-                },
-            });
+                });
+            }
+
+            return if locations.is_empty() { None } else { Some(locations) };
         }
 
-        debug!("Found {} total reference location(s)", locations.len());
+        // Tier 2: Look up as local variable in symbol table
+        if let Some(symbol) = scope_table.lookup(symbol_name) {
+            debug!("Found local variable '{}' declared at {:?}", symbol_name, symbol.declaration_location);
 
-        if locations.is_empty() {
-            None
-        } else {
-            Some(locations)
+            let mut locations: Vec<Location> = Vec::new();
+
+            // Include declaration if requested
+            if include_declaration {
+                let decl_lsp_pos = ir_to_lsp_position(&symbol.declaration_location);
+                locations.push(Location {
+                    uri: symbol.declaration_uri.clone(),
+                    range: Range {
+                        start: decl_lsp_pos,
+                        end: LspPosition {
+                            line: decl_lsp_pos.line,
+                            character: decl_lsp_pos.character + symbol_name.len() as u32,
+                        },
+                    },
+                });
+            }
+
+            // Look up references in inverted_index
+            if let Some(refs) = inverted_index.get(&symbol.declaration_location) {
+                debug!("Found {} reference(s) in inverted_index", refs.len());
+                for ref_pos in refs {
+                    let ref_lsp_pos = ir_to_lsp_position(ref_pos);
+                    locations.push(Location {
+                        uri: uri.clone(),
+                        range: Range {
+                            start: ref_lsp_pos,
+                            end: LspPosition {
+                                line: ref_lsp_pos.line,
+                                character: ref_lsp_pos.character + symbol_name.len() as u32,
+                            },
+                        },
+                    });
+                }
+            }
+
+            return if locations.is_empty() { None } else { Some(locations) };
         }
+
+        debug!("Symbol '{}' not found in contracts or local variables", symbol_name);
+        None
     }
 
     /// Extract symbol name from node metadata or structure
     fn extract_symbol_name<'a>(&self, node: &'a dyn SemanticNode) -> Option<&'a str> {
         use crate::ir::rholang_node::RholangNode;
 
-        // Special case: For NameDecl nodes, extract name from the Var child
-        if node.type_name() == "Rholang::NameDecl" {
-            if let Some(rholang_node) = node.as_any().downcast_ref::<RholangNode>() {
-                if let RholangNode::NameDecl { var, .. } = rholang_node {
+        // Try to downcast to RholangNode and match on variants
+        if let Some(rholang_node) = node.as_any().downcast_ref::<RholangNode>() {
+            match rholang_node {
+                // For NameDecl nodes, extract name from the Var child
+                RholangNode::NameDecl { var, .. } => {
                     if let RholangNode::Var { name, .. } = var.as_ref() {
                         return Some(name.as_str());
                     }
                 }
-            }
-        }
-
-        // Special case: For Var nodes, extract name directly
-        if node.type_name() == "Rholang::Var" {
-            if let Some(rholang_node) = node.as_any().downcast_ref::<RholangNode>() {
-                if let RholangNode::Var { name, .. } = rholang_node {
+                // For Var nodes, extract name directly
+                RholangNode::Var { name, .. } => {
                     return Some(name.as_str());
                 }
+                // For Quote nodes (e.g., @fromRoom), extract from the inner node
+                RholangNode::Quote { quotable, .. } => {
+                    if let RholangNode::Var { name, .. } = quotable.as_ref() {
+                        return Some(name.as_str());
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -268,20 +317,30 @@ mod tests {
         let pos = Position { row: 0, column: 5, byte: 5 };
         let uri = Url::parse("file:///test.rho").unwrap();
 
-        // Create mock rholang_symbols with a test symbol
-        let rholang_symbols = Arc::new(RholangGlobalSymbols::new());
-        rholang_symbols.add_symbol(
+        // Create mock symbol_table and inverted_index for local variables
+        let symbol_table = Arc::new(crate::ir::symbol_table::SymbolTable::new(None));
+        let mut inverted_index = std::collections::HashMap::new();
+
+        // Insert a test symbol
+        use crate::ir::symbol_table::Symbol;
+        symbol_table.insert(Arc::new(Symbol::new(
             "test_var".to_string(),
-            SymbolType::NewBind,
+            SymbolType::Variable,
             uri.clone(),
             pos.clone(),
-        );
+        )));
 
-        let result = refs.find_references(&node, &pos, &uri, &adapter, true, &rholang_symbols).await;
+        // Add a reference in inverted_index
+        inverted_index.insert(pos.clone(), vec![Position { row: 5, column: 10, byte: 50 }]);
+
+        // Empty rholang_symbols (no contracts)
+        let rholang_symbols = Arc::new(RholangContracts::new());
+
+        let result = refs.find_references(&node, &pos, &uri, &adapter, true, &symbol_table, &inverted_index, &rholang_symbols).await;
 
         assert!(result.is_some());
         let locs = result.unwrap();
-        assert_eq!(locs.len(), 1); // Just the declaration
+        assert_eq!(locs.len(), 2); // Declaration + 1 reference from inverted_index
         assert_eq!(locs[0].uri.as_str(), "file:///test.rho");
     }
 
@@ -300,10 +359,12 @@ mod tests {
         let pos = Position { row: 0, column: 5, byte: 5 };
         let uri = Url::parse("file:///test.rho").unwrap();
 
-        // Create empty rholang_symbols
-        let rholang_symbols = Arc::new(RholangGlobalSymbols::new());
+        // Create empty symbol_table, inverted_index, and rholang_symbols
+        let symbol_table = Arc::new(crate::ir::symbol_table::SymbolTable::new(None));
+        let inverted_index = std::collections::HashMap::new();
+        let rholang_symbols = Arc::new(RholangContracts::new());
 
-        let result = refs.find_references(&node, &pos, &uri, &adapter, true, &rholang_symbols).await;
+        let result = refs.find_references(&node, &pos, &uri, &adapter, true, &symbol_table, &inverted_index, &rholang_symbols).await;
 
         assert!(result.is_none());
     }

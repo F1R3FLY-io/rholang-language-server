@@ -5,7 +5,7 @@
 //!
 //! Line 409 (1-indexed) contains: robotAPI!("transport_object", "ball1", "room_a", *result4c)
 //! - Column 35-42 (1-indexed) covers "robotAPI"
-//! - Expected definition: line 20, column 12 (1-indexed) where robotAPI is declared in `new`
+//! - Expected definition: line 279, column 12 (1-indexed) where robotAPI "transport_object" clause is defined
 
 use std::fs;
 use test_utils::with_lsp_client;
@@ -37,23 +37,22 @@ with_lsp_client!(test_goto_definition_robotapi_all_positions, CommType::Stdio, |
 
     println!("✓ Diagnostics received");
 
-    // Expected definition location (1-indexed: line 20, column 12)
-    // In LSP (0-indexed): line 19, character 11
-    let expected_line = 19u32;  // Line 20 in 1-indexed
-    let expected_char = 11u32;  // Column 12 in 1-indexed
+    // Expected definition location (1-indexed: line 279, column 12)
+    // In LSP (0-indexed): line 278, character 11
+    let expected_line = 278u32;  // Line 279 in 1-indexed (contract robotAPI "transport_object" clause)
+    let expected_char = 11u32;   // Column 12 in 1-indexed
 
     println!("\n=== Testing goto_definition across 'robotAPI' identifier ===");
     println!("Expected definition: line {} (0-indexed), character {} (0-indexed)", expected_line, expected_char);
-    println!("                    (line 20, column 12 in 1-indexed)\n");
+    println!("                    (line 279, column 12 in 1-indexed - transport_object clause)\n");
 
     // Line 409 (1-indexed) = line 408 (0-indexed)
     // Columns 35-43 (1-indexed) = characters 34-42 (0-indexed)
     let test_line = 408u32;
 
     // Test each character position in "robotAPI" (columns 35-42 in 1-indexed, 34-41 in 0-indexed)
-    // Including the word boundary at column 43 (character 42 in 0-indexed)
     let start_char = 34u32;  // Column 35 in 1-indexed (start of "robotAPI")
-    let end_char = 42u32;    // Column 43 in 1-indexed (word boundary after "robotAPI")
+    let end_char = 41u32;    // Column 42 in 1-indexed (last character of "robotAPI")
 
     let mut all_passed = true;
     let mut results = Vec::new();

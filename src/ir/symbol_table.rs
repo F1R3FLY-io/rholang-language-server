@@ -38,6 +38,10 @@ pub struct Symbol {
     /// For Contract symbols: stores the pattern signature
     /// This enables O(1) pattern lookup instead of O(n) IR tree traversal
     pub contract_pattern: Option<ContractPattern>,
+    /// For Contract symbols with complex identifiers: stores the full identifier node
+    /// Simple identifiers (Var, Quote(StringLiteral)) are stored in `name` only.
+    /// Complex identifiers (Quote(Map), Quote(List), etc.) are stored here for structural matching.
+    pub contract_identifier_node: Option<Arc<RholangNode>>,
 }
 
 impl Symbol {
@@ -50,6 +54,7 @@ impl Symbol {
             declaration_location,
             definition_location: None,
             contract_pattern: None,
+            contract_identifier_node: None,
         }
     }
 
@@ -73,6 +78,7 @@ impl Symbol {
                 formals_remainder,
                 proc,
             }),
+            contract_identifier_node: None,
         }
     }
 

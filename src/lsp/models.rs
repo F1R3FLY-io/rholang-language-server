@@ -78,7 +78,8 @@ pub struct CachedDocument {
     pub tree: Arc<Tree>,
     /// Symbol table for this document
     pub symbol_table: Arc<SymbolTable>,
-    /// Inverted index for rename/references (TODO: Phase 4.3 - remove)
+    /// Inverted index: Maps declaration position -> reference positions for local symbols
+    /// Used for find-references and rename operations on local variables
     pub inverted_index: InvertedIndex,
     /// Document version number
     pub version: i32,
@@ -154,10 +155,8 @@ pub struct WorkspaceState {
     /// Infrequent updates (only during workspace indexing)
     pub global_table: Arc<tokio::sync::RwLock<SymbolTable>>,
 
-    /// Inverted index for cross-file references
-    /// Lock-free for concurrent reads during LSP operations
-    /// Key: (definition_uri, definition_position), Value: list of (usage_uri, usage_position)
-    pub global_inverted_index: Arc<DashMap<(Url, IrPosition), Vec<(Url, IrPosition)>>>,
+    /// REMOVED (Priority 2b): global_inverted_index - now stored in rholang_symbols
+    // pub global_inverted_index: Arc<DashMap<(Url, IrPosition), Vec<(Url, IrPosition)>>>,
 
     /// Lock-free contract tracking by URI
     /// Allows concurrent contract discovery without blocking
@@ -181,7 +180,7 @@ pub struct WorkspaceState {
     /// NEW: Unified Rholang symbol storage (replaces global_symbols + global_table + global_inverted_index)
     /// Lock-free, single-source-of-truth for all Rholang symbols
     /// Enforces Rholang constraints: 1 declaration + 0-1 definition + N references
-    pub rholang_symbols: Arc<crate::lsp::rholang_global_symbols::RholangGlobalSymbols>,
+    pub rholang_symbols: Arc<crate::lsp::rholang_contracts::RholangContracts>,
 
     /// Phase 2 optimization: Track workspace indexing state for lazy initialization
     /// Wrapped in RwLock as it's updated infrequently (only during indexing lifecycle changes)
@@ -194,12 +193,12 @@ impl WorkspaceState {
         Self {
             documents: Arc::new(DashMap::new()),
             global_table: Arc::new(tokio::sync::RwLock::new(SymbolTable::new(None))),
-            global_inverted_index: Arc::new(DashMap::new()),
+            // REMOVED (Priority 2b): global_inverted_index initialization
             global_contracts: Arc::new(DashMap::new()),
             global_calls: Arc::new(DashMap::new()),
             global_index: Arc::new(std::sync::RwLock::new(GlobalSymbolIndex::new())),
             global_virtual_symbols: Arc::new(DashMap::new()),
-            rholang_symbols: Arc::new(crate::lsp::rholang_global_symbols::RholangGlobalSymbols::new()),
+            rholang_symbols: Arc::new(crate::lsp::rholang_contracts::RholangContracts::new()),
             indexing_state: Arc::new(tokio::sync::RwLock::new(IndexingState::Idle)),
         }
     }

@@ -85,7 +85,7 @@ fn test_robot_planning_lsp_operations_impl() {
     use rholang_language_server::ir::visitor::Visitor;
 
     let global_table = Arc::new(SymbolTable::new(None));
-    let builder = SymbolTableBuilder::new(ir2.clone(), uri.clone(), global_table.clone());
+    let builder = SymbolTableBuilder::new(ir2.clone(), uri.clone(), global_table.clone(), None);
 
     // Visit the IR tree - this is where deep recursion happens
     let _transformed_ir = builder.visit_node(&ir2);

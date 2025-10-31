@@ -1,8 +1,134 @@
 # Rholang Language Server
 
-LSP-based Language Server for Rholang (Language Server Protocol).
+Language Server Protocol (LSP) implementation for Rholang, the smart contract language for the RChain blockchain.
 
-## Dependencies
+## Features
+
+- **Go to Definition** - Navigate to symbol declarations with cross-file support
+- **Find References** - Find all usages of a symbol across the workspace
+- **Hover Information** - View symbol types, signatures, and documentation
+- **Semantic Rename** - Safely rename symbols with workspace-wide atomic edits
+- **Document Symbols** - Outline view of contracts, variables, and definitions
+- **Document Highlighting** - Highlight all occurrences of the symbol under cursor
+- **Diagnostics** - Syntax and semantic error detection (via RNode integration)
+- **MeTTa Support** - Embedded MeTTa language support within Rholang strings
+- **Pattern Matching** - Contract overload resolution with multi-argument matching
+- **Cross-File Navigation** - Navigate definitions and references across multiple files
+
+## Installation
+
+### Package Managers
+
+#### Debian/Ubuntu
+
+Download the `.deb` package from [Releases](https://github.com/F1R3FLY-io/rholang-language-server/releases):
+
+```bash
+sudo dpkg -i rholang-language-server_0.1.0_amd64.deb
+# If dependencies are missing:
+sudo apt-get install -f
+```
+
+####  RedHat/Fedora/CentOS
+
+Download the `.rpm` package from [Releases](https://github.com/F1R3FLY-io/rholang-language-server/releases):
+
+```bash
+sudo dnf install rholang-language-server-0.1.0-1.x86_64.rpm
+# Or for older systems:
+sudo yum install rholang-language-server-0.1.0-1.x86_64.rpm
+```
+
+#### Arch Linux
+
+Download the package from [Releases](https://github.com/F1R3FLY-io/rholang-language-server/releases):
+
+```bash
+sudo pacman -U rholang-language-server-0.1.0-1-x86_64.pkg.tar.zst
+```
+
+#### macOS
+
+Download the `.dmg` from [Releases](https://github.com/F1R3FLY-io/rholang-language-server/releases), mount it, and copy to `/usr/local/bin`:
+
+```bash
+# After downloading and mounting the DMG:
+sudo cp "/Volumes/Rholang Language Server/rholang-language-server" /usr/local/bin/
+```
+
+### Binary Download
+
+Download the appropriate archive for your platform from [Releases](https://github.com/F1R3FLY-io/rholang-language-server/releases):
+
+```bash
+# Linux x86_64
+wget https://github.com/F1R3FLY-io/rholang-language-server/releases/download/v0.1.0/rholang-language-server-linux-x86_64.tar.gz
+tar xzf rholang-language-server-linux-x86_64.tar.gz
+chmod +x rholang-language-server
+sudo mv rholang-language-server /usr/local/bin/
+
+# macOS (ARM64)
+wget https://github.com/F1R3FLY-io/rholang-language-server/releases/download/v0.1.0/rholang-language-server-macos-arm64.tar.gz
+tar xzf rholang-language-server-macos-arm64.tar.gz
+chmod +x rholang-language-server
+sudo mv rholang-language-server /usr/local/bin/
+```
+
+## Requirements
+
+- **Rust**: Nightly toolchain (edition 2024) - only required for building from source
+- **Protobuf**: `protoc` compiler - only required for building from source
+- **RNode**: Optional, for semantic validation and diagnostics
+- **Platform**: Linux x86_64/ARM64 or macOS x86_64/ARM64
+
+## Editor Integration
+
+### VSCode
+
+Install the Rholang extension and add to your `settings.json`:
+
+```json
+{
+  "rholang.languageServer.path": "/usr/local/bin/rholang-language-server",
+  "rholang.trace.server": "verbose"
+}
+```
+
+### Neovim
+
+With `nvim-lspconfig`:
+
+```lua
+require'lspconfig'.rholang_ls.setup{
+  cmd = {"/usr/local/bin/rholang-language-server"},
+  filetypes = {"rholang"},
+  root_dir = require'lspconfig'.util.root_pattern(".git"),
+}
+```
+
+### Emacs
+
+With `lsp-mode`:
+
+```elisp
+(add-to-list 'lsp-language-id-configuration '(rholang-mode . "rholang"))
+(lsp-register-client
+ (make-lsp-client :new-connection (lsp-stdio-connection "/usr/local/bin/rholang-language-server")
+                  :major-modes '(rholang-mode)
+                  :server-id 'rholang-ls))
+```
+
+### Other LSP Clients
+
+The language server communicates via standard LSP protocol over stdio. Configure your LSP client to launch:
+
+```bash
+/usr/local/bin/rholang-language-server
+```
+
+## Building from Source
+
+### Dependencies for RNode (Optional)
 
 Clone [f1r3fly](https://github.com/F1R3FLY-io/f1r3fly) and compile `rnode`:
 
@@ -15,7 +141,7 @@ sbt clean bnfc:generate compile stage
 export PATH="$PWD/node/target/universal/stage/bin:$PATH"
 ```
 
-## Installing
+### Compiling the Language Server
 
 Clone [rholang-language-server](https://github.com/F1R3FLY-io/rholang-language-server) and compile it:
 

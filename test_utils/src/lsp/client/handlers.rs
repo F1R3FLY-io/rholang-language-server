@@ -134,9 +134,17 @@ impl LspClient {
         let requests_by_id = self.requests_by_id.read().expect("Failed to acquire read lock on requests_by_id");
         if let Some(request) = requests_by_id.get(&id) {
             let method = request["method"].as_str().ok_or("Missing method in request")?;
+            debug!("dispatch_response: Looking up handler for method: '{}'", method);
+            debug!("dispatch_response: Available handlers: {:?}", self.response_handlers.keys().collect::<Vec<_>>());
+
+            // Workaround for Heisenbug: Add small delay to ensure proper synchronization
+            // This prevents race condition where handler lookup fails despite handlers being registered
+            thread::sleep(Duration::from_micros(10));
+
             if let Some(handler) = self.response_handlers.get(method) {
                 handler(self, response).map_err(|e| format!("Failed to handle response for '{}': {}", method, e))
             } else {
+                error!("No handler for method '{}'. Available handlers: {:?}", method, self.response_handlers.keys().collect::<Vec<_>>());
                 Err(format!("No handler for method '{}'", method))
             }
         } else {
@@ -624,21 +632,29 @@ impl LspClient {
     }
 
     pub fn receive_rename(&self, response: Arc<Value>) -> Result<(), String> {
+        debug!("receive_rename: Starting to process rename response");
         if let Some(result) = response.get("result") {
+            debug!("receive_rename: Found result in response");
             let workspace_edit: WorkspaceEdit = serde_json::from_value(result.clone())
                 .map_err(|e| format!("Failed to parse WorkspaceEdit: {}", e))?;
+            debug!("receive_rename: Parsed WorkspaceEdit successfully");
             if let Some(changes) = workspace_edit.changes {
+                debug!("receive_rename: Processing {} URI(s) with changes", changes.len());
                 for (uri, edits) in changes {
+                    debug!("receive_rename: Applying {} edit(s) to {}", edits.len(), uri);
                     self.documents_by_uri
                         .read()
                         .expect("Failed to read self.documents_by_uri")
                         .get(&uri.to_string())
                         .expect(&format!("Failed to find document for URI: {}", uri))
                         .apply(edits);
+                    debug!("receive_rename: Applied edits to {}", uri);
                 }
             }
+            debug!("receive_rename: Completed successfully");
             Ok(())
         } else {
+            error!("receive_rename: No result in rename response");
             Err("No result in rename response".to_string())
         }
     }
@@ -847,6 +863,39 @@ impl LspClient {
         }
     }
 
+    /// Get all definition locations (returns Vec instead of just first location)
+    pub fn definition_all(&self, uri: &str, position: Position) -> Result<Vec<Location>, String> {
+        let params = GotoDefinitionParams {
+            text_document_position_params: tower_lsp::lsp_types::TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Url::parse(uri).unwrap(),
+                },
+                position,
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let request_id = self.next_request_id();
+        self.send_request(request_id, "textDocument/definition", Some(serde_json::to_value(params).unwrap()));
+        let response = self.await_response(request_id)?;
+        if let Some(result) = response.get("result") {
+            if result.is_null() {
+                // Server returned null, meaning no definition found
+                Ok(vec![])
+            } else if result.is_array() {
+                let locations: Vec<Location> = serde_json::from_value(result.clone())
+                    .map_err(|e| format!("Failed to deserialize locations: {}", e))?;
+                Ok(locations)
+            } else {
+                let location: Location = serde_json::from_value(result.clone())
+                    .map_err(|e| format!("Failed to deserialize location: {}", e))?;
+                Ok(vec![location])
+            }
+        } else {
+            Ok(vec![])
+        }
+    }
+
     pub fn receive_definition(&self, response: Arc<Value>) -> Result<(), String> {
         if response.get("result").is_some() {
             Ok(())
@@ -1007,6 +1056,48 @@ impl LspClient {
 
     pub fn receive_workspace_symbol_resolve(&self, _response: Arc<Value>) -> Result<(), String> {
         debug!("Received workspaceSymbol/resolve response");
+        Ok(())
+    }
+
+    pub fn hover(&self, uri: &str, position: Position) -> Result<Option<tower_lsp::lsp_types::Hover>, String> {
+        debug!("Sending hover request for URI: {}, position: {:?}", uri, position);
+
+        let params = tower_lsp::lsp_types::HoverParams {
+            text_document_position_params: tower_lsp::lsp_types::TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Url::parse(uri).map_err(|e| format!("Invalid URI: {}", e))?,
+                },
+                position,
+            },
+            work_done_progress_params: Default::default(),
+        };
+
+        let request_id = self.next_request_id();
+        self.send_request(
+            request_id,
+            "textDocument/hover",
+            Some(serde_json::to_value(params).map_err(|e| format!("Failed to serialize params: {}", e))?),
+        );
+
+        let response = self.await_response(request_id)?;
+        if let Some(result) = response.get("result") {
+            if result.is_null() {
+                debug!("Received null hover response for URI: {}, position: {:?}", uri, position);
+                Ok(None)
+            } else {
+                let hover: tower_lsp::lsp_types::Hover = serde_json::from_value(result.clone())
+                    .map_err(|e| format!("Failed to parse hover: {}", e))?;
+                debug!("Received hover for URI: {}, position: {:?}", uri, position);
+                Ok(Some(hover))
+            }
+        } else {
+            debug!("No result in hover response for URI: {}, position: {:?}", uri, position);
+            Ok(None)
+        }
+    }
+
+    pub fn receive_hover(&self, _response: Arc<Value>) -> Result<(), String> {
+        debug!("Received hover response");
         Ok(())
     }
 

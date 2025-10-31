@@ -80,25 +80,68 @@ impl GenericGotoDefinition {
         // Find node at position
         let node = find_node_at_position(root, position)?;
         debug!(
-            "Found node at position: type={}, category={:?}",
+            "GenericGotoDefinition: Found node at position: type={}, category={:?}",
             node.type_name(),
             node.semantic_category()
         );
 
         // Get symbol name based on semantic category
-        let symbol_name = self.extract_symbol_name(node)?;
-        debug!("Extracted symbol name: '{}'", symbol_name);
+        let symbol_name = match self.extract_symbol_name(node) {
+            Some(name) => {
+                debug!("GenericGotoDefinition: Extracted symbol name: '{}'", name);
+                name
+            }
+            None => {
+                debug!("GenericGotoDefinition: FAILED to extract symbol name from node type={}", node.type_name());
+                return None;
+            }
+        };
 
-        // Create resolution context
+        // Check if node has referenced_symbol metadata (set by SymbolTableBuilder)
+        // If so, use it directly to get the definition location, bypassing resolver
+        if let Some(metadata) = node.metadata() {
+            if let Some(sym_any) = metadata.get("referenced_symbol") {
+                if let Some(symbol) = sym_any.downcast_ref::<Arc<crate::ir::symbol_table::Symbol>>() {
+                    debug!("Using referenced_symbol metadata for '{}'", symbol.name);
+
+                    // Use definition location if available, otherwise declaration
+                    let target_location = symbol.definition_location.as_ref().unwrap_or(&symbol.declaration_location);
+
+                    use tower_lsp::lsp_types::{Position as LspPosition, Range};
+                    let lsp_pos = LspPosition {
+                        line: target_location.row as u32,
+                        character: target_location.column as u32,
+                    };
+                    let range = Range {
+                        start: lsp_pos,
+                        end: LspPosition {
+                            line: lsp_pos.line,
+                            character: lsp_pos.character + symbol.name.len() as u32,
+                        },
+                    };
+
+                    let location = tower_lsp::lsp_types::Location {
+                        uri: symbol.declaration_uri.clone(),
+                        range,
+                    };
+
+                    debug!("Referenced symbol resolved to {:?}", location);
+                    return Some(GotoDefinitionResponse::Scalar(location));
+                }
+            }
+        }
+
+        // Fallback: Use language adapter's resolver to find definition
+        // The LexicalScopeResolver will query the symbol table at this position
+        // to find the symbol and its scope_id, so we don't need to extract it here
         let context = ResolutionContext {
             uri: uri.clone(),
-            scope_id: None, // TODO: Extract from node metadata if available
-            ir_node: None,  // Could pass node here if needed
+            scope_id: None, // LexicalScopeResolver will extract from symbol table via position
+            ir_node: None,  // Not needed - resolver uses position lookup
             language: adapter.language_name().to_string(),
             parent_uri: None, // Set by caller if this is a virtual document
         };
 
-        // Use language adapter's resolver to find definition
         let locations = adapter.resolver.resolve_symbol(
             symbol_name,
             position,
@@ -185,6 +228,13 @@ impl GenericGotoDefinition {
                         return Some(name.as_str());
                     }
                 }
+                RholangNode::Quote { quotable, .. } => {
+                    // For Quote nodes (e.g., @fromRoom), extract from the inner node
+                    if let RholangNode::Var { name, .. } = &**quotable {
+                        debug!("Extracted symbol name from RholangNode::Quote->Var: {}", name);
+                        return Some(name.as_str());
+                    }
+                }
                 _ => {}
             }
         }
@@ -202,6 +252,16 @@ impl GenericGotoDefinition {
                     return Some(name.as_str());
                 }
                 _ => {}
+            }
+        }
+
+        // Try to extract from RholangNode again for StringLiteral special case
+        // (quoted contract invocations: @"contractName"!(...))
+        if let Some(rholang_node) = node.as_any().downcast_ref::<crate::ir::rholang_node::RholangNode>() {
+            use crate::ir::rholang_node::RholangNode;
+            if let RholangNode::StringLiteral { value, .. } = rholang_node {
+                debug!("Extracted contract name from StringLiteral: {}", value);
+                return Some(value.as_str());
             }
         }
 

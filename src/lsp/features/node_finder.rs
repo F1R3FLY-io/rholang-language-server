@@ -40,6 +40,17 @@ pub fn find_node_at_position<'a>(
     find_node_at_position_recursive(root, position, &Position { row: 0, column: 0, byte: 0 })
 }
 
+/// Find a node at the given position with an explicit prev_end
+///
+/// This is useful for multi-root scenarios where each root's position is relative to the previous root.
+pub fn find_node_at_position_with_prev_end<'a>(
+    root: &'a dyn SemanticNode,
+    position: &Position,
+    prev_end: &Position,
+) -> Option<&'a dyn SemanticNode> {
+    find_node_at_position_recursive(root, position, prev_end)
+}
+
 /// Recursive helper for find_node_at_position
 fn find_node_at_position_recursive<'a>(
     node: &'a dyn SemanticNode,

@@ -130,6 +130,47 @@ pub struct DocumentationContext {
     pub qualified_name: Option<String>,
 }
 
+/// Context for goto-definition operations
+///
+/// Provides all necessary information for language-specific goto-definition handlers.
+#[derive(Clone)]
+pub struct GotoDefinitionContext {
+    /// URI of the document
+    pub uri: Url,
+    /// Position in IR coordinates
+    pub ir_position: Position,
+    /// All top-level IR nodes (for multi-root documents like MeTTa)
+    pub all_roots: Vec<Arc<dyn SemanticNode>>,
+    /// Symbol table for the document (as trait object)
+    pub symbol_table: Arc<dyn std::any::Any + Send + Sync>,
+    /// Language identifier
+    pub language: String,
+    /// Parent URI for virtual documents
+    pub parent_uri: Option<Url>,
+}
+
+/// Provider trait for goto-definition
+///
+/// Languages can optionally implement this to provide specialized goto-definition handling.
+/// This is useful for languages with complex scoping (like MeTTa's multi-root IR) or
+/// unique symbol resolution requirements.
+///
+/// If not provided, the generic goto-definition handler will be used.
+#[async_trait::async_trait]
+pub trait GotoDefinitionProvider: Send + Sync {
+    /// Resolve a symbol's definition location(s)
+    ///
+    /// # Arguments
+    /// * `context` - All context needed for goto-definition resolution
+    ///
+    /// # Returns
+    /// `Some(GotoDefinitionResponse)` with definition location(s), or `None` if not found
+    async fn goto_definition(
+        &self,
+        context: &GotoDefinitionContext,
+    ) -> Option<tower_lsp::lsp_types::GotoDefinitionResponse>;
+}
+
 /// Provider trait for hover information
 ///
 /// Languages implement this to customize what information is shown when hovering
@@ -351,6 +392,13 @@ pub struct LanguageAdapter {
 
     /// Optional formatting provider
     pub formatting: Option<Arc<dyn FormattingProvider>>,
+
+    /// Optional specialized goto-definition provider
+    ///
+    /// If provided, this takes precedence over the generic goto-definition handler.
+    /// Useful for languages with complex scoping (e.g., MeTTa's multi-root IR) or
+    /// unique symbol resolution requirements.
+    pub goto_definition: Option<Arc<dyn GotoDefinitionProvider>>,
 }
 
 impl LanguageAdapter {
@@ -379,6 +427,7 @@ impl LanguageAdapter {
             completion,
             documentation,
             formatting: None,
+            goto_definition: None,
         }
     }
 
@@ -409,6 +458,7 @@ impl LanguageAdapter {
             completion,
             documentation,
             formatting: Some(formatting),
+            goto_definition: None,
         }
     }
 

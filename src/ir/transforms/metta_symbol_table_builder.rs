@@ -70,9 +70,49 @@ pub struct MettaSymbolTable {
 impl MettaSymbolTable {
     /// Find the symbol occurrence at a given position
     pub fn find_symbol_at_position(&self, position: &LspPosition) -> Option<&SymbolOccurrence> {
-        self.all_occurrences.iter().find(|occ| {
-            position_in_range(position, &occ.range)
-        })
+        use tracing::debug;
+
+        debug!(
+            "MettaSymbolTable::find_symbol_at_position: Searching for symbol at L{}:C{}",
+            position.line, position.character
+        );
+        debug!(
+            "Total occurrences in symbol table: {}",
+            self.all_occurrences.len()
+        );
+
+        // Log first 10 occurrences for debugging
+        for (i, occ) in self.all_occurrences.iter().take(10).enumerate() {
+            debug!(
+                "  Occurrence {}: '{}' at L{}:C{}-L{}:C{} (scope={}, is_def={}, kind={:?})",
+                i,
+                occ.name,
+                occ.range.start.line, occ.range.start.character,
+                occ.range.end.line, occ.range.end.character,
+                occ.scope_id,
+                occ.is_definition,
+                occ.kind
+            );
+        }
+
+        let result = self.all_occurrences.iter().find(|occ| {
+            let in_range = position_in_range(position, &occ.range);
+            if in_range {
+                debug!(
+                    "  MATCH: Found symbol '{}' at L{}:C{}-L{}:C{}",
+                    occ.name,
+                    occ.range.start.line, occ.range.start.character,
+                    occ.range.end.line, occ.range.end.character
+                );
+            }
+            in_range
+        });
+
+        if result.is_none() {
+            debug!("  No symbol found at position L{}:C{}", position.line, position.character);
+        }
+
+        result
     }
 
     /// Find all occurrences of a symbol in its scope
@@ -443,7 +483,7 @@ impl MettaSymbolTableBuilder {
                 }
             }
 
-            MettaNode::Atom { name, .. } if is_definition => {
+            MettaNode::Atom { name, .. } => {
                 if let Some(range) = self.get_node_range(pattern) {
                     let occurrence = SymbolOccurrence {
                         name: name.clone(),

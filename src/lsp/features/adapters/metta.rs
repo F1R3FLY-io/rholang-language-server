@@ -4,22 +4,31 @@
 //! unified LanguageAdapter architecture.
 
 use std::sync::Arc;
-use tower_lsp::lsp_types::{HoverContents, CompletionItem, Documentation, MarkupContent, MarkupKind, CompletionItemKind, Url};
+use tower_lsp::lsp_types::{
+    HoverContents, CompletionItem, Documentation, MarkupContent, MarkupKind,
+    CompletionItemKind, Url, GotoDefinitionResponse, Location, Range,
+    Position as LspPosition,
+};
+use tracing::debug;
 
 use crate::lsp::features::traits::{
     LanguageAdapter, HoverProvider, CompletionProvider, DocumentationProvider,
-    HoverContext, CompletionContext, DocumentationContext,
+    HoverContext, CompletionContext, DocumentationContext, GotoDefinitionProvider,
+    GotoDefinitionContext,
 };
-use crate::ir::semantic_node::SemanticNode;
+use crate::ir::semantic_node::{SemanticNode, Position};
 use crate::ir::symbol_resolution::{
     SymbolResolver,
     lexical_scope::LexicalScopeResolver,
     composable::ComposableSymbolResolver,
     GlobalVirtualSymbolResolver,
     filters::MettaPatternFilter,
+    ResolutionContext,
 };
 use crate::ir::transforms::metta_symbol_table_builder::MettaSymbolTable;
+use crate::ir::metta_node::MettaNode;
 use crate::lsp::models::WorkspaceState;
+use crate::lsp::features::node_finder::find_node_at_position_with_prev_end;
 
 /// MeTTa-specific hover provider
 pub struct MettaHoverProvider;
@@ -38,6 +47,36 @@ impl HoverProvider for MettaHoverProvider {
             kind: MarkupKind::Markdown,
             value: content,
         }))
+    }
+
+    fn hover_for_language_specific(
+        &self,
+        node: &dyn SemanticNode,
+        _context: &HoverContext,
+    ) -> Option<HoverContents> {
+        use crate::ir::metta_node::MettaNode;
+
+        // Try to downcast to MettaNode and extract symbol name
+        if let Some(metta_node) = node.as_any().downcast_ref::<MettaNode>() {
+            match metta_node {
+                MettaNode::Atom { name, .. } => {
+                    let content = format!("**{}**\n\n*MeTTa atom*", name);
+                    return Some(HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: content,
+                    }));
+                }
+                MettaNode::Variable { name, .. } => {
+                    let content = format!("**{}**\n\n*MeTTa variable*", name);
+                    return Some(HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: content,
+                    }));
+                }
+                _ => {}
+            }
+        }
+        None
     }
 }
 
@@ -106,6 +145,153 @@ impl DocumentationProvider for MettaDocumentationProvider {
     }
 }
 
+/// MeTTa-specific goto-definition provider
+///
+/// Handles MeTTa's multi-root IR structure with proper position tracking.
+/// Uses the composable resolver with lexical scoping, pattern filtering,
+/// and cross-document resolution.
+pub struct MettaGotoDefinitionProvider {
+    resolver: Arc<dyn SymbolResolver>,
+    symbol_table: Arc<MettaSymbolTable>,
+}
+
+impl MettaGotoDefinitionProvider {
+    pub fn new(resolver: Arc<dyn SymbolResolver>, symbol_table: Arc<MettaSymbolTable>) -> Self {
+        Self {
+            resolver,
+            symbol_table,
+        }
+    }
+
+    /// Extract symbol name from a MeTTa node
+    fn extract_symbol_name<'a>(&self, node: &'a dyn SemanticNode) -> Option<&'a str> {
+        if let Some(metta_node) = node.as_any().downcast_ref::<MettaNode>() {
+            match metta_node {
+                MettaNode::Atom { name, .. } => {
+                    debug!("MettaGotoDefinition: Extracted symbol from Atom: {}", name);
+                    return Some(name.as_str());
+                }
+                MettaNode::Variable { name, .. } => {
+                    debug!("MettaGotoDefinition: Extracted symbol from Variable: {}", name);
+                    return Some(name.as_str());
+                }
+                _ => {
+                    debug!("MettaGotoDefinition: Node is not Atom or Variable: {:?}", metta_node);
+                }
+            }
+        }
+        None
+    }
+}
+
+#[async_trait::async_trait]
+impl GotoDefinitionProvider for MettaGotoDefinitionProvider {
+    async fn goto_definition(
+        &self,
+        context: &GotoDefinitionContext,
+    ) -> Option<GotoDefinitionResponse> {
+        debug!(
+            "MettaGotoDefinition: Starting goto_definition at position {:?}",
+            context.ir_position
+        );
+
+        // Iterate through all top-level nodes to find one containing the position
+        let mut prev_end = Position { row: 0, column: 0, byte: 0 };
+
+        for (i, root) in context.all_roots.iter().enumerate() {
+            let node = find_node_at_position_with_prev_end(
+                root.as_ref(),
+                &context.ir_position,
+                &prev_end,
+            );
+
+            if let Some(node) = node {
+                debug!(
+                    "MettaGotoDefinition: Found node in root {} at position {:?}",
+                    i, context.ir_position
+                );
+
+                // Extract symbol name from the node
+                let symbol_name = match self.extract_symbol_name(node) {
+                    Some(name) => {
+                        debug!("MettaGotoDefinition: Extracted symbol name: '{}'", name);
+                        name
+                    }
+                    None => {
+                        debug!(
+                            "MettaGotoDefinition: Failed to extract symbol name from node type={}",
+                            node.type_name()
+                        );
+                        // Update prev_end and continue to next root
+                        let start = root.absolute_position(prev_end);
+                        prev_end = root.absolute_end(start);
+                        continue;
+                    }
+                };
+
+                // Find the symbol at position to get scope_id
+                let lsp_pos = LspPosition {
+                    line: context.ir_position.row as u32,
+                    character: context.ir_position.column as u32,
+                };
+
+                let symbol = self.symbol_table.find_symbol_at_position(&lsp_pos);
+                let scope_id = symbol.map(|s| s.scope_id);
+
+                debug!(
+                    "MettaGotoDefinition: Symbol '{}' has scope_id={:?}",
+                    symbol_name, scope_id
+                );
+
+                // Build resolution context
+                let res_context = ResolutionContext {
+                    uri: context.uri.clone(),
+                    scope_id,
+                    ir_node: None, // We can't pass the node due to Send + Sync constraints
+                    language: "metta".to_string(),
+                    parent_uri: context.parent_uri.clone(),
+                };
+
+                // Use the resolver to find definitions
+                let locations = self.resolver.resolve_symbol(
+                    symbol_name,
+                    &context.ir_position,
+                    &res_context,
+                );
+
+                debug!(
+                    "MettaGotoDefinition: Resolver found {} location(s) for '{}'",
+                    locations.len(),
+                    symbol_name
+                );
+
+                if !locations.is_empty() {
+                    // Convert SymbolLocation to LSP Location
+                    let lsp_locations: Vec<Location> = locations
+                        .into_iter()
+                        .map(|loc| Location {
+                            uri: loc.uri,
+                            range: loc.range,
+                        })
+                        .collect();
+
+                    return Some(GotoDefinitionResponse::Array(lsp_locations));
+                }
+            }
+
+            // Update prev_end for next root
+            let start = root.absolute_position(prev_end);
+            prev_end = root.absolute_end(start);
+        }
+
+        debug!(
+            "MettaGotoDefinition: No definition found at position {:?}",
+            context.ir_position
+        );
+        None
+    }
+}
+
 /// Create a MeTTa language adapter with composable symbol resolution
 ///
 /// # Arguments
@@ -163,14 +349,24 @@ pub fn create_metta_adapter(
     let completion = Arc::new(MettaCompletionProvider);
     let documentation = Arc::new(MettaDocumentationProvider);
 
+    // Create specialized goto-definition provider for multi-root support
+    let goto_definition = Arc::new(
+        MettaGotoDefinitionProvider::new(resolver.clone(), symbol_table.clone())
+    );
+
     // Bundle into adapter
-    LanguageAdapter::new(
+    let mut adapter = LanguageAdapter::new(
         "metta",
         resolver,
         hover,
         completion,
         documentation,
-    )
+    );
+
+    // Set the specialized goto-definition provider
+    adapter.goto_definition = Some(goto_definition);
+
+    adapter
 }
 
 #[cfg(test)]
@@ -193,12 +389,12 @@ mod tests {
         let workspace = Arc::new(WorkspaceState {
             documents: Arc::new(DashMap::new()),
             global_table: Arc::new(tokio::sync::RwLock::new(crate::ir::symbol_table::SymbolTable::new(None))),
-            global_inverted_index: Arc::new(DashMap::new()),
+            // REMOVED (Priority 2b): global_inverted_index
             global_contracts: Arc::new(DashMap::new()),
             global_calls: Arc::new(DashMap::new()),
             global_index: Arc::new(std::sync::RwLock::new(crate::ir::global_index::GlobalSymbolIndex::new())),
             global_virtual_symbols: Arc::new(DashMap::new()),
-            rholang_symbols: Arc::new(crate::lsp::rholang_global_symbols::RholangGlobalSymbols::new()),
+            rholang_symbols: Arc::new(crate::lsp::rholang_contracts::RholangContracts::new()),
             indexing_state: Arc::new(tokio::sync::RwLock::new(crate::lsp::models::IndexingState::Idle)),
         });
         let parent_uri = Url::parse("file:///test.rho").unwrap();

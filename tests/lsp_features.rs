@@ -563,6 +563,10 @@ with_lsp_client!(test_references_after_goto_definition_reverse_order, CommType::
     let decl_pos = Position { line: 1, character: 9 };
     let references = client.references(&contract_doc.uri(), decl_pos, true).unwrap();
     assert_eq!(references.len(), 2, "Should find declaration + usage in reverse order");
+
+    // Clean up: close documents before test ends
+    client.close_document(&usage_doc).expect("Failed to close usage.rho");
+    client.close_document(&contract_doc).expect("Failed to close contract.rho");
 });
 
 // Test quoted string literal contract identifiers for cross-file navigation
@@ -627,4 +631,8 @@ with_lsp_client!(test_goto_definition_quoted_contract_cross_file, CommType::Stdi
 
     assert_eq!(location3.uri.to_string(), contract_doc.uri(),
         "Definition should be in contract.rho when clicking @");
+
+    // Clean up: close documents before test ends
+    client.close_document(&usage_doc).expect("Failed to close usage.rho");
+    client.close_document(&contract_doc).expect("Failed to close contract.rho");
 });

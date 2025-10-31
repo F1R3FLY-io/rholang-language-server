@@ -13,7 +13,7 @@ use super::references::GenericReferences;
 use super::node_finder::find_node_at_position;
 use crate::ir::semantic_node::{Position, SemanticNode};
 use crate::ir::symbol_resolution::{ResolutionContext};
-use crate::lsp::rholang_global_symbols::RholangGlobalSymbols;
+use crate::lsp::rholang_contracts::RholangContracts;
 
 /// Generic rename implementation for any language
 ///
@@ -30,7 +30,9 @@ impl GenericRename {
     /// * `uri` - URI of the document
     /// * `adapter` - Language-specific adapter
     /// * `new_name` - The new name for the symbol
-    /// * `rholang_symbols` - Global Rholang symbol storage (Priority 2: replaces inverted_index)
+    /// * `symbol_table` - Per-document symbol table for local variable resolution
+    /// * `inverted_index` - Per-document inverted index for local references
+    /// * `rholang_symbols` - Global contract storage for cross-document resolution
     ///
     /// # Returns
     /// WorkspaceEdit containing all the text edits needed to rename the symbol
@@ -41,7 +43,9 @@ impl GenericRename {
         uri: &Url,
         adapter: &LanguageAdapter,
         new_name: &str,
-        rholang_symbols: &Arc<RholangGlobalSymbols>,
+        symbol_table: &Arc<crate::ir::symbol_table::SymbolTable>,
+        inverted_index: &crate::ir::transforms::symbol_table_builder::InvertedIndex,
+        rholang_symbols: &Arc<RholangContracts>,
     ) -> Option<WorkspaceEdit> {
         debug!(
             "Renaming symbol at {}:{} in {} to '{}'",
@@ -51,7 +55,7 @@ impl GenericRename {
         // Use GenericReferences to find all occurrences
         let references_finder = GenericReferences;
         let locations = references_finder
-            .find_references(root, position, uri, adapter, true, rholang_symbols) // include_declaration = true
+            .find_references(root, position, uri, adapter, true, symbol_table, inverted_index, rholang_symbols) // include_declaration = true
             .await?;
 
         if locations.is_empty() {
@@ -61,7 +65,7 @@ impl GenericRename {
 
         trace!("Found {} locations to rename", locations.len());
 
-        // Group edits by document URI
+        // Group edits by document URI with deduplication
         let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
 
         for location in locations {
@@ -70,10 +74,15 @@ impl GenericRename {
                 new_text: new_name.to_string(),
             };
 
-            changes
+            // Get or create the vector of edits for this URI
+            let edits = changes
                 .entry(location.uri)
-                .or_insert_with(Vec::new)
-                .push(edit);
+                .or_insert_with(Vec::new);
+
+            // Only add if not already present (deduplicate by range)
+            if !edits.iter().any(|e| e.range == edit.range) {
+                edits.push(edit);
+            }
         }
 
         debug!(
@@ -98,7 +107,9 @@ impl GenericRename {
     /// * `position` - Position to check
     /// * `uri` - URI of the document
     /// * `adapter` - Language-specific adapter
-    /// * `inverted_index` - Inverted index mapping definitions to usage sites
+    /// * `symbol_table` - Per-document symbol table for local variable resolution
+    /// * `inverted_index` - Per-document inverted index for local references
+    /// * `rholang_symbols` - Global contract storage for cross-document resolution
     ///
     /// # Returns
     /// Option containing the range and placeholder text for the rename
@@ -108,7 +119,9 @@ impl GenericRename {
         position: &Position,
         uri: &Url,
         adapter: &LanguageAdapter,
-        inverted_index: &Arc<DashMap<(Url, Position), Vec<(Url, Position)>>>,
+        symbol_table: &Arc<crate::ir::symbol_table::SymbolTable>,
+        inverted_index: &crate::ir::transforms::symbol_table_builder::InvertedIndex,
+        rholang_symbols: &Arc<RholangContracts>,
     ) -> Option<(Range, String)> {
         debug!(
             "Preparing rename at {}:{} in {}",
@@ -118,7 +131,7 @@ impl GenericRename {
         // Find the symbol at this position
         let references_finder = GenericReferences;
         let locations = references_finder
-            .find_references(root, position, uri, adapter, false, inverted_index) // include_declaration = false
+            .find_references(root, position, uri, adapter, false, symbol_table, inverted_index, rholang_symbols) // include_declaration = false
             .await?;
 
         if locations.is_empty() {
@@ -148,23 +161,26 @@ impl GenericRename {
     fn extract_symbol_name<'a>(&self, node: &'a dyn SemanticNode) -> Option<&'a str> {
         use crate::ir::rholang_node::RholangNode;
 
-        // Special case: For NameDecl nodes, extract name from the Var child
-        if node.type_name() == "Rholang::NameDecl" {
-            if let Some(rholang_node) = node.as_any().downcast_ref::<RholangNode>() {
-                if let RholangNode::NameDecl { var, .. } = rholang_node {
+        // Try to downcast to RholangNode and match on variants
+        if let Some(rholang_node) = node.as_any().downcast_ref::<RholangNode>() {
+            match rholang_node {
+                // For NameDecl nodes, extract name from the Var child
+                RholangNode::NameDecl { var, .. } => {
                     if let RholangNode::Var { name, .. } = var.as_ref() {
                         return Some(name.as_str());
                     }
                 }
-            }
-        }
-
-        // Special case: For Var nodes, extract name directly
-        if node.type_name() == "Rholang::Var" {
-            if let Some(rholang_node) = node.as_any().downcast_ref::<RholangNode>() {
-                if let RholangNode::Var { name, .. } = rholang_node {
+                // For Var nodes, extract name directly
+                RholangNode::Var { name, .. } => {
                     return Some(name.as_str());
                 }
+                // For Quote nodes (e.g., @fromRoom), extract from the inner node
+                RholangNode::Quote { quotable, .. } => {
+                    if let RholangNode::Var { name, .. } = quotable.as_ref() {
+                        return Some(name.as_str());
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -304,10 +320,26 @@ mod tests {
         let position = Position { row: 0, column: 5, byte: 5 };
         let rename = GenericRename;
 
-        // Create empty inverted index for test
-        let inverted_index = HashMap::new();
+        // Create symbol_table and inverted_index for local variables
+        use crate::ir::symbol_table::{SymbolType, Symbol, SymbolTable};
+        let symbol_table = Arc::new(SymbolTable::new(None));
+        let mut inverted_index = std::collections::HashMap::new();
 
-        let result = rename.rename(&node, &position, &uri, &adapter, "new_name", &inverted_index).await;
+        // Insert a test symbol
+        symbol_table.insert(Arc::new(Symbol::new(
+            "test_var".to_string(),
+            SymbolType::Variable,
+            uri.clone(),
+            position.clone(),
+        )));
+
+        // Add reference in inverted_index
+        inverted_index.insert(position.clone(), vec![Position { row: 5, column: 10, byte: 50 }]);
+
+        // Empty rholang_symbols (no contracts)
+        let rholang_symbols = Arc::new(RholangContracts::new());
+
+        let result = rename.rename(&node, &position, &uri, &adapter, "new_name", &symbol_table, &inverted_index, &rholang_symbols).await;
 
         assert!(result.is_some());
         let workspace_edit = result.unwrap();
@@ -338,10 +370,13 @@ mod tests {
         let uri = Url::parse("file:///test.rho").unwrap();
         let rename = GenericRename;
 
-        // Create empty inverted index for test
-        let inverted_index = HashMap::new();
+        // Create empty symbol_table, inverted_index, and rholang_symbols
+        use crate::ir::symbol_table::SymbolTable;
+        let symbol_table = Arc::new(SymbolTable::new(None));
+        let inverted_index = std::collections::HashMap::new();
+        let rholang_symbols = Arc::new(RholangContracts::new());
 
-        let result = rename.rename(&node, &position, &uri, &adapter, "new_name", &inverted_index).await;
+        let result = rename.rename(&node, &position, &uri, &adapter, "new_name", &symbol_table, &inverted_index, &rholang_symbols).await;
 
         assert!(result.is_none());
     }

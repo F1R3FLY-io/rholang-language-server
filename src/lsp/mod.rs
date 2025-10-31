@@ -4,7 +4,7 @@ pub mod document;
 pub mod features;
 pub mod grpc_validator;
 pub mod models;
-pub mod rholang_global_symbols;
+pub mod rholang_contracts;
 pub mod rust_validator;
 pub mod semantic_features;
 pub mod semantic_validator;

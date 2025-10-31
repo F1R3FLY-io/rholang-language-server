@@ -48,6 +48,32 @@ impl GenericHover {
         adapter: &LanguageAdapter,
         parent_uri: Option<Url>,
     ) -> Option<Hover> {
+        self.hover_with_node(None, root, position, lsp_position, uri, adapter, parent_uri).await
+    }
+
+    /// Provide hover information with an optional pre-found node
+    ///
+    /// # Arguments
+    /// * `pre_found_node` - Optional node that was already found (for multi-root scenarios)
+    /// * `root` - Root node of the semantic tree
+    /// * `position` - Position where hover was requested (IR coordinates)
+    /// * `lsp_position` - Position in LSP coordinates (for context)
+    /// * `uri` - URI of the document
+    /// * `adapter` - Language adapter for this document's language
+    /// * `parent_uri` - Optional parent URI for virtual documents
+    ///
+    /// # Returns
+    /// `Some(Hover)` with hover information, or `None` if no hover available
+    pub async fn hover_with_node(
+        &self,
+        pre_found_node: Option<&dyn SemanticNode>,
+        root: &dyn SemanticNode,
+        position: &Position,
+        lsp_position: LspPosition,
+        uri: &Url,
+        adapter: &LanguageAdapter,
+        parent_uri: Option<Url>,
+    ) -> Option<Hover> {
         debug!(
             "GenericHover::hover at {:?} in {} (language: {})",
             position,
@@ -55,8 +81,22 @@ impl GenericHover {
             adapter.language_name()
         );
 
-        // Find node at position
-        let node = find_node_at_position(root, position)?;
+        // Use pre-found node if provided, otherwise find it
+        let node = match pre_found_node {
+            Some(n) => {
+                debug!("Using pre-found node: type={}", n.type_name());
+                n
+            }
+            None => {
+                match find_node_at_position(root, position) {
+                    Some(n) => n,
+                    None => {
+                        debug!("find_node_at_position returned None for position {:?}", position);
+                        return None;
+                    }
+                }
+            }
+        };
         let category = node.semantic_category();
 
         debug!(
@@ -128,7 +168,10 @@ impl GenericHover {
     ///
     /// Same logic as GenericGotoDefinition - could be refactored into shared utility
     fn extract_symbol_name<'a>(&self, node: &'a dyn SemanticNode) -> Option<&'a str> {
+        debug!("extract_symbol_name: node type={}", node.type_name());
+
         if let Some(metadata) = node.metadata() {
+            debug!("extract_symbol_name: node has metadata with {} keys", metadata.len());
             // Check for "symbol_name" key
             if let Some(name_any) = metadata.get("symbol_name") {
                 if let Some(name_ref) = name_any.downcast_ref::<String>() {
@@ -150,6 +193,55 @@ impl GenericHover {
             }
         }
 
+        // Try to extract directly from node structure based on type
+        // Try to downcast to RholangNode
+        if let Some(rho_node) = node.as_any().downcast_ref::<crate::ir::rholang_node::RholangNode>() {
+            use crate::ir::rholang_node::RholangNode;
+            match rho_node {
+                RholangNode::Var { name, .. } => {
+                    debug!("Extracted symbol name from RholangNode::Var: {}", name);
+                    return Some(name.as_str());
+                }
+                RholangNode::VarRef { var, .. } => {
+                    // Recursively extract from the var inside VarRef
+                    if let RholangNode::Var { name, .. } = &**var {
+                        debug!("Extracted symbol name from RholangNode::VarRef->Var: {}", name);
+                        return Some(name.as_str());
+                    }
+                }
+                RholangNode::Quote { quotable, .. } => {
+                    // For Quote nodes (e.g., @fromRoom), extract from the inner node
+                    if let RholangNode::Var { name, .. } = &**quotable {
+                        debug!("Extracted symbol name from RholangNode::Quote->Var: {}", name);
+                        return Some(name.as_str());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Try to downcast to MettaNode
+        if let Some(metta_node) = node.as_any().downcast_ref::<crate::ir::metta_node::MettaNode>() {
+            debug!("extract_symbol_name: Successfully downcast to MettaNode");
+            use crate::ir::metta_node::MettaNode;
+            match metta_node {
+                MettaNode::Atom { name, .. } => {
+                    debug!("Extracted symbol name from MettaNode::Atom: {}", name);
+                    return Some(name.as_str());
+                }
+                MettaNode::Variable { name, .. } => {
+                    debug!("Extracted symbol name from MettaNode::Variable: {}", name);
+                    return Some(name.as_str());
+                }
+                _ => {
+                    debug!("extract_symbol_name: MettaNode variant not Atom or Variable");
+                }
+            }
+        } else {
+            debug!("extract_symbol_name: Failed to downcast to MettaNode");
+        }
+
+        debug!("extract_symbol_name: Returning None");
         None
     }
 

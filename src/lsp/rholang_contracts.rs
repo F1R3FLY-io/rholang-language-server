@@ -1,12 +1,15 @@
-//! Unified global symbol storage for Rholang
+//! Global contract storage for Rholang
 //!
 //! This module provides a lock-free, efficient data structure for tracking
-//! Rholang symbols across the entire workspace with the following constraints:
+//! Rholang contracts (global symbols) across the entire workspace with the following constraints:
 //!
-//! - **Single declaration** per symbol (Rholang semantic rule)
-//! - **At most one definition** per symbol (may equal declaration location)
-//! - **Multiple references** per symbol (unlimited usages)
-//! - **Cross-document linking** for global symbols (contracts)
+//! - **Single declaration** per contract (Rholang semantic rule)
+//! - **At most one definition** per contract (may equal declaration location)
+//! - **Multiple references** per contract (unlimited usages)
+//! - **Cross-document linking** for contracts visible across files
+//!
+//! Note: Local symbols (variables, let bindings) are tracked per-document via SymbolTable
+//! and inverted_index, not in this global structure.
 //!
 //! # Architecture
 //!
@@ -14,15 +17,24 @@
 //! - OLD: `global_symbols` (DashMap<String, (Url, Position)>) - only 1 location
 //! - OLD: `global_table` (RwLock<SymbolTable>) - lock contention
 //! - OLD: `global_inverted_index` (DashMap<(Url, Position), Vec<(Url, Position)>>)
+//! - OLD: per-document `inverted_index` (HashMap<Position, Vec<Position>>) - local symbols
 //!
-//! NEW: Single unified structure with lock-free operations.
+//! NEW: Single unified structure with lock-free operations supporting both global and local symbols.
+//!
+//! # Contract Keys
+//!
+//! Contracts are indexed by name only (global scope, visible across files).
 
 use dashmap::DashMap;
 use std::sync::Arc;
+use std::hash::{Hash, Hasher};
 use tower_lsp::lsp_types::Url;
 
 use crate::ir::semantic_node::Position;
 use crate::ir::symbol_table::SymbolType;
+
+// SymbolKey removed - contracts are now keyed by String name only.
+// Local symbols are handled per-document via SymbolTable and inverted_index.
 
 /// Location of a symbol in the source code
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,7 +95,10 @@ impl SymbolDeclaration {
 
     /// Add a reference/usage location
     pub fn add_reference(&mut self, reference: SymbolLocation) {
-        self.references.push(reference);
+        // Only add if not already present (deduplicate)
+        if !self.references.iter().any(|r| r.uri == reference.uri && r.position == reference.position) {
+            self.references.push(reference);
+        }
     }
 
     /// Get all locations: declaration + optional definition
@@ -101,7 +116,10 @@ impl SymbolDeclaration {
     }
 }
 
-/// Unified global symbol storage for Rholang workspace
+/// Global contract storage for Rholang workspace
+///
+/// Stores only **global contracts** (visible across all files).
+/// Local symbols (variables, let bindings) are tracked per-document.
 ///
 /// # Concurrency
 /// - Lock-free via DashMap
@@ -109,38 +127,42 @@ impl SymbolDeclaration {
 /// - No RwLock contention
 ///
 /// # Memory Efficiency
-/// - Single storage location (no redundancy)
-/// - Symbols stored once with all their metadata
+/// - Single storage location for global contracts
+/// - Contracts stored once with all their metadata
 /// - References stored as compact Vec
 #[derive(Debug)]
-pub struct RholangGlobalSymbols {
-    /// Maps symbol name -> SymbolDeclaration
+pub struct RholangContracts {
+    /// Maps contract name -> ContractDeclaration
     /// Lock-free concurrent hash map
-    symbols: Arc<DashMap<String, SymbolDeclaration>>,
+    contracts: Arc<DashMap<String, SymbolDeclaration>>,
 }
 
-impl RholangGlobalSymbols {
-    /// Create a new empty symbol storage
+impl RholangContracts {
+    /// Create a new empty contract storage
     pub fn new() -> Self {
         Self {
-            symbols: Arc::new(DashMap::new()),
+            contracts: Arc::new(DashMap::new()),
         }
     }
 
-    /// Insert or update a symbol declaration
+    /// Insert or update a contract declaration
     ///
     /// # Arguments
-    /// - `name`: Symbol name
-    /// - `symbol_type`: Type of symbol (Contract, Variable, etc.)
+    /// - `name`: Contract name (extracted from Var or Quote)
+    /// - `symbol_type`: Should be SymbolType::Contract
     /// - `declaration`: Declaration location
     ///
     /// # Returns
     /// - `Ok(())` if inserted successfully
-    /// - `Err(())` if symbol already exists with different declaration (conflict)
+    /// - `Err(())` if contract already exists with different declaration (conflict)
     ///
     /// # Constraints
-    /// - Rholang allows only ONE declaration per symbol
-    /// - If symbol exists, declaration must match
+    /// - Rholang allows only ONE declaration per contract
+    /// - If contract exists, declaration must match
+    ///
+    /// # Note
+    /// This only stores global contracts. Local symbols (variables) should use
+    /// per-document SymbolTable and inverted_index instead.
     pub fn insert_declaration(
         &self,
         name: String,
@@ -149,103 +171,107 @@ impl RholangGlobalSymbols {
     ) -> Result<(), ()> {
         use dashmap::mapref::entry::Entry;
 
-        match self.symbols.entry(name.clone()) {
+        // Only store contracts (global symbols)
+        if !matches!(symbol_type, SymbolType::Contract) {
+            // Local symbols should not be stored here
+            return Err(());
+        }
+
+        match self.contracts.entry(name.clone()) {
             Entry::Occupied(entry) => {
-                // Symbol already exists - verify declaration matches
+                // Contract already exists - verify declaration matches
                 let existing = entry.get();
                 if existing.declaration == declaration {
                     Ok(())
                 } else {
-                    // Conflict: different declaration for same symbol
+                    // Conflict: different declaration for same contract
                     Err(())
                 }
             }
             Entry::Vacant(entry) => {
-                // New symbol - insert
+                // New contract - insert
                 entry.insert(SymbolDeclaration::new(name, symbol_type, declaration));
                 Ok(())
             }
         }
     }
 
-    /// Set the definition location for a symbol
+    /// Set the definition location for a contract
     ///
     /// # Arguments
-    /// - `name`: Symbol name
+    /// - `name`: Contract name
     /// - `definition`: Definition location
     ///
     /// # Returns
     /// - `Ok(())` if definition set successfully
-    /// - `Err(())` if symbol not found
+    /// - `Err(())` if contract not found
     ///
     /// # Constraints
-    /// - Symbol must already be declared
+    /// - Contract must already be declared
     /// - Definition is ignored if it equals declaration location
     pub fn set_definition(
         &self,
         name: &str,
         definition: SymbolLocation,
     ) -> Result<(), ()> {
-        match self.symbols.get_mut(name) {
-            Some(mut symbol) => {
-                symbol.set_definition(definition);
-                Ok(())
-            }
-            None => Err(()),
+        if let Some(mut entry) = self.contracts.get_mut(name) {
+            entry.set_definition(definition);
+            Ok(())
+        } else {
+            Err(())
         }
     }
 
-    /// Add a reference/usage location for a symbol
+    /// Add a reference/usage location for a contract
     ///
     /// # Arguments
-    /// - `name`: Symbol name
+    /// - `name`: Contract name
     /// - `reference`: Usage location
     ///
     /// # Returns
     /// - `Ok(())` if reference added
-    /// - `Err(())` if symbol not found
+    /// - `Err(())` if contract not found
     pub fn add_reference(
         &self,
         name: &str,
         reference: SymbolLocation,
     ) -> Result<(), ()> {
-        match self.symbols.get_mut(name) {
-            Some(mut symbol) => {
-                symbol.add_reference(reference);
-                Ok(())
-            }
-            None => Err(()),
+        if let Some(mut contract) = self.contracts.get_mut(name) {
+            contract.add_reference(reference);
+            Ok(())
+        } else {
+            Err(())
         }
     }
 
-    /// Look up a symbol by name
+    /// Look up a contract by name
     ///
     /// # Returns
     /// - `Some(SymbolDeclaration)` if found
     /// - `None` if not found
     pub fn lookup(&self, name: &str) -> Option<SymbolDeclaration> {
-        self.symbols.get(name).map(|entry| entry.value().clone())
+        self.contracts.get(name).map(|entry| entry.value().clone())
     }
 
-    /// Get definition locations (declaration + optional definition)
+    /// Get definition locations (declaration + optional definition) for a contract
     ///
     /// # Returns
     /// - Vec of 1-2 locations
-    /// - Empty vec if symbol not found
+    /// - Empty vec if contract not found
     pub fn get_definition_locations(&self, name: &str) -> Vec<SymbolLocation> {
-        self.symbols
+        self.contracts
             .get(name)
             .map(|entry| entry.value().definition_locations())
             .unwrap_or_default()
     }
 
-    /// Get all references for a symbol
+    /// Get all references for a contract
     ///
     /// # Returns
     /// - Vec of reference locations
-    /// - Empty vec if symbol not found
+    /// - Empty vec if contract not found
     pub fn get_references(&self, name: &str) -> Vec<SymbolLocation> {
-        self.symbols
+        self.contracts
             .get(name)
             .map(|entry| entry.value().references.clone())
             .unwrap_or_default()
@@ -270,7 +296,7 @@ impl RholangGlobalSymbols {
         };
 
         // Find symbol with matching declaration
-        for entry in self.symbols.iter() {
+        for entry in self.contracts.iter() {
             let symbol = entry.value();
             if symbol.declaration == target_location {
                 return symbol.references.clone();
@@ -293,66 +319,66 @@ impl RholangGlobalSymbols {
     /// # Arguments
     /// - `uri`: Document URI to remove symbols from
     pub fn remove_document(&self, uri: &Url) {
-        self.symbols.retain(|_, symbol| {
+        self.contracts.retain(|_, symbol| {
             symbol.declaration.uri != *uri
         });
     }
 
     /// Clear all symbols
     pub fn clear(&self) {
-        self.symbols.clear();
+        self.contracts.clear();
     }
 
     /// Get total number of symbols
     pub fn len(&self) -> usize {
-        self.symbols.len()
+        self.contracts.len()
     }
 
     /// Check if empty
     pub fn is_empty(&self) -> bool {
-        self.symbols.is_empty()
+        self.contracts.is_empty()
     }
 
-    /// Get all symbol names
-    pub fn symbol_names(&self) -> Vec<String> {
-        self.symbols
+    /// Get all contract names
+    pub fn contract_names(&self) -> Vec<String> {
+        self.contracts
             .iter()
             .map(|entry| entry.key().clone())
             .collect()
     }
 
-    /// Get all symbols of a specific type
-    pub fn symbols_of_type(&self, symbol_type: SymbolType) -> Vec<SymbolDeclaration> {
-        self.symbols
+    /// Get all contracts of a specific type (typically all will be Contract type)
+    pub fn contracts_of_type(&self, symbol_type: SymbolType) -> Vec<SymbolDeclaration> {
+        self.contracts
             .iter()
             .filter(|entry| entry.value().symbol_type == symbol_type)
             .map(|entry| entry.value().clone())
             .collect()
     }
 
-    /// Remove all symbols declared in a specific URI (incremental update support)
+    /// Remove all contracts declared in a specific URI (incremental update support)
     ///
-    /// This is used when a file is modified or deleted - we remove all symbols
+    /// This is used when a file is modified or deleted - we remove all contracts
     /// that were declared in that file, then re-index it.
     ///
     /// # Arguments
-    /// - `uri`: Document URI to remove symbols from
+    /// - `uri`: Document URI to remove contracts from
     ///
     /// # Returns
-    /// - Number of symbols removed
-    pub fn remove_symbols_from_uri(&self, uri: &Url) -> usize {
+    /// - Number of contracts removed
+    pub fn remove_contracts_from_uri(&self, uri: &Url) -> usize {
         let mut removed_count = 0;
 
-        // Collect symbol names to remove (avoid holding iter while mutating)
-        let to_remove: Vec<String> = self.symbols
+        // Collect contract names to remove (avoid holding iter while mutating)
+        let to_remove: Vec<String> = self.contracts
             .iter()
             .filter(|entry| &entry.value().declaration.uri == uri)
             .map(|entry| entry.key().clone())
             .collect();
 
-        // Remove collected symbols
+        // Remove collected contracts
         for name in &to_remove {
-            self.symbols.remove(name);
+            self.contracts.remove(name);
             removed_count += 1;
         }
 
@@ -373,7 +399,7 @@ impl RholangGlobalSymbols {
         let mut removed_count = 0;
 
         // Iterate all symbols and remove references from the given URI
-        for mut entry in self.symbols.iter_mut() {
+        for mut entry in self.contracts.iter_mut() {
             let symbol = entry.value_mut();
             let before_len = symbol.references.len();
             symbol.references.retain(|ref_loc| &ref_loc.uri != uri);
@@ -383,17 +409,17 @@ impl RholangGlobalSymbols {
         removed_count
     }
 
-    /// Remove a specific symbol by name (for fine-grained delta tracking)
+    /// Remove a specific contract by name
     ///
     /// # Returns
-    /// - `Some(SymbolDeclaration)` if symbol existed and was removed
-    /// - `None` if symbol didn't exist
-    pub fn remove_symbol(&self, name: &str) -> Option<SymbolDeclaration> {
-        self.symbols.remove(name).map(|(_, v)| v)
+    /// - `Some(SymbolDeclaration)` if contract existed and was removed
+    /// - `None` if contract didn't exist
+    pub fn remove_contract(&self, name: &str) -> Option<SymbolDeclaration> {
+        self.contracts.remove(name).map(|(_, v)| v)
     }
 }
 
-impl Default for RholangGlobalSymbols {
+impl Default for RholangContracts {
     fn default() -> Self {
         Self::new()
     }
@@ -414,7 +440,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_lookup() {
-        let symbols = RholangGlobalSymbols::new();
+        let symbols = RholangContracts::new();
 
         let result = symbols.insert_declaration(
             "myContract".to_string(),
@@ -433,30 +459,30 @@ mod tests {
 
     #[test]
     fn test_duplicate_declaration_same_location() {
-        let symbols = RholangGlobalSymbols::new();
+        let symbols = RholangContracts::new();
         let loc = SymbolLocation::new(test_uri("main.rho"), test_position(10, 5));
 
-        symbols.insert_declaration("x".to_string(), SymbolType::Variable, loc.clone()).unwrap();
+        symbols.insert_declaration("x".to_string(), SymbolType::Contract, loc.clone()).unwrap();
 
         // Same location - should succeed
-        let result = symbols.insert_declaration("x".to_string(), SymbolType::Variable, loc);
+        let result = symbols.insert_declaration("x".to_string(), SymbolType::Contract, loc);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_duplicate_declaration_different_location() {
-        let symbols = RholangGlobalSymbols::new();
+        let symbols = RholangContracts::new();
 
         symbols.insert_declaration(
             "x".to_string(),
-            SymbolType::Variable,
+            SymbolType::Contract,
             SymbolLocation::new(test_uri("main.rho"), test_position(10, 5)),
         ).unwrap();
 
         // Different location - should fail (conflict)
         let result = symbols.insert_declaration(
             "x".to_string(),
-            SymbolType::Variable,
+            SymbolType::Contract,
             SymbolLocation::new(test_uri("main.rho"), test_position(20, 10)),
         );
 
@@ -465,7 +491,7 @@ mod tests {
 
     #[test]
     fn test_set_definition() {
-        let symbols = RholangGlobalSymbols::new();
+        let symbols = RholangContracts::new();
 
         symbols.insert_declaration(
             "myContract".to_string(),
@@ -484,12 +510,12 @@ mod tests {
 
     #[test]
     fn test_definition_same_as_declaration() {
-        let symbols = RholangGlobalSymbols::new();
+        let symbols = RholangContracts::new();
         let loc = SymbolLocation::new(test_uri("main.rho"), test_position(10, 5));
 
         symbols.insert_declaration(
             "x".to_string(),
-            SymbolType::Variable,
+            SymbolType::Contract,
             loc.clone(),
         ).unwrap();
 
@@ -502,11 +528,11 @@ mod tests {
 
     #[test]
     fn test_add_references() {
-        let symbols = RholangGlobalSymbols::new();
+        let symbols = RholangContracts::new();
 
         symbols.insert_declaration(
             "x".to_string(),
-            SymbolType::Variable,
+            SymbolType::Contract,
             SymbolLocation::new(test_uri("main.rho"), test_position(5, 0)),
         ).unwrap();
 
@@ -526,10 +552,10 @@ mod tests {
 
     #[test]
     fn test_get_references_at_declaration() {
-        let symbols = RholangGlobalSymbols::new();
+        let symbols = RholangContracts::new();
         let decl_loc = SymbolLocation::new(test_uri("main.rho"), test_position(5, 0));
 
-        symbols.insert_declaration("x".to_string(), SymbolType::Variable, decl_loc.clone()).unwrap();
+        symbols.insert_declaration("x".to_string(), SymbolType::Contract, decl_loc.clone()).unwrap();
         symbols.add_reference("x", SymbolLocation::new(test_uri("main.rho"), test_position(10, 5))).unwrap();
 
         let refs = symbols.get_references_at(&test_uri("main.rho"), test_position(5, 0));
@@ -538,17 +564,17 @@ mod tests {
 
     #[test]
     fn test_remove_document() {
-        let symbols = RholangGlobalSymbols::new();
+        let symbols = RholangContracts::new();
 
         symbols.insert_declaration(
             "x".to_string(),
-            SymbolType::Variable,
+            SymbolType::Contract,
             SymbolLocation::new(test_uri("main.rho"), test_position(5, 0)),
         ).unwrap();
 
         symbols.insert_declaration(
             "y".to_string(),
-            SymbolType::Variable,
+            SymbolType::Contract,
             SymbolLocation::new(test_uri("other.rho"), test_position(5, 0)),
         ).unwrap();
 
@@ -563,7 +589,7 @@ mod tests {
 
     #[test]
     fn test_symbols_of_type() {
-        let symbols = RholangGlobalSymbols::new();
+        let symbols = RholangContracts::new();
 
         symbols.insert_declaration(
             "c1".to_string(),
@@ -579,11 +605,11 @@ mod tests {
 
         symbols.insert_declaration(
             "x".to_string(),
-            SymbolType::Variable,
+            SymbolType::Contract,
             SymbolLocation::new(test_uri("main.rho"), test_position(15, 0)),
         ).unwrap();
 
-        let contracts = symbols.symbols_of_type(SymbolType::Contract);
-        assert_eq!(contracts.len(), 2);
+        let contracts = symbols.contracts_of_type(SymbolType::Contract);
+        assert_eq!(contracts.len(), 3); // All 3 symbols are contracts
     }
 }

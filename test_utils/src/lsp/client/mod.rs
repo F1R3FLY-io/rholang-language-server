@@ -585,6 +585,10 @@ impl LspClient {
             "textDocument/documentHighlight".to_string(),
             Self::receive_document_highlight as ResponseHandler,
         );
+        response_handlers.insert(
+            "textDocument/hover".to_string(),
+            Self::receive_hover as ResponseHandler,
+        );
 
         let client = LspClient {
             server: Mutex::new(server),

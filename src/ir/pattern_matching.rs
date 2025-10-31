@@ -471,15 +471,162 @@ impl RholangPatternMatcher {
     /// ```
     pub fn find_contract_invocations(
         &self,
-        _contract_name: &str,
-        _formals: &[String],
+        contract_name: &str,
+        formals: &[String],
     ) -> Result<Vec<(Arc<RholangNode>, HashMap<String, Arc<RholangNode>>)>, String> {
-        // TODO: Implement by constructing a pattern: (send (contract <name>) <args...>)
-        // where args are fresh variables matching formals
+        use mork_expr::{Expr, ExprZipper, ExprEnv, unify};
+        use mork_frontend::bytestring_parser::{Parser, Context};
+        use rpds::Vector;
+        use archery::ArcK;
+
+        // Step 1: Build a Send node representing the invocation pattern
+        // Pattern: send(<contract_name>, <var1>, <var2>, ...)
         //
-        // This is similar to MeTTaTron's eval_match() function
-        // See MORK_INTEGRATION_GUIDE.md for implementation guidance
-        Err("Not yet implemented - see Step 3 in integration plan".to_string())
+        // For each formal parameter, create a fresh variable node
+        // These will match any actual arguments in invocations
+
+        // Create channel node (the contract name as a Var)
+        let channel = Arc::new(RholangNode::Var {
+            name: contract_name.to_string(),
+            base: crate::ir::rholang_node::NodeBase::new_simple(
+                crate::ir::rholang_node::RelativePosition {
+                    delta_lines: 0,
+                    delta_columns: 0,
+                    delta_bytes: 0,
+                },
+                0, 0, contract_name.len()
+            ),
+            metadata: None,
+        });
+
+        // Build inputs vector from formals (create Var nodes for pattern matching)
+        let mut inputs = Vector::<Arc<RholangNode>, ArcK>::new_with_ptr_kind();
+        for formal_name in formals {
+            let var_node = Arc::new(RholangNode::Var {
+                name: formal_name.clone(),
+                base: crate::ir::rholang_node::NodeBase::new_simple(
+                    crate::ir::rholang_node::RelativePosition {
+                        delta_lines: 0,
+                        delta_columns: 0,
+                        delta_bytes: 0,
+                    },
+                    0, 0, formal_name.len()
+                ),
+                metadata: None,
+            });
+            inputs = inputs.push_back(var_node);
+        }
+
+        // Create Send node
+        let send_pattern = Arc::new(RholangNode::Send {
+            channel,
+            send_type: crate::ir::rholang_node::RholangSendType::Single,
+            send_type_delta: crate::ir::rholang_node::RelativePosition {
+                delta_lines: 0,
+                delta_columns: 0,
+                delta_bytes: 0,
+            },
+            inputs,
+            base: crate::ir::rholang_node::NodeBase::new_simple(
+                crate::ir::rholang_node::RelativePosition {
+                    delta_lines: 0,
+                    delta_columns: 0,
+                    delta_bytes: 0,
+                },
+                0, 0, 10
+            ),
+            metadata: None,
+        });
+
+        // Step 2: Convert to MORK string and create pattern-key
+        let send_str = rholang_to_mork_string(&send_pattern);
+        let pattern_str = format!("(pattern-key {} $invocation)", send_str);
+        let pattern_bytes = pattern_str.as_bytes();
+
+        // Step 3: Parse the pattern using MORK's parser
+        let mut parse_buffer = vec![0u8; 4096];
+        let mut pdp = mork::space::ParDataParser::new(&self.space.sm);
+        let mut ez = ExprZipper::new(Expr {
+            ptr: parse_buffer.as_mut_ptr(),
+        });
+        let mut context = Context::new(pattern_bytes);
+
+        pdp.sexpr(&mut context, &mut ez)
+            .map_err(|e| format!("Parse error: {:?}", e))?;
+
+        let pattern_expr = Expr {
+            ptr: parse_buffer.as_ptr().cast_mut(),
+        };
+
+        // Step 4: Collect matches using O(k) prefix-filtered navigation
+        let mut matches = Vec::new();
+
+        // Extract the concrete prefix to filter entries
+        let (prefix_bytes, _has_variables) = Self::extract_concrete_prefix(pattern_expr)?;
+
+        // Navigate to the prefix in the trie
+        let mut rz = self.space.btm.read_zipper();
+        let prefix_matched = rz.descend_to_existing(&prefix_bytes);
+
+        if prefix_matched != prefix_bytes.len() {
+            // Prefix doesn't exist in trie - no matches possible
+            return Ok(matches);
+        }
+
+        // Iterate entries under this prefix
+        while rz.to_next_val() {
+            let path = rz.path();
+
+            // Check if this path still has our prefix
+            if path.len() < prefix_bytes.len() || &path[..prefix_bytes.len()] != &prefix_bytes[..] {
+                // Moved beyond our prefix subtree - done
+                break;
+            }
+
+            // This entry matches our prefix, check full pattern with unify
+            let stored_expr = Expr {
+                ptr: path.as_ptr().cast_mut(),
+            };
+
+            let pairs = vec![(ExprEnv::new(0, pattern_expr), ExprEnv::new(1, stored_expr))];
+            if let Ok(bindings) = unify(pairs) {
+                // Match found! Extract the bound invocation
+                // Our pattern is: (pattern-key <send_pattern> $invocation)
+                // The $invocation is the LAST variable
+
+                // Find the highest variable index - that's our $invocation binding
+                let max_var_idx = bindings.keys()
+                    .filter(|(space, _)| *space == 0)  // Only space 0 bindings
+                    .map(|(_, var)| var)
+                    .max()
+                    .copied();
+
+                if let Some(max_idx) = max_var_idx {
+                    if let Some(bound_value) = bindings.get(&(0, max_idx)) {
+                        // Extract the bound Expr from ExprEnv
+                        let bound_expr = unsafe {
+                            Expr {
+                                ptr: bound_value.base.ptr.byte_add(bound_value.offset as usize)
+                            }
+                        };
+
+                        // Parse MORK binary to RholangNode
+                        match Self::mork_expr_to_rholang(bound_expr, &self.space) {
+                            Ok(node) => {
+                                // TODO: Extract actual bindings from the unify result
+                                // For now, return empty HashMap for bindings
+                                matches.push((node, HashMap::new()));
+                            }
+                            Err(e) => {
+                                eprintln!("Warning: Failed to parse MORK invocation: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(matches)
     }
 }
 

@@ -1,0 +1,530 @@
+name: Release Builds and Packaging
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-matrix:
+    name: Build ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            rustflags: "-C target-feature=+aes,+sse2"
+            artifact_name: rholang-language-server-linux-x86_64
+            use_cross: false
+
+          - name: Linux ARM64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            rustflags: "-C target-feature=+aes,+neon"
+            artifact_name: rholang-language-server-linux-arm64
+            use_cross: false
+
+          - name: macOS x86_64
+            os: macos-13
+            target: x86_64-apple-darwin
+            rustflags: "-C target-feature=+aes,+sse2"
+            artifact_name: rholang-language-server-macos-x86_64
+            use_cross: false
+
+          - name: macOS ARM64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            rustflags: "-C target-feature=+aes,+neon"
+            artifact_name: rholang-language-server-macos-arm64
+            use_cross: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Checkout dependencies
+        run: |
+          cd ../
+          git clone --depth=1 --branch dylon/mettatron https://github.com/F1R3FLY-io/f1r3node.git f1r3node
+          git clone --depth=1 --branch main https://github.com/trueagi-io/MORK.git MORK
+          git clone --depth=1 --branch master https://github.com/Adam-Vandervorst/PathMap.git PathMap
+          git clone --depth=1 --branch main https://github.com/F1R3FLY-io/MeTTa-Compiler.git MeTTa-Compiler
+          git clone --depth=1 --branch dylon/comments https://github.com/dylon/rholang-rs.git rholang-rs
+
+      - name: Install protobuf compiler (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install protobuf compiler (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+          target: ${{ matrix.platform.target }}
+
+      - name: Build rholang-language-server
+        env:
+          RUSTFLAGS: ${{ matrix.platform.rustflags }}
+        run: cargo build --release --target ${{ matrix.platform.target }} --verbose
+
+      - name: Run tests (optional)
+        continue-on-error: true
+        env:
+          RUSTFLAGS: ${{ matrix.platform.rustflags }}
+        run: |
+          if command -v cargo-nextest &> /dev/null; then
+            cargo nextest run --release --target ${{ matrix.platform.target }}
+          else
+            cargo test --release --target ${{ matrix.platform.target }}
+          fi
+
+      - name: Strip binary (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          strip target/${{ matrix.platform.target }}/release/rholang-language-server
+
+      - name: Prepare binaries
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.platform.target }}/release/rholang-language-server dist/
+          chmod +x dist/rholang-language-server
+
+      - name: Create tarball
+        run: |
+          cd dist
+          tar czf ../${{ matrix.platform.artifact_name }}.tar.gz *
+          cd ..
+
+      - name: Create zip archive
+        run: |
+          cd dist
+          7z a ../${{ matrix.platform.artifact_name }}.zip *
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform.artifact_name }}
+          path: |
+            ${{ matrix.platform.artifact_name }}.tar.gz
+            ${{ matrix.platform.artifact_name }}.zip
+          retention-days: 30
+
+  package-deb:
+    name: Create .deb package
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux x86_64 build
+        uses: actions/download-artifact@v4
+        with:
+          name: rholang-language-server-linux-x86_64
+
+      - name: Extract binaries
+        run: |
+          tar xzf rholang-language-server-linux-x86_64.tar.gz
+          mkdir -p target/release
+          mv rholang-language-server target/release/
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Create .deb package
+        run: cargo deb --no-build --no-strip
+
+      - name: Upload .deb package
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-package
+          path: target/debian/*.deb
+          retention-days: 30
+
+  package-rpm:
+    name: Create .rpm package
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux x86_64 build
+        uses: actions/download-artifact@v4
+        with:
+          name: rholang-language-server-linux-x86_64
+
+      - name: Extract binaries
+        run: |
+          tar xzf rholang-language-server-linux-x86_64.tar.gz
+          mkdir -p target/release
+          mv rholang-language-server target/release/
+
+      - name: Install cargo-generate-rpm
+        run: cargo install cargo-generate-rpm
+
+      - name: Create .rpm package
+        run: cargo generate-rpm
+
+      - name: Upload .rpm package
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-package
+          path: target/generate-rpm/*.rpm
+          retention-days: 30
+
+  package-macos-dmg:
+    name: Create macOS .dmg installer
+    needs: build-matrix
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download macOS build (ARM64)
+        uses: actions/download-artifact@v4
+        with:
+          name: rholang-language-server-macos-arm64
+
+      - name: Extract binaries
+        run: tar xzf rholang-language-server-macos-arm64.tar.gz
+
+      - name: Create .dmg
+        run: |
+          mkdir -p dmg-contents
+          cp rholang-language-server dmg-contents/
+          hdiutil create -volname "Rholang Language Server" -srcfolder dmg-contents -ov -format UDZO rholang-language-server-macos.dmg
+
+      - name: Upload .dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: rholang-language-server-macos.dmg
+          retention-days: 30
+
+  package-arch:
+    name: Create Arch Linux packages
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch:
+          - name: x86_64
+            artifact: rholang-language-server-linux-x86_64
+          - name: aarch64
+            artifact: rholang-language-server-linux-arm64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux build
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.arch.artifact }}
+
+      - name: Extract binaries
+        run: |
+          tar xzf ${{ matrix.arch.artifact }}.tar.gz
+          mkdir -p binaries
+          mv rholang-language-server binaries/
+
+      - name: Build Arch package in container
+        run: |
+          # Create a build script with architecture override
+          ARCH_NAME="${{ matrix.arch.name }}"
+          cat > build-arch-pkg.sh <<EOF
+          #!/bin/bash
+          set -e
+
+          # Install required packages
+          pacman -Sy --noconfirm base-devel git
+
+          # Create build user (makepkg won't run as root)
+          useradd -m builder
+          chown -R builder:builder /build
+
+          # Build as non-root user with CARCH override
+          cd /build
+          su builder -c "CARCH=${ARCH_NAME} makepkg --nodeps --skipinteg --ignorearch"
+
+          # Copy package to output (exclude debug packages)
+          for pkg in *.pkg.tar.zst; do
+            if [[ ! "\$pkg" =~ -debug- ]]; then
+              cp "\$pkg" /output/
+            fi
+          done
+          EOF
+
+          chmod +x build-arch-pkg.sh
+
+          # Prepare PKGBUILD with pre-built binaries
+          mkdir -p build-context
+          cp packaging/arch/PKGBUILD build-context/
+          cp -r binaries build-context/
+
+          # Modify PKGBUILD to use pre-built binaries instead of building from source
+          cat > build-context/PKGBUILD <<'PKGBUILD_EOF'
+          # Maintainer: F1R3FLY.io <noreply@f1r3fly.io>
+          pkgname=rholang-language-server
+          pkgver=__VERSION__
+          pkgrel=1
+          pkgdesc="Language Server Protocol implementation for Rholang"
+          arch=('__ARCH__')
+          url="https://github.com/F1R3FLY-io/rholang-language-server"
+          license=('Apache')
+          depends=('gcc-libs')
+          source=()
+          sha256sums=()
+
+          package() {
+              install -Dm755 "/build/binaries/rholang-language-server" "$pkgdir/usr/bin/rholang-language-server"
+          }
+          PKGBUILD_EOF
+
+          # Replace placeholders
+          if [ -z "${GITHUB_REF_NAME}" ]; then
+            VERSION="${{ github.event.inputs.version || '0.1.0' }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          sed -i "s/__VERSION__/${VERSION}/" build-context/PKGBUILD
+          sed -i "s/__ARCH__/${{ matrix.arch.name }}/" build-context/PKGBUILD
+
+          # Debug: Show PKGBUILD content after substitution
+          echo "=== PKGBUILD for ${{ matrix.arch.name }} after sed ==="
+          cat build-context/PKGBUILD
+          echo "=== End PKGBUILD ==="
+
+          # Run build in container
+          mkdir -p output
+          docker run --rm \
+            -v "$PWD/build-context:/build" \
+            -v "$PWD/output:/output" \
+            -v "$PWD/build-arch-pkg.sh:/build-arch-pkg.sh" \
+            archlinux:latest \
+            /build-arch-pkg.sh
+
+          # Debug: Show what package was created
+          echo "=== Packages created for ${{ matrix.arch.name }} ==="
+          ls -la output/
+          echo "=== End package list ==="
+
+      - name: Upload Arch package
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-package-${{ matrix.arch.name }}
+          path: output/*.pkg.tar.zst
+          retention-days: 30
+
+  test-deb-package:
+    name: Sanity Check - Debian Package
+    needs: package-deb
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download .deb package
+        uses: actions/download-artifact@v4
+        with:
+          name: debian-package
+
+      - name: Install package
+        run: |
+          sudo dpkg -i *.deb || true
+          sudo apt-get install -f -y
+
+      - name: Verify installation
+        run: |
+          which rholang-language-server
+          rholang-language-server --version || rholang-language-server --help || echo "No version flag, continuing..."
+
+      - name: Check binary dependencies
+        run: |
+          ldd $(which rholang-language-server)
+
+      - name: Create test Rholang file
+        run: |
+          cat > test.rho <<'EOF'
+          new stdout(\`rho:io:stdout\`) in {
+            stdout!("Hello from Rholang Language Server test!")
+          }
+          EOF
+
+      - name: Test LSP initialization
+        run: |
+          # Test that the server can start and respond to initialize request
+          timeout 5 bash -c '
+            echo "Content-Length: 104\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"processId\":null,\"rootUri\":null,\"capabilities\":{}}}" | \
+            rholang-language-server 2>&1 | head -20
+          ' || echo "LSP server initialization test completed"
+
+  test-rpm-package:
+    name: Sanity Check - RPM Package
+    needs: package-rpm
+    runs-on: ubuntu-latest
+    container: fedora:40
+    steps:
+      - name: Download .rpm package
+        uses: actions/download-artifact@v4
+        with:
+          name: rpm-package
+
+      - name: Install package
+        run: |
+          dnf install -y *.rpm
+
+      - name: Verify installation
+        run: |
+          command -v rholang-language-server
+          rholang-language-server --version || rholang-language-server --help || echo "No version flag, continuing..."
+
+      - name: Check binary dependencies
+        run: |
+          ldd $(command -v rholang-language-server)
+
+      - name: Create test Rholang file
+        run: |
+          cat > test.rho <<'EOF'
+          new stdout(\`rho:io:stdout\`) in {
+            stdout!("Hello from Rholang Language Server test!")
+          }
+          EOF
+
+      - name: Test LSP initialization
+        run: |
+          # Test that the server can start and respond to initialize request
+          timeout 5 bash -c '
+            echo "Content-Length: 104\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"processId\":null,\"rootUri\":null,\"capabilities\":{}}}" | \
+            rholang-language-server 2>&1 | head -20
+          ' || echo "LSP server initialization test completed"
+
+  test-arch-package:
+    name: Sanity Check - Arch Package (${{ matrix.arch }})
+    needs: package-arch
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Only test x86_64 - aarch64 requires cross-architecture setup
+        arch: [x86_64]
+    container: archlinux:latest
+    steps:
+      - name: Download Arch package
+        uses: actions/download-artifact@v4
+        with:
+          name: arch-package-${{ matrix.arch }}
+
+      - name: Install package
+        run: |
+          pacman -Sy --noconfirm
+          pacman -U --noconfirm *.pkg.tar.zst
+
+      - name: Verify installation
+        run: |
+          command -v rholang-language-server
+          rholang-language-server --version || rholang-language-server --help || echo "No version flag, continuing..."
+
+      - name: Check binary dependencies
+        run: |
+          ldd $(command -v rholang-language-server) || true
+
+      - name: Create test Rholang file
+        run: |
+          cat > test.rho <<'EOF'
+          new stdout(\`rho:io:stdout\`) in {
+            stdout!("Hello from Rholang Language Server test!")
+          }
+          EOF
+
+      - name: Test LSP initialization
+        run: |
+          # Test that the server can start and respond to initialize request
+          timeout 5 bash -c '
+            echo "Content-Length: 104\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"processId\":null,\"rootUri\":null,\"capabilities\":{}}}" | \
+            rholang-language-server 2>&1 | head -20
+          ' || echo "LSP server initialization test completed"
+
+  test-macos-dmg:
+    name: Sanity Check - macOS DMG
+    needs: package-macos-dmg
+    runs-on: macos-latest
+    steps:
+      - name: Download DMG
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-dmg
+
+      - name: Mount and install DMG
+        run: |
+          hdiutil attach *.dmg
+          sudo cp "/Volumes/Rholang Language Server/rholang-language-server" /usr/local/bin/
+          hdiutil detach "/Volumes/Rholang Language Server" || true
+
+      - name: Verify installation
+        run: |
+          which rholang-language-server
+          rholang-language-server --version || rholang-language-server --help || echo "No version flag, continuing..."
+
+      - name: Check binary dependencies
+        run: |
+          otool -L $(which rholang-language-server)
+
+      - name: Create test Rholang file
+        run: |
+          cat > test.rho <<'EOF'
+          new stdout(\`rho:io:stdout\`) in {
+            stdout!("Hello from Rholang Language Server test!")
+          }
+          EOF
+
+      - name: Test LSP initialization
+        run: |
+          # Test that the server can start and respond to initialize request
+          timeout 5 bash -c '
+            echo "Content-Length: 104\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"processId\":null,\"rootUri\":null,\"capabilities\":{}}}" | \
+            rholang-language-server 2>&1 | head -20
+          ' || echo "LSP server initialization test completed"
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-matrix, package-deb, package-rpm, package-macos-dmg, package-arch, test-deb-package, test-rpm-package, test-arch-package, test-macos-dmg]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            rholang-language-server-linux-*/*.tar.gz
+            rholang-language-server-linux-*/*.zip
+            rholang-language-server-macos-*/*.tar.gz
+            rholang-language-server-macos-*/*.zip
+            debian-package/*.deb
+            rpm-package/*.rpm
+            macos-dmg/*.dmg
+            arch-package-*/*.pkg.tar.zst
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

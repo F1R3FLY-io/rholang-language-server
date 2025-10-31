@@ -553,8 +553,10 @@ impl RholangBackend {
         parent_diagnostics
     }
 
-    /// Looks up the IR node, its symbol table, and inverted index at a given position in the document.
-    pub async fn lookup_node_at_position(&self, uri: &Url, position: IrPosition) -> Option<(Arc<RholangNode>, Arc<SymbolTable>, InvertedIndex)> {
+    /// Looks up the IR node and its symbol table at a given position in the document.
+    ///
+    /// Priority 2b: Removed inverted_index from return type - now in rholang_symbols.
+    pub async fn lookup_node_at_position(&self, uri: &Url, position: IrPosition) -> Option<(Arc<RholangNode>, Arc<SymbolTable>)> {
         debug!("Lock-free document lookup for symbol at {}:{:?}", uri, position);
         let opt_doc = self.workspace.documents.get(uri).map(|entry| entry.value().clone());
         if let Some(doc) = opt_doc {
@@ -564,7 +566,7 @@ impl RholangBackend {
                     .and_then(|t| t.downcast_ref::<Arc<SymbolTable>>())
                     .cloned()
                     .unwrap_or_else(|| doc.symbol_table.clone());
-                return Some((node, symbol_table, doc.inverted_index.clone()));
+                return Some((node, symbol_table));
             }
         }
         None
@@ -607,24 +609,41 @@ impl RholangBackend {
             }
         }
 
-        // Add local usages from the declaration document (lock-free)
-        if let Some(decl_doc) = self.workspace.documents.get(&decl_uri) {
-            if let Some(usages) = decl_doc.inverted_index.get(&decl_pos) {
-                for &usage_pos in usages {
-                    let range = Self::position_to_range(usage_pos, name_len);
-                    locations.push((decl_uri.clone(), range));
-                    debug!("Added local usage of '{}' at {}:{:?}", symbol.name, decl_uri, usage_pos);
-                }
-            }
-        }
+        // Two-tier resolution:
+        // - Contracts (global): Use rholang_contracts.get_references()
+        // - Variables (local): Use per-document inverted_index
 
-        // Phase 5: Add global references using rholang_symbols (lock-free)
-        if symbol.symbol_type == SymbolType::Contract {
-            let global_refs = self.workspace.rholang_symbols.get_references(&symbol.name);
-            for ref_loc in global_refs {
-                let range = Self::position_to_range(ref_loc.position, name_len);
-                locations.push((ref_loc.uri.clone(), range));
-                debug!("Added global usage of '{}' at {}:{:?}", symbol.name, ref_loc.uri, ref_loc.position);
+        let refs = if symbol.symbol_type == SymbolType::Contract {
+            // Global symbol (contract) - lookup by name
+            self.workspace.rholang_symbols.get_references(&symbol.name)
+        } else {
+            // Local symbol (variable) - lookup in per-document inverted_index
+            // Clone the positions to avoid holding the DashMap guard
+            let ref_positions: Option<Vec<crate::ir::semantic_node::Position>> =
+                self.workspace.documents.get(&decl_uri)
+                    .and_then(|doc| doc.inverted_index.get(&symbol.declaration_location).cloned());
+
+            if let Some(positions) = ref_positions {
+                debug!("Found {} reference(s) for local variable '{}' in inverted_index", positions.len(), symbol.name);
+                positions.iter().map(|pos| {
+                    crate::lsp::rholang_contracts::SymbolLocation::new(decl_uri.clone(), *pos)
+                }).collect()
+            } else {
+                debug!("No references found in inverted_index for local variable '{}'", symbol.name);
+                Vec::new()
+            }
+        };
+
+        for ref_loc in refs {
+            let range = Self::position_to_range(ref_loc.position, name_len);
+            let location = (ref_loc.uri.clone(), range);
+
+            // Only add if not already present (deduplicate by URI and range)
+            if !locations.iter().any(|(uri, r)| uri == &location.0 && r == &location.1) {
+                locations.push(location);
+                debug!("Added usage of '{}' at {}:{:?}", symbol.name, ref_loc.uri, ref_loc.position);
+            } else {
+                debug!("Skipped duplicate reference of '{}' at {}:{:?}", symbol.name, ref_loc.uri, ref_loc.position);
             }
         }
 

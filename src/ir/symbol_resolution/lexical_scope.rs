@@ -46,6 +46,11 @@ impl LexicalScopeResolver {
         let mut locations = Vec::new();
         let mut current_scope_id = Some(scope_id);
 
+        debug!(
+            "LexicalScopeResolver::find_in_scope_chain: Looking for '{}' starting in scope {}",
+            symbol_name, scope_id
+        );
+
         // Traverse scope chain from current to global
         while let Some(sid) = current_scope_id {
             if sid >= self.symbol_table.scopes.len() {
@@ -56,8 +61,30 @@ impl LexicalScopeResolver {
 
             // Check if symbol exists in this scope
             if let Some(occurrences) = scope.symbols.get(symbol_name) {
+                debug!(
+                    "  Found {} occurrence(s) of '{}' in scope {}",
+                    occurrences.len(), symbol_name, sid
+                );
+
+                // Log all occurrences for debugging
+                for (i, occ) in occurrences.iter().enumerate() {
+                    debug!(
+                        "    Occurrence {}: L{}:C{}-L{}:C{} is_def={} kind={:?}",
+                        i,
+                        occ.range.start.line, occ.range.start.character,
+                        occ.range.end.line, occ.range.end.character,
+                        occ.is_definition,
+                        occ.kind
+                    );
+                }
+
                 for occ in occurrences {
                     if occ.is_definition {
+                        debug!(
+                            "    -> Adding definition at L{}:C{}-L{}:C{}",
+                            occ.range.start.line, occ.range.start.character,
+                            occ.range.end.line, occ.range.end.character
+                        );
                         locations.push(SymbolLocation {
                             uri: self.symbol_table.uri.clone(),
                             range: occ.range,
@@ -78,6 +105,11 @@ impl LexicalScopeResolver {
             // Move to parent scope
             current_scope_id = scope.parent_id;
         }
+
+        debug!(
+            "LexicalScopeResolver::find_in_scope_chain: Found {} definition(s) for '{}'",
+            locations.len(), symbol_name
+        );
 
         locations
     }
@@ -100,6 +132,12 @@ impl SymbolResolver for LexicalScopeResolver {
             line: position.row as u32,
             character: position.column as u32,
         };
+
+        debug!(
+            "LexicalScopeResolver: Converted Position {{row={}, col={}, byte={}}} to LspPosition {{line={}, char={}}}",
+            position.row, position.column, position.byte,
+            lsp_pos.line, lsp_pos.character
+        );
 
         // Find symbol at position to get scope_id
         let symbol = match self.symbol_table.find_symbol_at_position(&lsp_pos) {

@@ -11,5 +11,6 @@ pub mod semantic_node;
 pub mod symbol_resolution;
 pub mod symbol_table;
 pub mod transforms;
+pub mod type_extraction;
 pub mod unified_ir;
 pub mod visitor;
