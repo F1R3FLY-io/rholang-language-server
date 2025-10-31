@@ -35,8 +35,8 @@ pathmap = { git = "https://github.com/Adam-Vandervorst/PathMap.git", branch = "m
 petgraph = "0.8.2"
 prost = "0.13"
 rayon = "1.10"
-rholang-parser = { git = "git@github.com:F1R3FLY-io/rholang-rs.git", branch = "dylon/named-comment-nodes", features = ["named-comments"] }
-rholang-tree-sitter = { git = "git@github.com:F1R3FLY-io/rholang-rs.git", branch = "dylon/named-comment-nodes", features = ["named-comments"] }
+rholang-parser = { git = "https://github.com/F1R3FLY-io/rholang-rs.git", branch = "dylon/named-comment-nodes", features = ["named-comments"] }
+rholang-tree-sitter = { git = "https://github.com/F1R3FLY-io/rholang-rs.git", branch = "dylon/named-comment-nodes", features = ["named-comments"] }
 ropey = "1.6"
 rpds = "1.1"
 scopeguard = "1.2"

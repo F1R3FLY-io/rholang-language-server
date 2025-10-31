@@ -10,7 +10,7 @@ Language Server Protocol (LSP) implementation for Rholang, the smart contract la
 - **Semantic Rename** - Safely rename symbols with workspace-wide atomic edits
 - **Document Symbols** - Outline view of contracts, variables, and definitions
 - **Document Highlighting** - Highlight all occurrences of the symbol under cursor
-- **Diagnostics** - Syntax and semantic error detection (via RNode integration)
+- **Diagnostics** - Syntax error detection with local Tree-Sitter parsing
 - **MeTTa Support** - Embedded MeTTa language support within Rholang strings
 - **Pattern Matching** - Contract overload resolution with multi-argument matching
 - **Cross-File Navigation** - Navigate definitions and references across multiple files
@@ -76,10 +76,14 @@ sudo mv rholang-language-server /usr/local/bin/
 
 ## Requirements
 
-- **Rust**: Nightly toolchain (edition 2024) - only required for building from source
-- **Protobuf**: `protoc` compiler - only required for building from source
-- **RNode**: Optional, for semantic validation and diagnostics
+### For End Users (Binary Installation)
 - **Platform**: Linux x86_64/ARM64 or macOS x86_64/ARM64
+
+### For Building from Source
+- **Rust**: Nightly toolchain (edition 2024)
+- **Protobuf**: `protoc` compiler
+- **Node.js/npm**: For Tree-Sitter CLI installation
+- **Tree-Sitter CLI**: For grammar generation (`npm install -g tree-sitter-cli`)
 
 ## Editor Integration
 
@@ -128,30 +132,46 @@ The language server communicates via standard LSP protocol over stdio. Configure
 
 ## Building from Source
 
-### Dependencies for RNode (Optional)
+### Prerequisites
 
-Clone [f1r3fly](https://github.com/F1R3FLY-io/f1r3fly) and compile `rnode`:
+Install required build tools:
 
-```shell
-git clone https://github.com/F1R3FLY-io/f1r3fly.git
-cd f1r3fly
-export SBT_OPTS="-Xmx4g -Xss2m -Dsbt.supershell=false"
-sbt clean bnfc:generate compile stage
-# Optional: Add `rnode` to your $PATH:
-export PATH="$PWD/node/target/universal/stage/bin:$PATH"
+```bash
+# Ubuntu/Debian
+sudo apt-get update
+sudo apt-get install -y protobuf-compiler npm
+
+# macOS
+brew install protobuf npm
+
+# Install Tree-Sitter CLI (all platforms)
+npm install -g tree-sitter-cli
+
+# Install Rust nightly
+rustup install nightly
+rustup default nightly
 ```
 
-### Compiling the Language Server
+### Build Instructions
 
-Clone [rholang-language-server](https://github.com/F1R3FLY-io/rholang-language-server) and compile it:
+Clone and build the language server:
 
-```shell
+```bash
 git clone https://github.com/F1R3FLY-io/rholang-language-server.git
 cd rholang-language-server
+
+# Build in debug mode
 cargo build
-# Optional: Add `rholang-language-server` to your $PATH:
-export PATH="$PWD/target/debug:$PATH"
+
+# Or build in release mode
+cargo build --release
+
+# The binary will be at:
+# - Debug: target/debug/rholang-language-server
+# - Release: target/release/rholang-language-server
 ```
+
+**Note**: The build process will automatically clone git dependencies. For local development with modified dependencies, see the Development section below.
 
 ## Development
 
@@ -187,20 +207,25 @@ See `.githooks/README.md` for more information.
 ⚠️ **Current Requirement**: The `[patch]` sections in `Cargo.toml` are currently **uncommented by default** and **must remain uncommented** to build the project. This is due to MORK transitive dependencies that are not yet published or accessible via git.
 
 **Current workflow** (temporary, until MORK dependencies are resolved):
-1. **Clone all required dependencies**:
+1. **Clone all required dependencies** with correct branches:
    ```bash
    cd ..
-   git clone https://github.com/trueagi-io/MORK.git
-   git clone https://github.com/Adam-Vandervorst/PathMap.git
-   git clone https://github.com/F1R3FLY-io/MeTTa-Compiler.git
-   git clone https://github.com/dylon/rholang-rs.git
-   git clone https://github.com/F1R3FLY-io/f1r3node.git
+   git clone --depth=1 --branch main https://github.com/trueagi-io/MORK.git
+   git clone --depth=1 --branch master https://github.com/Adam-Vandervorst/PathMap.git
+   git clone --depth=1 --branch dylon/rholang-language-server https://github.com/F1R3FLY-io/MeTTa-Compiler.git
+   git clone --depth=1 --branch dylon/named-comment-nodes https://github.com/F1R3FLY-io/rholang-rs.git
+   git clone --depth=1 --branch dylon/mettatron https://github.com/F1R3FLY-io/f1r3node.git
    cd rholang-language-server
    ```
 
 2. **The `[patch]` sections are already uncommented** in `Cargo.toml` - leave them as-is
 
-3. **Build the project**:
+3. **Install Tree-Sitter CLI** (if not already installed):
+   ```bash
+   npm install -g tree-sitter-cli
+   ```
+
+4. **Build the project**:
    ```bash
    cargo build
    ```
@@ -216,10 +241,10 @@ See `.githooks/README.md` for more information.
 
 The following dependencies can be overridden locally via `[patch]` sections (see end of `Cargo.toml`):
 
-- **MORK** (`mork`, `mork-expr`, `mork-frontend`) - `https://github.com/trueagi-io/MORK.git`
-- **MeTTa-Compiler** (`mettatron`, `tree-sitter-metta`) - `https://github.com/F1R3FLY-io/MeTTa-Compiler.git` (branch: `feature/repl-enhancements`)
-- **PathMap** (`pathmap`) - `https://github.com/Adam-Vandervorst/PathMap.git`
-- **rholang-rs** (`rholang-parser`, `rholang-tree-sitter`) - `https://github.com/dylon/rholang-rs.git` (branch: `dylon/comments`)
+- **MORK** (`mork`, `mork-expr`, `mork-frontend`) - `https://github.com/trueagi-io/MORK.git` (branch: `main`)
+- **MeTTa-Compiler** (`mettatron`, `tree-sitter-metta`) - `https://github.com/F1R3FLY-io/MeTTa-Compiler.git` (branch: `dylon/rholang-language-server`)
+- **PathMap** (`pathmap`) - `https://github.com/Adam-Vandervorst/PathMap.git` (branch: `master`)
+- **rholang-rs** (`rholang-parser`, `rholang-tree-sitter`) - `https://github.com/F1R3FLY-io/rholang-rs.git` (branch: `dylon/named-comment-nodes`)
 - **f1r3node** (`rholang`) - `https://github.com/F1R3FLY-io/f1r3node.git` (branch: `dylon/mettatron`)
 
 ### Dependency Management Philosophy
@@ -243,9 +268,18 @@ The following dependencies can be overridden locally via `[patch]` sections (see
 
 ## Testing
 
-1. From one terminal, launch RNode in standalone mode: `rnode run -s`.
-2. From another terminal, `cd` into `rholang-language-server` root and run: `cargo test`.
-   - This spawns `rholang-language-server` and runs tests against it, communicating with the standalone RNode.
+Run the test suite:
+
+```bash
+cargo test --verbose
+```
+
+The tests include:
+- **Unit tests** - Core functionality and IR transformations
+- **Integration tests** - LSP protocol features (goto-definition, references, rename, etc.)
+- **Tree-Sitter tests** - Parser grammar validation
+
+All tests run without external dependencies and complete in seconds.
 
 ## Performance
 
