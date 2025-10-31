@@ -153,6 +153,94 @@ cargo build
 export PATH="$PWD/target/debug:$PATH"
 ```
 
+## Development
+
+### Git Hooks Setup
+
+⚠️ **Important**: Due to MORK transitive dependencies, local path overrides are currently **required** for building. The git hooks will block commits with uncommented `[patch]` sections, which conflicts with this requirement.
+
+**Options**:
+1. **Don't install hooks during this transition period** (simplest)
+2. **Install but uninstall when committing**:
+   ```bash
+   # Install hooks
+   ./scripts/install-git-hooks.sh
+
+   # When ready to commit, uninstall temporarily
+   ./scripts/uninstall-git-hooks.sh
+   git commit -m "Your changes"
+
+   # Reinstall for future work
+   ./scripts/install-git-hooks.sh
+   ```
+3. **Use `--no-verify` flag**: `git commit --no-verify -m "Your changes"`
+
+**What the hooks do** (when MORK dependencies are resolved):
+- Prevent committing uncommented `[patch]` sections in `Cargo.toml`
+- Prevent committing local path dependencies that should use git sources
+- Ensure repository hygiene for dependency management
+
+See `.githooks/README.md` for more information.
+
+### Working with Local Dependencies
+
+⚠️ **Current Requirement**: The `[patch]` sections in `Cargo.toml` are currently **uncommented by default** and **must remain uncommented** to build the project. This is due to MORK transitive dependencies that are not yet published or accessible via git.
+
+**Current workflow** (temporary, until MORK dependencies are resolved):
+1. **Clone all required dependencies**:
+   ```bash
+   cd ..
+   git clone https://github.com/trueagi-io/MORK.git
+   git clone https://github.com/Adam-Vandervorst/PathMap.git
+   git clone https://github.com/F1R3FLY-io/MeTTa-Compiler.git
+   git clone https://github.com/dylon/rholang-rs.git
+   git clone https://github.com/F1R3FLY-io/f1r3node.git
+   cd rholang-language-server
+   ```
+
+2. **The `[patch]` sections are already uncommented** in `Cargo.toml` - leave them as-is
+
+3. **Build the project**:
+   ```bash
+   cargo build
+   ```
+
+**Future workflow** (when MORK dependencies are resolved):
+1. Clone only the dependency you want to modify
+2. Uncomment the appropriate `[patch]` section in `Cargo.toml`
+3. Make your changes and test locally
+4. Before committing, comment out the `[patch]` section
+5. The pre-commit hook will verify this is done correctly
+
+### Available Local Overrides
+
+The following dependencies can be overridden locally via `[patch]` sections (see end of `Cargo.toml`):
+
+- **MORK** (`mork`, `mork-expr`, `mork-frontend`) - `https://github.com/trueagi-io/MORK.git`
+- **MeTTa-Compiler** (`mettatron`, `tree-sitter-metta`) - `https://github.com/F1R3FLY-io/MeTTa-Compiler.git` (branch: `feature/repl-enhancements`)
+- **PathMap** (`pathmap`) - `https://github.com/Adam-Vandervorst/PathMap.git`
+- **rholang-rs** (`rholang-parser`, `rholang-tree-sitter`) - `https://github.com/dylon/rholang-rs.git` (branch: `dylon/comments`)
+- **f1r3node** (`rholang`) - `https://github.com/F1R3FLY-io/f1r3node.git` (branch: `dylon/mettatron`)
+
+### Dependency Management Philosophy
+
+**⚠️ Temporary State**: Due to MORK transitive dependencies, the `[patch]` sections are currently **uncommented and required** for building. This is a temporary situation until MORK publishes its dependencies properly.
+
+**Target State** (when MORK dependencies are resolved):
+
+**Primary dependencies** (in `[dependencies]` section) will use git repositories. This ensures:
+- ✅ CI builds work without local clones
+- ✅ New contributors can build immediately after cloning
+- ✅ Reproducible builds across environments
+- ✅ No accidental commits of local paths
+
+**Local overrides** (in `[patch]` sections, commented by default) will enable:
+- 🔧 Local development with modified dependencies
+- 🔧 Testing changes before upstreaming
+- 🔧 Debugging dependency issues
+
+**Git hooks** will ensure local overrides never get committed accidentally.
+
 ## Testing
 
 1. From one terminal, launch RNode in standalone mode: `rnode run -s`.

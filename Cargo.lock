@@ -1394,14 +1394,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gxhash"
-version = "3.5.0"
-source = "git+https://github.com/luketpeterson/gxhash/#55bde471dc2e395dd17eb4e7055f323c0c29c19d"
-dependencies = [
- "rustversion",
-]
-
-[[package]]
 name = "h2"
 version = "0.4.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2060,7 +2052,7 @@ dependencies = [
  "mork",
  "mork-expr",
  "mork-frontend",
- "pathmap 0.1.0",
+ "pathmap",
  "regex",
  "rustyline",
  "tokio",
@@ -2123,7 +2115,7 @@ dependencies = [
  "crypto",
  "hex",
  "itertools 0.12.1",
- "pathmap 0.1.0 (git+https://github.com/Adam-Vandervorst/PathMap?branch=cleanup_to_release)",
+ "pathmap",
  "proptest",
  "proptest-derive",
  "prost 0.14.1",
@@ -2158,7 +2150,7 @@ dependencies = [
  "mork-expr",
  "mork-frontend",
  "mork-interning",
- "pathmap 0.1.0",
+ "pathmap",
  "rand 0.9.1",
  "serde",
 ]
@@ -2178,7 +2170,7 @@ version = "0.1.0"
 dependencies = [
  "memmap2",
  "mork-expr",
- "pathmap 0.1.0",
+ "pathmap",
  "regex",
  "typed-arena",
 ]
@@ -2193,7 +2185,7 @@ dependencies = [
  "memmap2",
  "mork-expr",
  "mork-frontend",
- "pathmap 0.1.0",
+ "pathmap",
  "rayon",
  "zip",
 ]
@@ -2209,16 +2201,6 @@ name = "multiset"
 version = "0.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce8738c9ddd350996cb8b8b718192851df960803764bcdaa3afb44a63b1ddb5c"
-
-[[package]]
-name = "mutcursor"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0b5918c680cfc2a1154cdcb8ad74382c3b58b78ded5f356e444abdae6614509"
-dependencies = [
- "maybe-dangling",
- "stable_deref_trait",
-]
 
 [[package]]
 name = "nanorand"
@@ -2504,7 +2486,7 @@ dependencies = [
  "arrayvec",
  "dyn-clone",
  "fast-slice-utils",
- "gxhash 3.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gxhash",
  "libz-ng-sys",
  "local-or-heap",
  "maybe-dangling",
@@ -2515,23 +2497,6 @@ dependencies = [
  "smallvec",
  "tikv-jemallocator",
  "xxhash-rust",
-]
-
-[[package]]
-name = "pathmap"
-version = "0.1.0"
-source = "git+https://github.com/Adam-Vandervorst/PathMap?branch=cleanup_to_release#eb9caff5aac3935c6f814634d8c95a15d8861af1"
-dependencies = [
- "arrayvec",
- "dyn-clone",
- "gxhash 3.5.0 (git+https://github.com/luketpeterson/gxhash/)",
- "libz-ng-sys",
- "local-or-heap",
- "maybe-dangling",
- "mutcursor",
- "num-traits",
- "reusing-vec",
- "smallvec",
 ]
 
 [[package]]
@@ -3237,7 +3202,7 @@ dependencies = [
  "notify",
  "once_cell",
  "parking_lot",
- "pathmap 0.1.0",
+ "pathmap",
  "petgraph 0.8.2",
  "prost 0.13.5",
  "quickcheck",
@@ -3834,12 +3799,6 @@ dependencies = [
  "base64ct",
  "der",
 ]
-
-[[package]]
-name = "stable_deref_trait"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "state"

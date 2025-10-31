@@ -25,20 +25,18 @@ parking_lot = "0.12"
 lsp-types = "0.97"
 once_cell = "1.20"  # Lazy static initialization (for parse cache)
 rustc-hash = "2.0"  # FxHash for fast internal hash maps (Phase 2 optimization)
-mork = { path = "../MORK/kernel", features = ["interning"] }
-mork-expr = { path = "../MORK/expr" }
-mork-frontend = { path = "../MORK/frontend" }
-mettatron = { path = "../MeTTa-Compiler" }
-tree-sitter-metta = { path = "../MeTTa-Compiler/tree-sitter-metta" }
+mork = { git = "https://github.com/trueagi-io/MORK.git", branch = "main", features = ["interning"] }
+mork-expr = { git = "https://github.com/trueagi-io/MORK.git", branch = "main" }
+mork-frontend = { git = "https://github.com/trueagi-io/MORK.git", branch = "main" }
+mettatron = { git = "https://github.com/F1R3FLY-io/MeTTa-Compiler.git", branch = "dylon/rholang-language-server" }
+tree-sitter-metta = { git = "https://github.com/F1R3FLY-io/MeTTa-Compiler.git", branch = "dylon/rholang-language-server" }
 notify = "5.0"
-pathmap = { path = "../PathMap", features = ["jemalloc", "arena_compact"] }
+pathmap = { git = "https://github.com/Adam-Vandervorst/PathMap.git", branch = "master", features = ["jemalloc", "arena_compact"] }
 petgraph = "0.8.2"
 prost = "0.13"
 rayon = "1.10"
-# rholang-parser = { git = "https://github.com/dylon/rholang-rs.git", branch = "dylon/comments" }
-# rholang-tree-sitter = { git = "https://github.com/dylon/rholang-rs.git", branch = "dylon/comments" }
-rholang-parser = { path = "../rholang-rs/rholang-parser/", features = ["named-comments"] }
-rholang-tree-sitter = { path = "../rholang-rs/rholang-tree-sitter/", features = ["named-comments"] }
+rholang-parser = { git = "git@github.com:F1R3FLY-io/rholang-rs.git", branch = "dylon/named-comment-nodes", features = ["named-comments"] }
+rholang-tree-sitter = { git = "git@github.com:F1R3FLY-io/rholang-rs.git", branch = "dylon/named-comment-nodes", features = ["named-comments"] }
 ropey = "1.6"
 rpds = "1.1"
 scopeguard = "1.2"
@@ -62,7 +60,7 @@ walkdir = "2"
 validated = "1.0.0"
 
 # Rholang interpreter (optional for semantic validation)
-rholang = { path = "../f1r3node/rholang", optional = true }
+rholang = { git = "https://github.com/F1R3FLY-io/f1r3node.git", branch = "dylon/mettatron", optional = true }
 
 # Platform-specific dependencies
 [target.'cfg(unix)'.dependencies]
@@ -131,3 +129,48 @@ assets = [
 ]
 [package.metadata.generate-rpm.requires]
 glibc = "*"
+
+# ==============================================================================
+# Local Development Overrides
+# ==============================================================================
+# ⚠️ IMPORTANT: These sections are currently UNCOMMENTED and REQUIRED for building
+#
+# This is due to MORK transitive dependencies that are not yet published or
+# accessible via git. Until these dependencies are resolved upstream, all
+# [patch] sections below MUST remain UNCOMMENTED.
+#
+# To install the pre-commit hook (note: will block commits with uncommented patches):
+#   ./scripts/install-git-hooks.sh
+#
+# To uninstall the pre-commit hook:
+#   ./scripts/uninstall-git-hooks.sh
+#
+# Current workflow (temporary, until MORK dependencies are resolved):
+# 1. Clone all dependency repositories locally (see README.md for details)
+# 2. Keep [patch] sections uncommented (they are already uncommented below)
+# 3. To commit: either uninstall hooks or use `git commit --no-verify`
+#
+# Future workflow (when MORK dependencies are resolved):
+# 1. Comment out [patch] sections by default
+# 2. Uncomment only when working with local clones
+# 3. Pre-commit hook will prevent accidental commits of uncommented sections
+# ==============================================================================
+
+[patch.'https://github.com/trueagi-io/MORK.git']
+mork = { path = "../MORK/kernel" }
+mork-expr = { path = "../MORK/expr" }
+mork-frontend = { path = "../MORK/frontend" }
+
+[patch.'https://github.com/F1R3FLY-io/MeTTa-Compiler.git']
+mettatron = { path = "../MeTTa-Compiler" }
+tree-sitter-metta = { path = "../MeTTa-Compiler/tree-sitter-metta" }
+
+[patch.'https://github.com/Adam-Vandervorst/PathMap.git']
+pathmap = { path = "../PathMap" }
+
+[patch.'https://github.com/dylon/rholang-rs.git']
+rholang-parser = { path = "../rholang-rs/rholang-parser" }
+rholang-tree-sitter = { path = "../rholang-rs/rholang-tree-sitter" }
+
+[patch.'https://github.com/F1R3FLY-io/f1r3node.git']
+rholang = { path = "../f1r3node/rholang" }

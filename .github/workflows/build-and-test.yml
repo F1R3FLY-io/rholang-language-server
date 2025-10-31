@@ -3,17 +3,21 @@ on:
   push:
     branches:
       - main
+      - dylon/*
     tags:
       - 'v*'
   pull_request:
     branches:
       - main
+  workflow_dispatch:
+
 env:
   CARGO_TERM_COLOR: always
-  F1R3FLY_REPO_URL: https://github.com/f1R3FLY-io/f1r3fly.git
+  RUST_BACKTRACE: 1
+
 jobs:
   build-and-test:
-    name: Build and Test against ${{ matrix.os }}
+    name: Build and Test - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -23,212 +27,134 @@ jobs:
           - macos-latest
           - ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+    - name: Checkout repository
+      uses: actions/checkout@v4
       with:
-        toolchain: stable
-    - name: Cache Cargo dependencies
+        fetch-depth: 1
+
+    - name: Checkout dependencies
+      run: |
+        cd ../
+        git clone --depth=1 --branch dylon/mettatron https://github.com/F1R3FLY-io/f1r3node.git f1r3node
+        git clone --depth=1 --branch main https://github.com/trueagi-io/MORK.git MORK
+        git clone --depth=1 --branch master https://github.com/Adam-Vandervorst/PathMap.git PathMap
+        git clone --depth=1 --branch dylon/rholang-language-server https://github.com/F1R3FLY-io/MeTTa-Compiler.git MeTTa-Compiler
+        git clone --depth=1 --branch dylon/named-comment-nodes https://github.com/F1R3FLY-io/rholang-rs.git rholang-rs
+        cd rholang-language-server
+      shell: bash
+
+    # - name: Configure local path overrides for CI
+    #   run: |
+    #     # Append patch sections to existing .cargo/config.toml
+    #     # This preserves the existing rustflags configuration
+    #     cat >> .cargo/config.toml <<'EOF'
+
+    #     # ==============================================================================
+    #     # CI-specific patch overrides (appended by CI workflow)
+    #     # ==============================================================================
+    #     # These override the git dependencies in Cargo.toml with local clones
+    #     # to avoid repeated git fetches during the build process.
+
+    #     [patch.'https://github.com/trueagi-io/MORK.git']
+    #     mork = { path = "../MORK/kernel" }
+    #     mork-expr = { path = "../MORK/expr" }
+    #     mork-frontend = { path = "../MORK/frontend" }
+
+    #     [patch.'https://github.com/F1R3FLY-io/MeTTa-Compiler.git']
+    #     mettatron = { path = "../MeTTa-Compiler" }
+    #     tree-sitter-metta = { path = "../MeTTa-Compiler/tree-sitter-metta" }
+
+    #     [patch.'https://github.com/Adam-Vandervorst/PathMap.git']
+    #     pathmap = { path = "../PathMap" }
+
+    #     [patch.'https://github.com/F1R3FLY-io/rholang-rs.git']
+    #     rholang-parser = { path = "../rholang-rs/rholang-parser" }
+    #     rholang-tree-sitter = { path = "../rholang-rs/rholang-tree-sitter" }
+
+    #     [patch.'https://github.com/F1R3FLY-io/f1r3node.git']
+    #     rholang = { path = "../f1r3node/rholang" }
+    #     EOF
+    #     echo "Updated .cargo/config.toml with CI patch overrides"
+    #   shell: bash
+
+    - name: Install Rust toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: nightly
+        components: rustfmt, clippy
+    - name: Cache cargo registry
       uses: actions/cache@v4
       with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-    - name: Install RNode dependencies (Ubuntu)
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-registry-
+
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-index-
+
+    - name: Cache cargo build
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-build-target-
+    - name: Install protobuf compiler (Ubuntu)
       if: startsWith(matrix.os, 'ubuntu')
-      run: |
-        # https://www.scala-sbt.org/1.x/docs/Installing-sbt-on-Linux.html#Ubuntu+and+other+Debian-based+distributions
-        echo "deb https://repo.scala-sbt.org/scalasbt/debian all main" | sudo tee /etc/apt/sources.list.d/sbt.list
-        echo "deb https://repo.scala-sbt.org/scalasbt/debian /" | sudo tee /etc/apt/sources.list.d/sbt_old.list
-        curl -sL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x2EE0EA64E40A89B84B2DF73499E82A75642AC823" | sudo apt-key add
-        sudo apt-get update
-        sudo apt-get install -y openjdk-11-jdk git curl unzip make cmake libtool autoconf ghc cabal-install protobuf-compiler sbt jflex
-        cabal update
-        cabal install alex happy
-        cabal install BNFC
-        echo "$HOME/.cabal/bin" >> $GITHUB_PATH
-        # Set JAVA_HOME for JDK 11
-        echo "JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64" >> $GITHUB_ENV
-        echo "/usr/lib/jvm/java-11-openjdk-amd64/bin" >> $GITHUB_PATH
-    - name: Install RNode dependencies (macOS)
+      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      shell: bash
+
+    - name: Install protobuf compiler (macOS)
       if: startsWith(matrix.os, 'macos')
+      run: brew install protobuf
+      shell: bash
+
+    - name: Install Tree-Sitter CLI
       run: |
-        brew update
-        brew install openjdk@11 git sbt curl unzip make cmake libtool autoconf protobuf jflex bnfc
-        # Set JAVA_HOME for JDK 11
-        sudo ln -sfn /opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk /Library/Java/JavaVirtualMachines/openjdk-11.jdk
-        echo "JAVA_HOME=/opt/homebrew/opt/openjdk@11" >> $GITHUB_ENV
-        echo "/opt/homebrew/opt/openjdk@11/bin" >> $GITHUB_PATH
-    - name: Install RNode dependencies (Windows)
-      if: startsWith(matrix.os, 'windows')
+        echo "::group::Installing Tree-Sitter CLI"
+        npm install -g tree-sitter-cli
+        tree-sitter --version
+        echo "::endgroup::"
+      shell: bash
+
+    - name: Verify build dependencies
       run: |
-        # Install Chocolatey if not present
-        if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
-          Set-ExecutionPolicy Bypass -Scope Process -Force
-          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-          iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
-        }
-        # ---------------------------------- #
-        # Install Eclipse Temurin OpenJDK 11 #
-        # ---------------------------------- #
-        $JDK_URL = "https://github.com/adoptium/temurin11-binaries/releases/download/jdk-11.0.21%2B9/OpenJDK11U-jdk_x64_windows_hotspot_11.0.21_9.zip"
-        curl -sSL $JDK_URL -o jdk11.zip
-        Expand-Archive -Path jdk11.zip -DestinationPath "C:\Program Files\OpenJDK"
-        $env:JAVA_HOME = "C:\Program Files\OpenJDK\jdk-11.0.21+9"
-        $env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
-        Write-Output "JAVA_HOME=$env:JAVA_HOME" >> $env:GITHUB_ENV
-        Write-Output "$env:JAVA_HOME\bin" >> $env:GITHUB_PATH
-        # Verify OpenJDK 11
-        java -version
-        if (-not (java -version 2>&1 | Select-String "11\.")) {
-          Write-Output "Error: OpenJDK 11 is not the default Java version."
-          exit 1
-        }
-        # -------------------------- #
-        # Install other dependencies #
-        # -------------------------- #
-        choco install -y git sbt curl unzip cmake mingw protoc haskell-stack msys2
-        Write-Output "C:\tools\msys64\usr\bin;C:\tools\msys64\mingw64\bin" >> $env:GITHUB_PATH
-        # Install make and autoconf via MSYS2
-        C:\tools\msys64\usr\bin\pacman.exe -S --noconfirm make autoconf
-        # ------------------------- #
-        # Use Stack to install BNFC #
-        # ------------------------- #
-        $env:PATH = "$env:USERPROFILE\AppData\Roaming\local\bin;$env:PATH"
-        Write-Output "$env:USERPROFILE\AppData\Roaming\local\bin" >> $env:GITHUB_PATH
-        stack install BNFC
-        # Run the command and capture the output
-        $BNFC_PATH = stack exec -- which bnfc
-        # Convert Unix-style path to Windows-style path (if needed)
-        $BNFC_PATH = $BNFC_PATH -replace '^/c/', 'C:\' -replace '/', '\'
-        # Get the parent directory
-        $BNFC_BIN_DIR = Split-Path -Path $BNFC_PATH -Parent
-        Write-Output "$BNFC_BIN_DIR" >> $env:GITHUB_PATH
-        # ------------------------------------------- #
-        # Install JFlex (this is a bit more involved) #
-        # ------------------------------------------- #
-        $JFLEX_VERSION = "1.9.1"  # Specify the desired JFlex version
-        $JFLEX_URL = "https://github.com/jflex-de/jflex/releases/download/v$JFLEX_VERSION/jflex-$JFLEX_VERSION.zip"
-        $JFLEX_INSTALL_DIR = "$env:USERPROFILE"
-        $JFLEX_DOWNLOAD_PATH = "$env:TEMP\jflex-$JFLEX_VERSION.zip"
-        # Download JFlex
-        Write-Output "Downloading JFlex v$JFLEX_VERSION from $JFLEX_URL..."
-        Invoke-WebRequest -Uri $JFLEX_URL -OutFile $JFLEX_DOWNLOAD_PATH
-        Write-Output "Extracting JFlex to $JFLEX_INSTALL_DIR..."
-        Expand-Archive -Path $JFLEX_DOWNLOAD_PATH -DestinationPath $JFLEX_INSTALL_DIR -Force
-        # Configure jflex.bat (ensure it points to the correct JAR and Java)
-        $JFLEX_BAT = "$JFLEX_INSTALL_DIR\jflex-$JFLEX_VERSION\bin\jflex.bat"
-        $JFLEX_JAR_PATH = "$JFLEX_INSTALL_DIR\jflex-$JFLEX_VERSION\lib\jflex-full-$JFLEX_VERSION.jar"
-        if (-not (Test-Path $JFLEX_JAR_PATH)) {
-            Write-Error "JFlex JAR not found at $JFLEX_JAR_PATH"
-            exit 1
-        }
-        # Update jflex.bat to use the correct Java and JAR path
-        $BAT_CONTENT = @"
-        @echo off
-        java -jar "$JFLEX_JAR_PATH" %*
-        "@
-        Set-Content -Path $JFLEX_BAT -Value $BAT_CONTENT
-        # Add JFlex bin directory to PATH
-        $JFLEX_BIN = "$JFLEX_INSTALL_DIR\jflex-$JFLEX_VERSION\bin"
-        $env:PATH = "$JFLEX_BIN;$env:PATH"
-        [Environment]::SetEnvironmentVariable("PATH", $env:PATH, [System.EnvironmentVariableTarget]::Process)
-        # Verify installation
-        Write-Output "Verifying JFlex installation..."
-        Start-Process -FilePath "$JFLEX_BIN\jflex.bat" -ArgumentList --version
-        # Clean up
-        Remove-Item -Path $JFLEX_DOWNLOAD_PATH
-        Write-Output "$JFLEX_BIN" >> $env:GITHUB_PATH
-        Write-Output "JFlex installed successfully at $JFLEX_BIN"
-    - name: Verify Dependencies
-      run: |
+        echo "::group::Verifying dependencies"
+        echo "Protobuf compiler:"
         protoc --version
-        if ! command -v protoc >/dev/null 2>&1; then
-          echo "Error: protoc not installed correctly." >&2
-          exit 1
-        fi
-        bnfc --version
-        if ! bnfc --version >/dev/null 2>&1; then
-          echo "Error: BNFC not installed correctly or not executable." >&2
-          bnfc --version
-          file /usr/local/bin/bnfc || true
-          exit 1
-        fi
-        # Verify JDK 11
-        java -version
-        if ! java -version 2>&1 | grep -q "11\."; then
-          echo "Error: JDK 11 is not being used." >&2
-          java -version
-          exit 1
-        fi
+        echo ""
+        echo "Tree-Sitter CLI:"
+        tree-sitter --version
+        echo "::endgroup::"
       shell: bash
-    - name: Get RNode Commit Hash
-      id: rnode-hash
+
+    - name: Build language server
       run: |
-        COMMIT_HASH=$(git ls-remote $F1R3FLY_REPO_URL HEAD | awk '{ print $1 }')
-        echo "hash=$COMMIT_HASH" >> $GITHUB_OUTPUT
-    - name: Cache RNode artifacts
-      uses: actions/cache@v4
-      id: cache-rnode
-      with:
-        path: |
-          ~/.ivy2/cache
-          ~/.sbt
-          f1r3fly/node/target/universal/stage/
-        key: ${{ runner.os }}-rnode-${{ steps.rnode-hash.outputs.hash }}
-    - name: Clone F1R3FLY repository
-      if: steps.cache-rnode.outputs.cache-hit != 'true'
-      run: |
-        if [ -d f1r3fly ]; then
-          rm -rf f1r3fly
-        fi
-        git clone --single-branch --branch main --depth 1 ${{ env.F1R3FLY_REPO_URL }} f1r3fly
-        if [ $? -ne 0 ]; then
-          echo "Error: Failed to clone F1R3FLY repository." >&2
-          exit 1
-        fi
-        # Store commit hash for cache key
-        cd f1r3fly
-        echo "F1R3FLY_COMMIT_HASH=$(git rev-parse HEAD)" >> $GITHUB_ENV
-        cd ..
+        echo "::group::Building rholang-language-server"
+        cargo build --verbose
+        ls -lh target/debug/rholang-language-server
+        echo "::endgroup::"
       shell: bash
-    - name: Build RNode
-      if: steps.cache-rnode.outputs.cache-hit != 'true'
-      run: |
-        cd f1r3fly
-        sbt -mem 8192 -Dsbt.supershell=false -java-home "${JAVA_HOME}" -J-Xmx8G -J-Xms2G -J-XX:MaxMetaspaceSize=1G -J-XX:+UseG1GC "set scalaVersion := \"2.12.15\"" clean bnfc:generate compile stage
-        cd ..
-      shell: bash
-    - name: Build
-      run: cargo build --verbose
+
     - name: Run tests
       run: |
-        RNODE_BIN="$PWD/f1r3fly/node/target/universal/stage/bin/rnode"
-        if [ ! -x "$RNODE_BIN" ]; then
-          echo "Error: RNode executable not found." >&2
-          exit 1
-        fi
-        # Start RNode in background
-        "$RNODE_BIN" run -s &
-        RNODE_PID=$!
-        # Wait for RNode to start
-        for i in {1..30}; do
-          if curl -s http://localhost:40403/status >/dev/null; then
-            echo "RNode started successfully"
-            break
-          fi
-          echo "Waiting for RNode to start..."
-          sleep 5
-        done
-        if ! curl -s http://localhost:40403/status >/dev/null; then
-          echo "Error: RNode failed to start." >&2
-          exit 1
-        fi
-        cargo test --verbose
-        if [ -n "${RNODE_PID}" ]; then
-          kill $RNODE_PID || true
-        fi
+        echo "::group::Running cargo tests"
+        cargo test --verbose -- --nocapture
+        echo "::endgroup::"
+      shell: bash
+
+    - name: Upload test artifacts on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results-${{ matrix.os }}
+        path: |
+          target/debug/
+          *.log
+        retention-days: 7

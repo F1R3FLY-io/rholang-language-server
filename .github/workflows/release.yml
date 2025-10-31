@@ -66,8 +66,45 @@ jobs:
           git clone --depth=1 --branch dylon/mettatron https://github.com/F1R3FLY-io/f1r3node.git f1r3node
           git clone --depth=1 --branch main https://github.com/trueagi-io/MORK.git MORK
           git clone --depth=1 --branch master https://github.com/Adam-Vandervorst/PathMap.git PathMap
-          git clone --depth=1 --branch main https://github.com/F1R3FLY-io/MeTTa-Compiler.git MeTTa-Compiler
-          git clone --depth=1 --branch dylon/comments https://github.com/dylon/rholang-rs.git rholang-rs
+          git clone --depth=1 --branch dylon/rholang-language-server https://github.com/F1R3FLY-io/MeTTa-Compiler.git MeTTa-Compiler
+          git clone --depth=1 --branch dylon/named-comment-nodes https://github.com/F1R3FLY-io/rholang-rs.git rholang-rs
+          cd rholang-language-server
+
+      # - name: Configure local path overrides for CI
+      #   run: |
+      #     # Append patch sections to existing .cargo/config.toml
+      #     # This preserves the existing rustflags configuration
+      #     cat >> .cargo/config.toml <<'EOF'
+
+      #     # ==============================================================================
+      #     # CI-specific patch overrides (appended by CI workflow)
+      #     # ==============================================================================
+      #     # These override the git dependencies in Cargo.toml with local clones
+      #     # to avoid repeated git fetches during the build process.
+
+      #     [patch.'https://github.com/trueagi-io/MORK.git']
+      #     mork = { path = "../MORK/kernel" }
+      #     mork-expr = { path = "../MORK/expr" }
+      #     mork-frontend = { path = "../MORK/frontend" }
+
+      #     [patch.'https://github.com/F1R3FLY-io/MeTTa-Compiler.git']
+      #     mettatron = { path = "../MeTTa-Compiler" }
+      #     tree-sitter-metta = { path = "../MeTTa-Compiler/tree-sitter-metta" }
+
+      #     [patch.'https://github.com/Adam-Vandervorst/PathMap.git']
+      #     pathmap = { path = "../PathMap" }
+
+      #     [patch.'https://github.com/dylon/rholang-rs.git']
+      #     rholang-parser = { path = "../rholang-rs/rholang-parser" }
+      #     rholang-tree-sitter = { path = "../rholang-rs/rholang-tree-sitter" }
+
+      #     [patch.'https://github.com/F1R3FLY-io/f1r3node.git']
+      #     rholang = { path = "../f1r3node/rholang" }
+      #     EOF
+
+      #     echo "Updated .cargo/config.toml with CI patch overrides"
+      #     echo "=== Current .cargo/config.toml ==="
+      #     cat .cargo/config.toml
 
       - name: Install protobuf compiler (Linux)
         if: runner.os == 'Linux'
