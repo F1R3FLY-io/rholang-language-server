@@ -168,7 +168,7 @@ tree-sitter-metta = { path = "../MeTTa-Compiler/tree-sitter-metta" }
 [patch.'https://github.com/Adam-Vandervorst/PathMap.git']
 pathmap = { path = "../PathMap" }
 
-[patch.'https://github.com/dylon/rholang-rs.git']
+[patch.'https://github.com/F1R3FLY-io/rholang-rs.git']
 rholang-parser = { path = "../rholang-rs/rholang-parser" }
 rholang-tree-sitter = { path = "../rholang-rs/rholang-tree-sitter" }
 
