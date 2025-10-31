@@ -67,6 +67,24 @@ jobs:
         cd rholang-language-server
       shell: bash
 
+    - name: Install protobuf compiler (Ubuntu)
+      if: startsWith(matrix.platform.os, 'ubuntu')
+      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      shell: bash
+
+    - name: Install protobuf compiler (macOS)
+      if: startsWith(matrix.platform.os, 'macos')
+      run: brew install protobuf
+      shell: bash
+
+    - name: Install Tree-Sitter CLI
+      run: |
+        echo "::group::Installing Tree-Sitter CLI"
+        npm install -g tree-sitter-cli
+        tree-sitter --version
+        echo "::endgroup::"
+      shell: bash
+
     - name: Generate Rholang Tree-Sitter grammar with named comments
       run: |
         echo "::group::Generating Rholang Tree-Sitter grammar"
@@ -143,23 +161,6 @@ jobs:
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
           ${{ runner.os }}-cargo-build-target-
-    - name: Install protobuf compiler (Ubuntu)
-      if: startsWith(matrix.platform.os, 'ubuntu')
-      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      shell: bash
-
-    - name: Install protobuf compiler (macOS)
-      if: startsWith(matrix.platform.os, 'macos')
-      run: brew install protobuf
-      shell: bash
-
-    - name: Install Tree-Sitter CLI
-      run: |
-        echo "::group::Installing Tree-Sitter CLI"
-        npm install -g tree-sitter-cli
-        tree-sitter --version
-        echo "::endgroup::"
-      shell: bash
 
     - name: Verify build dependencies
       run: |

@@ -70,6 +70,21 @@ jobs:
           git clone --depth=1 --branch dylon/named-comment-nodes https://github.com/F1R3FLY-io/rholang-rs.git rholang-rs
           cd rholang-language-server
 
+      - name: Install protobuf compiler (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install protobuf compiler (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Install Tree-Sitter CLI
+        run: |
+          echo "::group::Installing Tree-Sitter CLI"
+          npm install -g tree-sitter-cli
+          tree-sitter --version
+          echo "::endgroup::"
+
       - name: Generate Rholang Tree-Sitter grammar with named comments
         run: |
           echo "::group::Generating Rholang Tree-Sitter grammar"
@@ -118,14 +133,6 @@ jobs:
       #     echo "Updated .cargo/config.toml with CI patch overrides"
       #     echo "=== Current .cargo/config.toml ==="
       #     cat .cargo/config.toml
-
-      - name: Install protobuf compiler (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Install protobuf compiler (macOS)
-        if: runner.os == 'macOS'
-        run: brew install protobuf
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
