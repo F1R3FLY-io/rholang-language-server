@@ -18,5 +18,6 @@
 !/tests/**/*.rs
 !/test_utils/Cargo.toml
 !/test_utils/src/**/*.rs
+!/benches/**/*.rs
 
 target/*
