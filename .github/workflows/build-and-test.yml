@@ -17,15 +17,21 @@ env:
 
 jobs:
   build-and-test:
-    name: Build and Test - ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Build and Test - ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.os }}
     strategy:
       fail-fast: false
       matrix:
-        os:
-          # - windows-latest
-          - macos-latest
-          - ubuntu-latest
+        platform:
+          # - name: Windows
+          #   os: windows-latest
+          #   rustflags: "-C target-feature=+aes,+sse2"
+          - name: macOS
+            os: macos-latest
+            rustflags: "-C target-feature=+aes,+neon"  # Apple Silicon ARM64
+          - name: Ubuntu
+            os: ubuntu-latest
+            rustflags: "-C target-feature=+aes,+sse2"
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -106,12 +112,12 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-cargo-build-target-
     - name: Install protobuf compiler (Ubuntu)
-      if: startsWith(matrix.os, 'ubuntu')
+      if: startsWith(matrix.platform.os, 'ubuntu')
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       shell: bash
 
     - name: Install protobuf compiler (macOS)
-      if: startsWith(matrix.os, 'macos')
+      if: startsWith(matrix.platform.os, 'macos')
       run: brew install protobuf
       shell: bash
 
@@ -135,14 +141,19 @@ jobs:
       shell: bash
 
     - name: Build language server
+      env:
+        RUSTFLAGS: ${{ matrix.platform.rustflags }}
       run: |
         echo "::group::Building rholang-language-server"
+        echo "RUSTFLAGS: $RUSTFLAGS"
         cargo build --verbose
         ls -lh target/debug/rholang-language-server
         echo "::endgroup::"
       shell: bash
 
     - name: Run tests
+      env:
+        RUSTFLAGS: ${{ matrix.platform.rustflags }}
       run: |
         echo "::group::Running cargo tests"
         cargo test --verbose -- --nocapture
@@ -153,7 +164,7 @@ jobs:
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: test-results-${{ matrix.os }}
+        name: test-results-${{ matrix.platform.name }}
         path: |
           target/debug/
           *.log
