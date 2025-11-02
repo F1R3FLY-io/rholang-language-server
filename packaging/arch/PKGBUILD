@@ -1,0 +1,72 @@
+# Maintainer: F1R3FLY.io <noreply@f1r3fly.io>
+
+pkgname=rholang-language-server
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Language Server Protocol implementation for Rholang smart contract language"
+arch=('x86_64' 'aarch64')
+url="https://github.com/F1R3FLY-io/rholang-language-server"
+license=('Apache')
+depends=('gcc-libs')
+makedepends=('rust' 'cargo' 'protobuf' 'git')
+source=("git+https://github.com/F1R3FLY-io/rholang-language-server.git#tag=v${pkgver}"
+        "git+https://github.com/F1R3FLY-io/f1r3node.git#branch=dylon/mettatron"
+        "git+https://github.com/trueagi-io/MORK.git#branch=main"
+        "git+https://github.com/Adam-Vandervorst/PathMap.git#branch=master"
+        "git+https://github.com/F1R3FLY-io/MeTTa-Compiler.git#branch=main"
+        "git+https://github.com/dylon/rholang-rs.git#branch=dylon/comments")
+sha256sums=('SKIP'
+            'SKIP'
+            'SKIP'
+            'SKIP'
+            'SKIP'
+            'SKIP')
+
+prepare() {
+    cd "$srcdir"
+
+    # Set up dependency structure expected by Cargo.toml
+    mkdir -p dependencies
+    ln -sf "$srcdir/f1r3node" dependencies/
+    ln -sf "$srcdir/MORK" dependencies/
+    ln -sf "$srcdir/PathMap" dependencies/
+    ln -sf "$srcdir/MeTTa-Compiler" dependencies/
+    ln -sf "$srcdir/rholang-rs" dependencies/
+}
+
+build() {
+    cd "$srcdir/$pkgname"
+
+    # Override native CPU targeting for portability
+    export RUSTFLAGS="-C target-feature=+aes,+sse2"
+
+    # Build with release profile
+    cargo build --release --locked
+}
+
+check() {
+    cd "$srcdir/$pkgname"
+
+    # Run tests (using nextest if available, otherwise cargo test)
+    if command -v cargo-nextest &> /dev/null; then
+        cargo nextest run --release || true
+    else
+        cargo test --release || true
+    fi
+}
+
+package() {
+    cd "$srcdir/$pkgname"
+
+    # Install binary
+    install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
+
+    # Install documentation
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+    # Install CLAUDE.md for developer reference
+    if [ -f .claude/CLAUDE.md ]; then
+        install -Dm644 .claude/CLAUDE.md "$pkgdir/usr/share/doc/$pkgname/CLAUDE.md"
+    fi
+}
