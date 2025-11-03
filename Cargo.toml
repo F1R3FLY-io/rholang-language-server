@@ -97,6 +97,10 @@ harness = false
 name = "real_world_benchmark"
 harness = false
 
+[[bench]]
+name = "ir_benchmarks"
+harness = false
+
 # Debian package metadata
 [package.metadata.deb]
 maintainer = "F1R3FLY.io <noreply@f1r3fly.io>"

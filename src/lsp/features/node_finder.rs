@@ -37,7 +37,16 @@ pub fn find_node_at_position<'a>(
     root: &'a dyn SemanticNode,
     position: &Position,
 ) -> Option<&'a dyn SemanticNode> {
-    find_node_at_position_recursive(root, position, &Position { row: 0, column: 0, byte: 0 })
+    use tracing::debug;
+    debug!("find_node_at_position: Looking for node at position ({}, {})", position.row, position.column);
+    let result = find_node_at_position_recursive(root, position, &Position { row: 0, column: 0, byte: 0 });
+    if let Some(node) = result {
+        let start = node.absolute_position(Position { row: 0, column: 0, byte: 0 });
+        debug!("find_node_at_position: FOUND node type={}, start=({}, {})", node.type_name(), start.row, start.column);
+    } else {
+        debug!("find_node_at_position: No node found");
+    }
+    result
 }
 
 /// Find a node at the given position with an explicit prev_end
@@ -79,18 +88,56 @@ fn find_node_at_position_recursive<'a>(
 
     trace!("Position IS in range, checking {} children", node.children_count());
 
+    // Special debug logging for Tuple nodes to diagnose position tracking
+    if node.type_name() == "Rholang::Tuple" {
+        use tracing::debug;
+        debug!("=== TUPLE NODE DEBUG ===");
+        debug!("Tuple span: start=({}, {}), end=({}, {})", start.row, start.column, end.row, end.column);
+        debug!("Target position: ({}, {})", target.row, target.column);
+        debug!("Number of children: {}", node.children_count());
+    }
+
+    // DEBUG: Log when we find a node with target position
+    if node.type_name().contains("Par") && position_in_range(target, &start, &end) {
+        use tracing::debug;
+        debug!(">>> Par node contains target! type={}, start=({}, {}), children={}, prev_end=({}, {})",
+            node.type_name(), start.row, start.column, node.children_count(), prev_end.row, prev_end.column);
+    }
+
     // This node contains the position - check children for more specific match
     let mut child_prev_end = start;
+
+    // DEBUG: Log position tracking details for diagnosis
+    use tracing::debug;
+    if node.children_count() > 0 && (node.type_name().contains("Par") || node.type_name().contains("Contract") || node.type_name().contains("Tuple")) {
+        debug!("=== POSITION TRACKING DEBUG for {} ===", node.type_name());
+        debug!("  Parent: start=({}, {}, byte={}), end=({}, {}, byte={})",
+            start.row, start.column, start.byte, end.row, end.column, end.byte);
+        debug!("  prev_end passed to parent: ({}, {}, byte={})", prev_end.row, prev_end.column, prev_end.byte);
+        debug!("  child_prev_end initialized to: ({}, {}, byte={})", child_prev_end.row, child_prev_end.column, child_prev_end.byte);
+        debug!("  Target position: ({}, {})", target.row, target.column);
+        debug!("  Children count: {}", node.children_count());
+    }
+
     for i in 0..node.children_count() {
         if let Some(child) = node.child_at(i) {
+            let child_start = child.absolute_position(child_prev_end);
+            let child_end = child.absolute_end(child_start);
+
+            // DEBUG: Log each child's computed position
+            if node.type_name().contains("Par") || node.type_name().contains("Contract") || node.type_name().contains("Tuple") {
+                let in_range = position_in_range(target, &child_start, &child_end);
+                debug!("  Child[{}] type={}, start=({}, {}), end=({}, {}), in_range={}",
+                    i, child.type_name(), child_start.row, child_start.column, child_end.row, child_end.column, in_range);
+            }
+
             // Recursively search child
             if let Some(found) = find_node_at_position_recursive(child, target, &child_prev_end) {
                 trace!("Found in child: {}", found.type_name());
                 return Some(found); // Found more specific node in child
             }
             // Update prev_end for next sibling
-            let child_start = child.absolute_position(child_prev_end);
-            child_prev_end = child.absolute_end(child_start);
+            child_prev_end = child_end;
         }
     }
 

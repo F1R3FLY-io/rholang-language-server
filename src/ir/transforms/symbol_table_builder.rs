@@ -1,5 +1,6 @@
 use std::any::Any;
 use std::collections::HashMap;
+use std::ptr;
 use std::sync::{Arc, RwLock};
 
 use archery::ArcK;
@@ -57,6 +58,10 @@ pub struct SymbolTableBuilder {
     rholang_symbols: Option<Arc<crate::lsp::rholang_contracts::RholangContracts>>,  // Direct global symbol storage (Phase 3+)
     type_extractor: RwLock<TypeExtractor>,  // Type constraint extractor (Phase 3: Type-Based Matching)
     type_checker: TypeChecker,  // Type constraint checker (Phase 3: Type-Based Matching)
+    /// Cache for extract_structured_value() results to avoid redundant tree traversals
+    /// Key: raw pointer to RholangNode (stable during symbol table building)
+    /// Value: extracted StructuredValue
+    extraction_cache: RwLock<HashMap<usize, Arc<StructuredValue>>>,
 }
 
 impl SymbolTableBuilder {
@@ -83,6 +88,7 @@ impl SymbolTableBuilder {
             rholang_symbols,
             type_extractor: RwLock::new(TypeExtractor::new()),
             type_checker: TypeChecker::new(),
+            extraction_cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -338,7 +344,10 @@ impl SymbolTableBuilder {
             RholangNode::Var { name, .. } => {
                 if !name.is_empty() && name != "_" {
                     let position = node.absolute_start(&self.root);
+                    trace!("extract_bindings_recursive: Extracted unquoted Var '{}' at {:?}", name, position);
                     bindings.push((name.clone(), position));
+                } else {
+                    trace!("extract_bindings_recursive: Skipped unquoted Var (empty or wildcard)");
                 }
             },
 
@@ -348,11 +357,13 @@ impl SymbolTableBuilder {
                 if let RholangNode::Var { name, .. } = &**quotable {
                     if !name.is_empty() && name != "_" {
                         let position = node.absolute_start(&self.root);  // Use Quote's position, not Var's
+                        trace!("extract_bindings_recursive: Extracted quoted Var '{}' at {:?}", name, position);
                         bindings.push((name.clone(), position));
                         return;  // Don't recurse for simple quoted variables
                     }
                 }
                 // For complex quoted patterns, recurse normally
+                trace!("extract_bindings_recursive: Recursing into complex quoted pattern");
                 self.extract_bindings_recursive(quotable, bindings);
             },
 
@@ -374,9 +385,11 @@ impl SymbolTableBuilder {
 
             // Tuple pattern: extract from all elements
             RholangNode::Tuple { elements, .. } => {
+                trace!("extract_bindings_recursive: Processing Tuple with {} elements", elements.len());
                 for element in elements {
                     self.extract_bindings_recursive(element, bindings);
                 }
+                trace!("extract_bindings_recursive: After Tuple, bindings count: {}", bindings.len());
             },
 
             // Set pattern: extract from all elements
@@ -429,7 +442,19 @@ impl SymbolTableBuilder {
     /// - `@{key: "value"}` → `Some(StructuredValue::Map(...))`
     /// - `@[1, 2, 3]` → `Some(StructuredValue::List(...))`
     fn extract_structured_value(&self, node: &Arc<RholangNode>) -> Option<StructuredValue> {
-        match &**node {
+        // Use node pointer as cache key (stable during symbol table building)
+        let cache_key = ptr::addr_of!(**node) as usize;
+
+        // Check cache first
+        {
+            let cache = self.extraction_cache.read().expect("Failed to lock extraction_cache");
+            if let Some(cached) = cache.get(&cache_key) {
+                return Some((**cached).clone());
+            }
+        }
+
+        // Extract value (not in cache)
+        let extracted = match &**node {
             RholangNode::StringLiteral { value, .. } => {
                 Some(StructuredValue::String(value.clone()))
             },
@@ -502,7 +527,15 @@ impl SymbolTableBuilder {
             },
 
             _ => None
+        };
+
+        // Store in cache if extraction succeeded
+        if let Some(ref value) = extracted {
+            let mut cache = self.extraction_cache.write().expect("Failed to lock extraction_cache");
+            cache.insert(cache_key, Arc::new(value.clone()));
         }
+
+        extracted
     }
 
     /// Extract pattern values from all arguments

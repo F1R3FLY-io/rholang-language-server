@@ -176,9 +176,11 @@ pub struct SymbolTable {
     /// Lock-free concurrent symbol storage with FxHasher for performance
     /// Eliminates lock contention during symbol lookups from multiple LSP requests
     pub symbols: Arc<DashMap<String, Arc<Symbol>, FxBuildHasher>>,
-    /// Lock-free pattern index: maps (name, arity) -> list of contract symbols
-    /// Enables O(1) lookup of contracts by pattern instead of O(n) iteration
-    pattern_index: Arc<DashMap<PatternSignature, Vec<Arc<Symbol>>, FxBuildHasher>>,
+    /// Lock-free pattern index: maps name -> (signature -> list of contract symbols)
+    /// Phase 4 optimization: Two-level index for O(1) name lookup instead of O(n) iteration
+    /// First level: contract name -> inner map
+    /// Second level: PatternSignature -> list of contract symbols with that signature
+    pattern_index: Arc<DashMap<String, DashMap<PatternSignature, Vec<Arc<Symbol>>, FxBuildHasher>, FxBuildHasher>>,
     parent: Option<Arc<SymbolTable>>,
 }
 
@@ -198,26 +200,35 @@ impl SymbolTable {
     /// Lock-free operation using DashMap.
     pub fn insert(&self, symbol: Arc<Symbol>) {
         let name = symbol.name.clone();
-        self.symbols.insert(name, symbol.clone());
+        self.symbols.insert(name.clone(), symbol.clone());
 
-        // Update pattern index for contract symbols
+        // Update pattern index for contract symbols (Phase 4: two-level index)
         if let Some(sig) = PatternSignature::from_symbol(&symbol) {
-            self.pattern_index.entry(sig).or_insert_with(Vec::new).push(symbol);
+            // Get or create the inner map for this contract name
+            let inner_map = self.pattern_index
+                .entry(name)
+                .or_insert_with(|| DashMap::with_hasher(FxBuildHasher::default()));
+
+            // Insert into the inner map using the signature as key
+            inner_map.entry(sig).or_insert_with(Vec::new).push(symbol);
         }
     }
 
     /// Looks up contracts by pattern signature (name + arity).
-    /// This provides O(1) lookup for pattern matching instead of O(n) iteration.
+    /// Phase 4 optimization: O(1) name lookup + O(k) arity filtering where k = overloads for this name.
+    /// Previously: O(n) iteration over all contract signatures.
     /// Traverses up the scope chain if necessary.
     /// Lock-free iteration using DashMap.
     pub fn lookup_contracts_by_pattern(&self, name: &str, arg_count: usize) -> Vec<Arc<Symbol>> {
         let mut results = Vec::new();
 
-        // Search current scope's pattern index (lock-free iteration)
-        for entry in self.pattern_index.iter() {
-            let (sig, symbols) = entry.pair();
-            if sig.name == name && sig.matches_arity(arg_count) {
-                results.extend(symbols.iter().cloned());
+        // Phase 4: O(1) name lookup, then iterate only that contract's overloads
+        if let Some(inner_map) = self.pattern_index.get(name) {
+            for entry in inner_map.iter() {
+                let (sig, symbols) = entry.pair();
+                if sig.matches_arity(arg_count) {
+                    results.extend(symbols.iter().cloned());
+                }
             }
         }
 
@@ -230,15 +241,16 @@ impl SymbolTable {
     }
 
     /// Looks up all contract overloads for a given name (all arities).
+    /// Phase 4 optimization: O(1) name lookup instead of O(n) iteration.
     /// Useful for code completion and documentation.
     /// Lock-free iteration using DashMap.
     pub fn lookup_all_contract_overloads(&self, name: &str) -> Vec<Arc<Symbol>> {
         let mut results = Vec::new();
 
-        // Lock-free iteration
-        for entry in self.pattern_index.iter() {
-            let (sig, symbols) = entry.pair();
-            if sig.name == name {
+        // Phase 4: Direct O(1) lookup by name
+        if let Some(inner_map) = self.pattern_index.get(name) {
+            for entry in inner_map.iter() {
+                let (_sig, symbols) = entry.pair();
                 results.extend(symbols.iter().cloned());
             }
         }

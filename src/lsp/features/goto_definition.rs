@@ -235,7 +235,65 @@ impl GenericGotoDefinition {
                         return Some(name.as_str());
                     }
                 }
-                _ => {}
+                RholangNode::Par { processes: Some(procs), .. } => {
+                    // For Par nodes, recursively extract from the first process
+                    // This handles cases like tuple/list usages where variables are wrapped in Par
+                    debug!("Found Par node with {} processes", procs.len());
+                    if procs.len() >= 1 {
+                        if let Some(first_proc) = procs.get(0) {
+                            debug!("Recursively extracting from first process in Par");
+                            return self.extract_symbol_name(&**first_proc);
+                        }
+                    }
+                }
+                RholangNode::Par { left: Some(left), right: Some(right), .. } => {
+                    // Binary Par node - try left first, then right
+                    debug!("Found binary Par node, trying left child");
+                    if let Some(name) = self.extract_symbol_name(&**left) {
+                        return Some(name);
+                    }
+                    debug!("Left child didn't yield a symbol, trying right child");
+                    return self.extract_symbol_name(&**right);
+                }
+                RholangNode::Par { left: Some(left), .. } => {
+                    // Par node with only left child
+                    debug!("Found Par node with only left child");
+                    return self.extract_symbol_name(&**left);
+                }
+                RholangNode::Par { right: Some(right), .. } => {
+                    // Par node with only right child
+                    debug!("Found Par node with only right child");
+                    return self.extract_symbol_name(&**right);
+                }
+                RholangNode::Tuple { elements, .. } if elements.len() > 0 => {
+                    // For Tuple nodes, try to extract from each element
+                    // This handles cases where find_node_at_position returns Tuple instead of descending to Var
+                    // Note: This is a fallback - ideally find_node_at_position should return the Var directly
+                    debug!("Tuple fallback: trying to extract symbol from tuple elements");
+
+                    for (i, elem) in elements.iter().enumerate() {
+                        // Try to extract from this element
+                        if let Some(symbol) = self.extract_symbol_name(&**elem) {
+                            debug!("  Found symbol '{}' in tuple element[{}]", symbol, i);
+                            return Some(symbol);
+                        }
+                    }
+
+                    debug!("No symbol found in any tuple element");
+                }
+                RholangNode::Par { processes: None, left: None, right: None, .. } => {
+                    debug!("Found empty Par node (no processes, no left, no right)");
+                }
+                _ => {
+                    // Log unhandled RholangNode types for debugging
+                    use crate::ir::rholang_node::RholangNode;
+                    match rho_node {
+                        RholangNode::Par { .. } => {
+                            debug!("Par node didn't match any of our patterns - this shouldn't happen!");
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
 

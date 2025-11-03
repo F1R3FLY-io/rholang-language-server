@@ -231,24 +231,12 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 // Standard binary Par - use direct children to preserve tree-sitter positions
                 let left_ts = ts_node.named_child(0).expect("Par node must have a left named child");
 
-                eprintln!("PARSE: Par left_ts start_byte={}, absolute_start.byte={}, prev_end.byte={}",
-                    left_ts.start_byte(), absolute_start.byte, prev_end.byte);
-
                 // FIX: Pass prev_end to maintain consistency with how Par's own delta is computed
                 let (left, left_end) = convert_ts_node_to_ir(left_ts, rope, prev_end);
 
-                eprintln!("PARSE: Par after left conversion, left_end=({}, {}, byte={})",
-                    left_end.row, left_end.column, left_end.byte);
-
                 let right_ts = ts_node.named_child(1).expect("Par node must have a right named child");
 
-                eprintln!("PARSE: Par right_ts start_byte={}, left_end.byte={}",
-                    right_ts.start_byte(), left_end.byte);
-
                 let (right, right_end) = convert_ts_node_to_ir(right_ts, rope, left_end);
-
-                eprintln!("PARSE: Par after right conversion, right_end=({}, {}, byte={})",
-                    right_end.row, right_end.column, right_end.byte);
 
                 // OPTIMIZATION Phase 3: Conditional flattening based on Par density
                 // Check if either child is a Par before invoking flattening logic
@@ -261,11 +249,6 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                     // - No Arc cloning for collection (10 cycles per child)
                     // - No Vector::from_iter conversion (50-200 cycles)
                     let corrected_base = create_correct_node_base(absolute_start, right_end, right_end, prev_end);
-
-                    eprintln!("PARSE: Creating simple binary Par (non-nested, fast path), base: absolute_start=({}, {}, byte={}), prev_end=({}, {}, byte={}), right_end=({}, {}, byte={})",
-                        absolute_start.row, absolute_start.column, absolute_start.byte,
-                        prev_end.row, prev_end.column, prev_end.byte,
-                        right_end.row, right_end.column, right_end.byte);
 
                     let node = Arc::new(RholangNode::Par {
                         base: corrected_base,
@@ -319,12 +302,6 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
 
                 // Create corrected base: Par's extent is from its start to right child's end
                 // Par has no closing delimiter, so content and syntactic ends are the same
-                eprintln!("PARSE: Creating flattened Par with {} processes, base: absolute_start=({}, {}, byte={}), prev_end=({}, {}, byte={}), right_end=({}, {}, byte={})",
-                    all_processes.len(),
-                    absolute_start.row, absolute_start.column, absolute_start.byte,
-                    prev_end.row, prev_end.column, prev_end.byte,
-                    right_end.row, right_end.column, right_end.byte);
-
                 let corrected_base = create_correct_node_base(absolute_start, right_end, right_end, prev_end);
 
                 // Create n-ary Par if we have 3+ processes, binary Par otherwise
@@ -449,13 +426,6 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
         }
         "send" => {
             let channel_ts = ts_node.child_by_field_name("channel").expect("Send node must have a channel");
-            // Debug: Check if there's a position mismatch between Send and channel
-            if absolute_start.byte >= 14930 && absolute_start.byte <= 14950 {
-                eprintln!("Send node: ts_node.start_byte()={}, absolute_start.byte={}",
-                    ts_node.start_byte(), absolute_start.byte);
-                eprintln!("Channel node: channel_ts.start_byte()={}", channel_ts.start_byte());
-                eprintln!("Difference: {} bytes", channel_ts.start_byte() - ts_node.start_byte());
-            }
             let (channel, channel_end) = convert_ts_node_to_ir(channel_ts, rope, absolute_start);
             let send_type_ts = ts_node.child_by_field_name("send_type").expect("Send node must have a send_type");
             let send_type_abs_end = Position {
