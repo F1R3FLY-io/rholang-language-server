@@ -3162,7 +3162,7 @@ dependencies = [
  "rand 0.8.5",
  "rayon",
  "regex",
- "rholang-parser 0.1.0",
+ "rholang-parser",
  "rspace_plus_plus",
  "serde",
  "shared",
@@ -3208,8 +3208,8 @@ dependencies = [
  "quickcheck",
  "rayon",
  "rholang",
- "rholang-parser 0.1.0",
- "rholang-tree-sitter 0.1.2",
+ "rholang-parser",
+ "rholang-tree-sitter",
  "ropey",
  "rpds",
  "rustc-hash",
@@ -3243,23 +3243,8 @@ version = "0.1.0"
 dependencies = [
  "bitvec",
  "nonempty-collections",
- "rholang-tree-sitter 0.1.2",
- "rholang-tree-sitter-proc-macro 0.1.2",
- "smallvec",
- "tree-sitter",
- "typed-arena",
- "validated",
-]
-
-[[package]]
-name = "rholang-parser"
-version = "0.1.0"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?branch=master#ca540c86dc47b214aee7cd68ccdb56176f534136"
-dependencies = [
- "bitvec",
- "nonempty-collections",
- "rholang-tree-sitter 0.1.2 (git+https://github.com/F1R3FLY-io/rholang-rs?branch=master)",
- "rholang-tree-sitter-proc-macro 0.1.2 (git+https://github.com/F1R3FLY-io/rholang-rs?branch=master)",
+ "rholang-tree-sitter",
+ "rholang-tree-sitter-proc-macro",
  "smallvec",
  "tree-sitter",
  "typed-arena",
@@ -3275,33 +3260,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "rholang-tree-sitter"
-version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?branch=master#ca540c86dc47b214aee7cd68ccdb56176f534136"
-dependencies = [
- "cc",
- "tree-sitter-language",
-]
-
-[[package]]
 name = "rholang-tree-sitter-proc-macro"
 version = "0.1.2"
 dependencies = [
  "anyhow",
  "quote",
- "rholang-tree-sitter 0.1.2",
- "syn",
- "tree-sitter",
-]
-
-[[package]]
-name = "rholang-tree-sitter-proc-macro"
-version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?branch=master#ca540c86dc47b214aee7cd68ccdb56176f534136"
-dependencies = [
- "anyhow",
- "quote",
- "rholang-tree-sitter 0.1.2 (git+https://github.com/F1R3FLY-io/rholang-rs?branch=master)",
+ "rholang-tree-sitter",
  "syn",
  "tree-sitter",
 ]
@@ -3366,7 +3330,7 @@ dependencies = [
  "prost 0.14.1",
  "rand 0.8.5",
  "rayon",
- "rholang-parser 0.1.0 (git+https://github.com/F1R3FLY-io/rholang-rs?branch=master)",
+ "rholang-parser",
  "rstest",
  "serde",
  "serde_json",
