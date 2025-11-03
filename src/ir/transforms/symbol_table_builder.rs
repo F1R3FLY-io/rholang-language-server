@@ -1101,6 +1101,9 @@ impl Visitor for SymbolTableBuilder {
     ) -> Arc<RholangNode> {
         let contract_pos = name.absolute_start(&self.root);
 
+        // DEBUG: Log contract name position
+        trace!("Contract name node position: {:?}", contract_pos);
+
         // Use the new extract_contract_identifier to handle both simple and complex identifiers
         let (contract_name_opt, identifier_node) = self.extract_contract_identifier(name);
         let contract_name = contract_name_opt.unwrap_or_else(|| String::new());

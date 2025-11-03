@@ -50,9 +50,16 @@ fn count_contracts(node: &Arc<RholangNode>) -> usize {
 
         // Push children onto stack
         match &*current {
-            RholangNode::Par { left: Some(left), right: Some(right), .. } => {
+            RholangNode::Par { left: Some(left), right: Some(right), processes: None, .. } => {
+                // Binary Par node
                 stack.push(right.clone());
                 stack.push(left.clone());
+            }
+            RholangNode::Par { processes: Some(procs), left: None, right: None, .. } => {
+                // N-ary Par node
+                for proc in procs.iter().rev() {
+                    stack.push(proc.clone());
+                }
             }
             RholangNode::Block { proc, .. } => {
                 stack.push(proc.clone());

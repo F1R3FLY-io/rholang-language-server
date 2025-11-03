@@ -265,8 +265,31 @@ impl SymbolTable {
     /// Looks up a symbol by name, traversing up the scope chain if necessary.
     /// Lock-free lookup using DashMap.
     pub fn lookup(&self, name: &str) -> Option<Arc<Symbol>> {
-        self.symbols.get(name).map(|entry| entry.value().clone())
-            .or_else(|| self.parent.as_ref().and_then(|p| p.lookup(name)))
+        use std::collections::HashSet;
+        let mut visited = HashSet::new();
+        self.lookup_with_visited(name, &mut visited)
+    }
+
+    /// Internal lookup with cycle detection via visited set.
+    /// Tracks visited symbol tables to detect and break circular parent chains.
+    fn lookup_with_visited(&self, name: &str, visited: &mut std::collections::HashSet<usize>) -> Option<Arc<Symbol>> {
+        // Use the Arc pointer address as a unique identifier for this symbol table
+        let self_id = Arc::as_ptr(&self.symbols) as usize;
+
+        if !visited.insert(self_id) {
+            // Already visited this symbol table - circular reference detected
+            eprintln!("WARNING: Circular symbol table reference detected while looking up symbol '{}'", name);
+            eprintln!("         This indicates a bug in symbol table construction (parent chain has a cycle)");
+            return None;
+        }
+
+        // Look up in current table
+        if let Some(symbol) = self.symbols.get(name).map(|entry| entry.value().clone()) {
+            return Some(symbol);
+        }
+
+        // Recursively search parent, passing the visited set
+        self.parent.as_ref().and_then(|p| p.lookup_with_visited(name, visited))
     }
 
     /// Updates the definition location of an existing symbol.

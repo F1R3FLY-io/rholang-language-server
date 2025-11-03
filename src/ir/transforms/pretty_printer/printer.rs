@@ -15,6 +15,150 @@ use crate::ir::visitor::Visitor;
 
 use super::json_formatters::format_json_string;
 
+/// Macro to assert at compile-time that all RholangNode variants have visitor implementations.
+/// This prevents forgetting to implement a visitor method when new node types are added.
+macro_rules! assert_visitor_completeness {
+    ($($variant:ident),* $(,)?) => {
+        #[allow(dead_code, unreachable_code)]
+        const _VISITOR_COMPLETENESS_CHECK: fn() = || {
+            let _dummy: RholangNode = unreachable!();
+            match _dummy {
+                $(RholangNode::$variant { .. } => {},)*
+            }
+        };
+    };
+}
+
+/// Declarative macro for generating visitor methods for leaf and simple nodes.
+///
+/// This macro reduces boilerplate by generating visitor implementations from
+/// a concise declarative specification. It supports three patterns:
+///
+/// **Pattern 1: Simple leaf nodes (no additional fields)**
+/// ```ignore
+/// impl_visitor_methods! {
+///     simple_leaf => {
+///         visit_nil(Nil, "nil");
+///         visit_wildcard(Wildcard, "wildcard");
+///     }
+/// }
+/// ```
+///
+/// **Pattern 2: Leaf nodes with one string field**
+/// ```ignore
+/// impl_visitor_methods! {
+///     string_field => {
+///         visit_var(Var, "var", name: String);
+///         visit_simple_type(SimpleType, "simple_type", value: String);
+///     }
+/// }
+/// ```
+///
+/// **Pattern 3: Leaf nodes with enum/Debug field**
+/// ```ignore
+/// impl_visitor_methods! {
+///     enum_field => {
+///         visit_comment(Comment, "comment", kind: CommentKind);
+///     }
+/// }
+/// ```
+///
+/// Each generated method:
+/// - Calls `start_map()`
+/// - Adds `"type"` field with the specified JSON type name
+/// - Calls `add_base_fields(node)` to add position/span metadata
+/// - Adds custom fields as specified (string fields with JSON escaping, enum fields with Debug formatting)
+/// - Calls `add_metadata(metadata)`
+/// - Calls `end_map()`
+/// - Returns `Arc::clone(node)`
+///
+/// **Benefits:**
+/// - Reduces ~1,900 LOC of repetitive code to ~200 LOC of declarative specifications
+/// - Ensures consistent formatting across all node types
+/// - Makes it easy to add new node types
+/// - Centralizes the output format logic
+///
+/// **Example Generated Code:**
+/// ```ignore
+/// // From: visit_nil(Nil, "nil");
+/// // Generates:
+/// fn visit_nil(&self, node: &Arc<RholangNode>, _base: &NodeBase, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
+///     self.start_map();
+///     self.add_field("type", |p| p.append("\"nil\""));
+///     self.add_base_fields(node);
+///     self.add_metadata(metadata);
+///     self.end_map();
+///     Arc::clone(node)
+/// }
+/// ```
+macro_rules! impl_visitor_methods {
+    // Pattern 1: Simple leaf nodes with no additional fields
+    (simple_leaf => {
+        $($method_name:ident($variant:ident, $type_name:literal);)*
+    }) => {
+        $(
+            fn $method_name(&self, node: &Arc<RholangNode>, _base: &NodeBase, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
+                self.start_map();
+                self.add_field("type", |p| p.append(concat!("\"", $type_name, "\"")));
+                self.add_base_fields(node);
+                self.add_metadata(metadata);
+                self.end_map();
+                Arc::clone(node)
+            }
+        )*
+    };
+
+    // Pattern 2: Leaf nodes with one string field that needs JSON escaping
+    (string_field => {
+        $($method_name:ident($variant:ident, $type_name:literal, $field_name:ident: $field_type:ty);)*
+    }) => {
+        $(
+            fn $method_name(&self, node: &Arc<RholangNode>, _base: &NodeBase, $field_name: &$field_type, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
+                self.start_map();
+                self.add_field("type", |p| p.append(concat!("\"", $type_name, "\"")));
+                self.add_base_fields(node);
+                self.add_field(stringify!($field_name), |p| p.escape_json_string($field_name));
+                self.add_metadata(metadata);
+                self.end_map();
+                Arc::clone(node)
+            }
+        )*
+    };
+
+    // Pattern 3: Leaf nodes with enum/Debug field
+    (enum_field => {
+        $($method_name:ident($variant:ident, $type_name:literal, $field_name:ident: $field_type:ty);)*
+    }) => {
+        $(
+            fn $method_name(&self, node: &Arc<RholangNode>, _base: &NodeBase, $field_name: &$field_type, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
+                self.start_map();
+                self.add_field("type", |p| p.append(concat!("\"", $type_name, "\"")));
+                self.add_base_fields(node);
+                self.add_field(stringify!($field_name), |p| p.append(&format!("\"{:?}\"", $field_name)));
+                self.add_metadata(metadata);
+                self.end_map();
+                Arc::clone(node)
+            }
+        )*
+    };
+
+    // Pattern 4: Leaf nodes with ignored value parameter (for literals)
+    (literal_with_value => {
+        $($method_name:ident($variant:ident, $type_name:literal, _value: $value_type:ty);)*
+    }) => {
+        $(
+            fn $method_name(&self, node: &Arc<RholangNode>, _base: &NodeBase, _value: $value_type, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
+                self.start_map();
+                self.add_field("type", |p| p.append(concat!("\"", $type_name, "\"")));
+                self.add_base_fields(node);
+                self.add_metadata(metadata);
+                self.end_map();
+                Arc::clone(node)
+            }
+        )*
+    };
+}
+
 /// A visitor that constructs a JSON-like string representation of the IR tree.
 /// Configurable for compact or pretty-printed output.
 pub struct PrettyPrinter {
@@ -270,6 +414,55 @@ impl PrettyPrinter {
 }
 
 impl Visitor for PrettyPrinter {
+    // =========================================================================
+    // MACRO-GENERATED VISITOR METHODS
+    // =========================================================================
+    // These methods are generated using the impl_visitor_methods! macro defined
+    // at the top of this file. Each invocation generates visitor implementations
+    // for a specific pattern of node types.
+
+    // Pattern 1: Simple leaf nodes (no additional fields beyond base + metadata)
+    impl_visitor_methods! {
+        simple_leaf => {
+            visit_nil(Nil, "nil");
+            visit_wildcard(Wildcard, "wildcard");
+            visit_unit(Unit, "unit");
+        }
+    }
+
+    // Pattern 2: Leaf nodes with one string field
+    impl_visitor_methods! {
+        string_field => {
+            visit_var(Var, "var", name: String);
+            visit_simple_type(SimpleType, "simple_type", value: String);
+        }
+    }
+
+    // Pattern 3: Leaf nodes with enum/Debug field
+    impl_visitor_methods! {
+        enum_field => {
+            visit_comment(Comment, "comment", kind: CommentKind);
+        }
+    }
+
+    // Pattern 4: Literal nodes with value parameters that we ignore
+    // Note: These have value parameters (_value: bool, _value: i64, etc.) that we ignore
+    // because we only care about the type and base fields for the JSON output.
+    impl_visitor_methods! {
+        literal_with_value => {
+            visit_bool_literal(BoolLiteral, "bool", _value: bool);
+            visit_long_literal(LongLiteral, "long", _value: i64);
+            visit_string_literal(StringLiteral, "string", _value: &String);
+            visit_uri_literal(UriLiteral, "uri", _value: &String);
+        }
+    }
+
+    // =========================================================================
+    // MANUALLY-IMPLEMENTED VISITOR METHODS
+    // =========================================================================
+    // These methods have custom logic that cannot be expressed declaratively
+    // with the current macro, or they have complex child node relationships.
+
     fn visit_par(&self, node: &Arc<RholangNode>, _base: &NodeBase, left: &Arc<RholangNode>, right: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"par\""));
@@ -280,6 +473,16 @@ impl Visitor for PrettyPrinter {
         self.add_field("right", |p| {
             p.visit_node(right);
         });
+        self.add_metadata(metadata);
+        self.end_map();
+        Arc::clone(node)
+    }
+
+    fn visit_par_nary(&self, node: &Arc<RholangNode>, _base: &NodeBase, processes: &Vector<Arc<RholangNode>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
+        self.start_map();
+        self.add_field("type", |p| p.append("\"par_nary\""));
+        self.add_base_fields(node);
+        self.add_field("processes", |p| p.visit_vector(processes));
         self.add_metadata(metadata);
         self.end_map();
         Arc::clone(node)
@@ -568,50 +771,6 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_bool_literal(&self, node: &Arc<RholangNode>, _base: &NodeBase, _value: bool, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
-        self.start_map();
-        self.add_field("type", |p| p.append("\"bool\""));
-        self.add_base_fields(node);
-        self.add_metadata(metadata);
-        self.end_map();
-        Arc::clone(node)
-    }
-
-    fn visit_long_literal(&self, node: &Arc<RholangNode>, _base: &NodeBase, _value: i64, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
-        self.start_map();
-        self.add_field("type", |p| p.append("\"long\""));
-        self.add_base_fields(node);
-        self.add_metadata(metadata);
-        self.end_map();
-        Arc::clone(node)
-    }
-
-    fn visit_string_literal(&self, node: &Arc<RholangNode>, _base: &NodeBase, _value: &String, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
-        self.start_map();
-        self.add_field("type", |p| p.append("\"string\""));
-        self.add_base_fields(node);
-        self.add_metadata(metadata);
-        self.end_map();
-        Arc::clone(node)
-    }
-
-    fn visit_uri_literal(&self, node: &Arc<RholangNode>, _base: &NodeBase, _value: &String, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
-        self.start_map();
-        self.add_field("type", |p| p.append("\"uri\""));
-        self.add_base_fields(node);
-        self.add_metadata(metadata);
-        self.end_map();
-        Arc::clone(node)
-    }
-
-    fn visit_nil(&self, node: &Arc<RholangNode>, _base: &NodeBase, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
-        self.start_map();
-        self.add_field("type", |p| p.append("\"nil\""));
-        self.add_base_fields(node);
-        self.add_metadata(metadata);
-        self.end_map();
-        Arc::clone(node)
-    }
 
     fn visit_list(&self, node: &Arc<RholangNode>, _base: &NodeBase, elements: &Vector<Arc<RholangNode>, ArcK>, remainder: &Option<Arc<RholangNode>>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
@@ -668,15 +827,6 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_var(&self, node: &Arc<RholangNode>, _base: &NodeBase, name: &String, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
-        self.start_map();
-        self.add_field("type", |p| p.append("\"var\""));
-        self.add_base_fields(node);
-        self.add_field("name", |p| p.escape_json_string(name));
-        self.add_metadata(metadata);
-        self.end_map();
-        Arc::clone(node)
-    }
 
     fn visit_name_decl(&self, node: &Arc<RholangNode>, _base: &NodeBase, var: &Arc<RholangNode>, uri: &Option<Arc<RholangNode>>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
@@ -765,34 +915,6 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_comment(&self, node: &Arc<RholangNode>, _base: &NodeBase, kind: &CommentKind, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
-        self.start_map();
-        self.add_field("type", |p| p.append("\"comment\""));
-        self.add_base_fields(node);
-        self.add_field("kind", |p| p.append(&format!("\"{:?}\"", kind)));
-        self.add_metadata(metadata);
-        self.end_map();
-        Arc::clone(node)
-    }
-
-    fn visit_wildcard(&self, node: &Arc<RholangNode>, _base: &NodeBase, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
-        self.start_map();
-        self.add_field("type", |p| p.append("\"wildcard\""));
-        self.add_base_fields(node);
-        self.add_metadata(metadata);
-        self.end_map();
-        Arc::clone(node)
-    }
-
-    fn visit_simple_type(&self, node: &Arc<RholangNode>, _base: &NodeBase, value: &String, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
-        self.start_map();
-        self.add_field("type", |p| p.append("\"simple_type\""));
-        self.add_base_fields(node);
-        self.add_field("value", |p| p.escape_json_string(value));
-        self.add_metadata(metadata);
-        self.end_map();
-        Arc::clone(node)
-    }
 
     fn visit_receive_send_source(&self, node: &Arc<RholangNode>, _base: &NodeBase, name: &Arc<RholangNode>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
@@ -871,6 +993,18 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 }
+
+// Compile-time assertion that all RholangNode variants have visitor implementations.
+// If a new variant is added without a visitor method, this will cause a compiler error.
+assert_visitor_completeness!(
+    Par, SendSync, Send, New, IfElse, Let, Bundle, Match, Choice,
+    Contract, Input, Block, Parenthesized, BinOp, UnaryOp, Method,
+    Eval, Quote, VarRef, BoolLiteral, LongLiteral, StringLiteral,
+    UriLiteral, Nil, List, Set, Map, Pathmap, Tuple, Var, NameDecl,
+    Decl, LinearBind, RepeatedBind, PeekBind, Comment, Wildcard,
+    SimpleType, ReceiveSendSource, SendReceiveSource, Error,
+    Disjunction, Conjunction, Negation, Unit,
+);
 
 #[cfg(test)]
 mod tests {

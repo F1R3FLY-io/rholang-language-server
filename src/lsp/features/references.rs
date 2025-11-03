@@ -47,7 +47,28 @@ impl GenericReferences {
         );
 
         // Find node at position
-        let node = find_node_at_position(root, position)?;
+        let mut node = find_node_at_position(root, position)?;
+
+        // Special handling for Par nodes: if we get a Par node, look at its first child
+        // This handles cases where position tracking doesn't drill down into Par children
+        use crate::ir::rholang_node::RholangNode;
+        if let Some(rholang_node) = node.as_any().downcast_ref::<RholangNode>() {
+            if let RholangNode::Par { processes, left, .. } = rholang_node {
+                debug!("Found Par node, checking first child");
+                // Try n-ary Par first
+                if let Some(procs) = processes {
+                    if let Some(first_child) = procs.first() {
+                        node = first_child.as_ref();
+                        debug!("Using first child from n-ary Par");
+                    }
+                }
+                // Try binary Par
+                else if let Some(left_child) = left {
+                    node = left_child.as_ref();
+                    debug!("Using left child from binary Par");
+                }
+            }
+        }
 
         // Extract symbol name
         let symbol_name = self.extract_symbol_name(node)?;
@@ -170,30 +191,7 @@ impl GenericReferences {
     fn extract_symbol_name<'a>(&self, node: &'a dyn SemanticNode) -> Option<&'a str> {
         use crate::ir::rholang_node::RholangNode;
 
-        // Try to downcast to RholangNode and match on variants
-        if let Some(rholang_node) = node.as_any().downcast_ref::<RholangNode>() {
-            match rholang_node {
-                // For NameDecl nodes, extract name from the Var child
-                RholangNode::NameDecl { var, .. } => {
-                    if let RholangNode::Var { name, .. } = var.as_ref() {
-                        return Some(name.as_str());
-                    }
-                }
-                // For Var nodes, extract name directly
-                RholangNode::Var { name, .. } => {
-                    return Some(name.as_str());
-                }
-                // For Quote nodes (e.g., @fromRoom), extract from the inner node
-                RholangNode::Quote { quotable, .. } => {
-                    if let RholangNode::Var { name, .. } = quotable.as_ref() {
-                        return Some(name.as_str());
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // Try metadata keys
+        // First try metadata keys (set by symbol table builder for references)
         if let Some(metadata) = node.metadata() {
             if let Some(name_any) = metadata.get("symbol_name") {
                 if let Some(name_ref) = name_any.downcast_ref::<String>() {
@@ -213,6 +211,36 @@ impl GenericReferences {
                 }
             }
         }
+
+        // Then try to downcast to RholangNode and match on variants
+        if let Some(rholang_node) = node.as_any().downcast_ref::<RholangNode>() {
+            match rholang_node {
+                // For NameDecl nodes, extract name from the Var child
+                RholangNode::NameDecl { var, .. } => {
+                    if let RholangNode::Var { name, .. } = var.as_ref() {
+                        return Some(name.as_str());
+                    }
+                }
+                // For Var nodes, extract name directly
+                RholangNode::Var { name, .. } => {
+                    return Some(name.as_str());
+                }
+                // For Send/SendSync nodes, extract from the channel (which should be a Var)
+                RholangNode::Send { channel, .. } | RholangNode::SendSync { channel, .. } => {
+                    if let RholangNode::Var { name, .. } = channel.as_ref() {
+                        return Some(name.as_str());
+                    }
+                }
+                // For Quote nodes (e.g., @fromRoom), extract from the inner node
+                RholangNode::Quote { quotable, .. } => {
+                    if let Some(RholangNode::Var { name, .. }) = quotable.as_ref().as_any().downcast_ref::<RholangNode>() {
+                        return Some(name.as_str());
+                    }
+                }
+                _ => {}
+            }
+        }
+
         None
     }
 }

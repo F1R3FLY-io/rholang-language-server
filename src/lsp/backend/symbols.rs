@@ -306,13 +306,35 @@ impl RholangBackend {
 
             if let Some(doc) = opt_doc {
                 let path_result = find_node_at_position_with_path(&doc.ir, &*doc.positions, pos);
+
+                // Get the innermost symbol table by traversing the path from cursor to root
+                // This ensures we respect lexical scoping - inner scopes shadow outer scopes
                 let symbol_table = path_result
                     .as_ref()
-                    .and_then(|(node, _)| {
-                        node.metadata()
+                    .and_then(|(node, path)| {
+                        // First check the node itself
+                        if let Some(table) = node.metadata()
                             .and_then(|m| m.get("symbol_table"))
                             .and_then(|t| t.downcast_ref::<Arc<SymbolTable>>())
                             .cloned()
+                        {
+                            return Some(table);
+                        }
+
+                        // Then traverse the path backwards (from innermost to outermost)
+                        // to find the nearest scope with a symbol table
+                        for ancestor in path.iter().rev() {
+                            if let Some(table) = ancestor.metadata()
+                                .and_then(|m| m.get("symbol_table"))
+                                .and_then(|t| t.downcast_ref::<Arc<SymbolTable>>())
+                                .cloned()
+                            {
+                                debug!("Found symbol table in ancestor node");
+                                return Some(table);
+                            }
+                        }
+
+                        None
                     })
                     .unwrap_or_else(|| doc.symbol_table.clone());
                 (path_result, Some(symbol_table))
@@ -360,6 +382,136 @@ impl RholangBackend {
                 self.handle_quote_symbol(uri, position, quotable, byte_offset)
                     .await
             }
+            RholangNode::Par { left, right, processes, .. } => {
+                // Par node contains parallel processes. Since find_node_at_position didn't drill down past this Par,
+                // we need to manually search through child processes to find which one contains the cursor.
+                debug!("Par node at position (byte {}), checking child processes (n-ary={}, binary={})",
+                       byte_offset, processes.is_some(), left.is_some() && right.is_some());
+
+                // Get document to access position information
+                let doc = self.workspace.documents.get(uri)?;
+                let doc = doc.value().clone();
+
+                // Handle n-ary Par (processes vector)
+                if let Some(procs) = processes {
+                    for (i, proc_node) in procs.iter().enumerate() {
+                        // Check if this process node's position range contains the cursor
+                        let proc_key = &**proc_node as *const RholangNode as usize;
+                        if let Some((proc_start, proc_end)) = doc.positions.get(&proc_key) {
+                            debug!("Par process[n-ary {}]: range byte {}-{}, cursor={}",
+                                   i, proc_start.byte, proc_end.byte, byte_offset);
+
+                            if proc_start.byte <= byte_offset && byte_offset <= proc_end.byte {
+                                debug!("Par process[n-ary {}]: CONTAINS cursor, checking node type", i);
+
+                                // This process contains the cursor, handle it
+                                match &**proc_node {
+                                    RholangNode::Send { channel, .. } | RholangNode::SendSync { channel, .. } => {
+                                        // Check if the channel is a Var and extract its name
+                                        if let RholangNode::Var { name, .. } = &**channel {
+                                            debug!("Par process[n-ary {}]: Send with Var channel '{}', calling handle_var_symbol", i, name);
+                                            return self.handle_var_symbol(uri, position, name, &path, &symbol_table).await;
+                                        }
+                                    }
+                                    RholangNode::Var { name, .. } => {
+                                        debug!("Par process[n-ary {}]: Var '{}', calling handle_var_symbol", i, name);
+                                        return self.handle_var_symbol(uri, position, name, &path, &symbol_table).await;
+                                    }
+                                    _ => {
+                                        debug!("Par process[n-ary {}]: node type not handled", i);
+                                    }
+                                }
+                            }
+                        } else {
+                            debug!("Par process[n-ary {}]: no position information available", i);
+                        }
+                    }
+
+                    // If cursor is before all children (in whitespace/indentation), check the first child
+                    if let Some(first_proc) = procs.first() {
+                        let first_key = &**first_proc as *const RholangNode as usize;
+                        if let Some((first_start, _)) = doc.positions.get(&first_key) {
+                            if byte_offset < first_start.byte {
+                                debug!("Par: cursor at byte {} is before first child at byte {}, checking first child", byte_offset, first_start.byte);
+                                match &**first_proc {
+                                    RholangNode::Send { channel, .. } | RholangNode::SendSync { channel, .. } => {
+                                        if let RholangNode::Var { name, .. } = &**channel {
+                                            debug!("Par: first child is Send with Var channel '{}', calling handle_var_symbol", name);
+                                            return self.handle_var_symbol(uri, position, name, &path, &symbol_table).await;
+                                        }
+                                    }
+                                    RholangNode::Var { name, .. } => {
+                                        debug!("Par: first child is Var '{}', calling handle_var_symbol", name);
+                                        return self.handle_var_symbol(uri, position, name, &path, &symbol_table).await;
+                                    }
+                                    _ => {
+                                        debug!("Par: first child node type not handled for whitespace cursor");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Handle binary Par (left/right)
+                else if let (Some(left_node), Some(right_node)) = (left, right) {
+                    // Check left node
+                    let left_key = &**left_node as *const RholangNode as usize;
+                    if let Some((left_start, left_end)) = doc.positions.get(&left_key) {
+                        debug!("Par binary left: range byte {}-{}, cursor={}", left_start.byte, left_end.byte, byte_offset);
+
+                        if left_start.byte <= byte_offset && byte_offset <= left_end.byte {
+                            debug!("Par binary left: CONTAINS cursor, checking node type");
+                            // Handle the left node based on its type
+                            match &**left_node {
+                                RholangNode::Send { channel, .. } | RholangNode::SendSync { channel, .. } => {
+                                    // Check if the channel is a Var and extract its name
+                                    if let RholangNode::Var { name, .. } = &**channel {
+                                        debug!("Par binary left: Send with Var channel '{}', calling handle_var_symbol", name);
+                                        return self.handle_var_symbol(uri, position, name, &path, &symbol_table).await;
+                                    }
+                                }
+                                RholangNode::Var { name, .. } => {
+                                    debug!("Par binary left: Var '{}', calling handle_var_symbol", name);
+                                    return self.handle_var_symbol(uri, position, name, &path, &symbol_table).await;
+                                }
+                                _ => {
+                                    debug!("Par binary left: node type not directly handled, falling through");
+                                }
+                            }
+                        }
+                    }
+
+                    // Check right node
+                    let right_key = &**right_node as *const RholangNode as usize;
+                    if let Some((right_start, right_end)) = doc.positions.get(&right_key) {
+                        debug!("Par binary right: range byte {}-{}, cursor={}", right_start.byte, right_end.byte, byte_offset);
+
+                        if right_start.byte <= byte_offset && byte_offset <= right_end.byte {
+                            debug!("Par binary right: CONTAINS cursor, checking node type");
+                            // Handle the right node based on its type
+                            match &**right_node {
+                                RholangNode::Send { channel, .. } | RholangNode::SendSync { channel, .. } => {
+                                    // Check if the channel is a Var and extract its name
+                                    if let RholangNode::Var { name, .. } = &**channel {
+                                        debug!("Par binary right: Send with Var channel '{}', calling handle_var_symbol", name);
+                                        return self.handle_var_symbol(uri, position, name, &path, &symbol_table).await;
+                                    }
+                                }
+                                RholangNode::Var { name, .. } => {
+                                    debug!("Par binary right: Var '{}', calling handle_var_symbol", name);
+                                    return self.handle_var_symbol(uri, position, name, &path, &symbol_table).await;
+                                }
+                                _ => {
+                                    debug!("Par binary right: node type not directly handled, falling through");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                debug!("No matching process found in Par node");
+                None
+            }
             RholangNode::Block { proc, .. } | RholangNode::Parenthesized { expr: proc, .. } => {
                 // Block and Parenthesized are just wrappers, handle the inner expression
                 debug!("Block/Parenthesized node encountered, checking inner expression");
@@ -388,8 +540,13 @@ impl RholangBackend {
                         self.handle_contract_symbol(uri, position, name).await
                     }
                     RholangNode::Send { channel, .. } | RholangNode::SendSync { channel, .. } => {
-                        self.handle_send_symbol(uri, position, channel, byte_offset)
-                            .await
+                        // Check if the channel is a Var (local variable) or something else (global contract)
+                        if let RholangNode::Var { name, .. } = &**channel {
+                            debug!("Block: Send with Var channel '{}', calling handle_var_symbol", name);
+                            self.handle_var_symbol(uri, position, name, &path, &symbol_table).await
+                        } else {
+                            self.handle_send_symbol(uri, position, channel, byte_offset).await
+                        }
                     }
                     RholangNode::Quote { quotable, .. } => {
                         self.handle_quote_symbol(uri, position, quotable, byte_offset)
@@ -406,7 +563,13 @@ impl RholangBackend {
                             for proc_node in procs.iter() {
                                 let result = match &**proc_node {
                                     RholangNode::Send { channel, .. } | RholangNode::SendSync { channel, .. } => {
-                                        self.handle_send_symbol(uri, position, channel, byte_offset).await
+                                        // Check if the channel is a Var (local variable) or something else
+                                        if let RholangNode::Var { name, .. } = &**channel {
+                                            debug!("Par-in-Block: Send with Var channel '{}', calling handle_var_symbol", name);
+                                            self.handle_var_symbol(uri, position, name, &path, &symbol_table).await
+                                        } else {
+                                            self.handle_send_symbol(uri, position, channel, byte_offset).await
+                                        }
                                     }
                                     RholangNode::Var { name, .. } => {
                                         self.handle_var_symbol(uri, position, name, &path, &symbol_table).await
@@ -554,8 +717,19 @@ impl RholangBackend {
             ch_start, ch_end, byte
         );
 
-        if ch_start.byte <= byte && byte <= ch_end.byte {
-            // Position is within the channel, extract the name
+        // Check if cursor is within the channel, OR if it's just before it (whitespace tolerance)
+        let is_within_channel = ch_start.byte <= byte && byte <= ch_end.byte;
+        let is_before_channel = byte < ch_start.byte && (ch_start.byte - byte) <= 10; // Allow up to 10 bytes of whitespace
+
+        if is_within_channel || is_before_channel {
+            if is_before_channel {
+                debug!(
+                    "Send: cursor at byte {} is before channel at byte {} (within whitespace tolerance), handling anyway",
+                    byte, ch_start.byte
+                );
+            }
+
+            // Position is within or just before the channel, extract the name
             if let RholangNode::Var { name: channel_name, .. } = &**channel {
                 debug!("Send channel is Var '{}'", channel_name);
                 // Phase 5: Use rholang_symbols directly instead of global_symbols

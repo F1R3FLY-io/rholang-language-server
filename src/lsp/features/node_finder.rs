@@ -105,6 +105,12 @@ fn find_node_at_position_recursive<'a>(
     }
 
     // This node contains the position - check children for more specific match
+    // Strategy: When multiple children contain the target position, prefer the one with the smallest span
+    // This handles cases where overlapping nodes exist due to position tracking issues
+
+    // For most nodes, use the node's start position as child_prev_end
+    // Note: Position tracking during IR construction handles Par nodes specially
+    // in position_tracking.rs, so we don't need special handling here.
     let mut child_prev_end = start;
 
     // DEBUG: Log position tracking details for diagnosis
@@ -118,6 +124,10 @@ fn find_node_at_position_recursive<'a>(
         debug!("  Target position: ({}, {})", target.row, target.column);
         debug!("  Children count: {}", node.children_count());
     }
+
+    // Collect all matching children and their results to find the most specific match
+    let mut best_match: Option<&dyn SemanticNode> = None;
+    let mut best_span_size: Option<usize> = None;
 
     for i in 0..node.children_count() {
         if let Some(child) = node.child_at(i) {
@@ -133,12 +143,35 @@ fn find_node_at_position_recursive<'a>(
 
             // Recursively search child
             if let Some(found) = find_node_at_position_recursive(child, target, &child_prev_end) {
-                trace!("Found in child: {}", found.type_name());
-                return Some(found); // Found more specific node in child
+                trace!("Found candidate in child {}: {}", i, found.type_name());
+
+                // Calculate span size for this match
+                let found_start = found.absolute_position(child_prev_end);
+                let found_end = found.absolute_end(found_start);
+                // Use saturating math to avoid overflow/underflow
+                let row_diff = found_end.row.saturating_sub(found_start.row);
+                let col_diff = if found_end.row == found_start.row {
+                    found_end.column.saturating_sub(found_start.column)
+                } else {
+                    found_end.column // For multi-line spans, just use end column
+                };
+                let span_size = row_diff * 1000 + col_diff;
+
+                // Keep this match if it's more specific (smaller span) than the current best
+                if best_span_size.is_none() || span_size < best_span_size.unwrap() {
+                    best_match = Some(found);
+                    best_span_size = Some(span_size);
+                    trace!("New best match: {} with span size {}", found.type_name(), span_size);
+                }
             }
             // Update prev_end for next sibling
             child_prev_end = child_end;
         }
+    }
+
+    // Return the most specific match if found
+    if let Some(found) = best_match {
+        return Some(found);
     }
 
     trace!("No child found, returning this node: {}", node.type_name());

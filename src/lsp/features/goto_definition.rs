@@ -235,6 +235,11 @@ impl GenericGotoDefinition {
                         return Some(name.as_str());
                     }
                 }
+                RholangNode::Block { proc, .. } => {
+                    // For Block nodes (e.g., { x!() }), recursively extract from the inner proc
+                    debug!("Found Block node, recursively extracting from inner proc");
+                    return self.extract_symbol_name(&**proc);
+                }
                 RholangNode::Par { processes: Some(procs), .. } => {
                     // For Par nodes, recursively extract from the first process
                     // This handles cases like tuple/list usages where variables are wrapped in Par

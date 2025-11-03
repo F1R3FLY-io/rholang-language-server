@@ -18,7 +18,7 @@ use crate::ir::rholang_node::{
     UnaryOperator, RholangVarRefKind, Position, RelativePosition,
 };
 use crate::ir::semantic_node::SemanticNode;
-use crate::parsers::position_utils::create_node_base_from_absolute;
+use crate::parsers::position_utils::{create_node_base_from_absolute, recalculate_children_positions, clone_node_with_new_base};
 
 use super::helpers::{
     collect_named_descendants, collect_patterns, collect_linear_binds,
@@ -231,8 +231,8 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 // Standard binary Par - use direct children to preserve tree-sitter positions
                 let left_ts = ts_node.named_child(0).expect("Par node must have a left named child");
 
-                // FIX: Pass prev_end to maintain consistency with how Par's own delta is computed
-                let (left, left_end) = convert_ts_node_to_ir(left_ts, rope, prev_end);
+                // FIX: Children must use Par's start (absolute_start) as reference for sequential delta calculation
+                let (left, left_end) = convert_ts_node_to_ir(left_ts, rope, absolute_start);
 
                 let right_ts = ts_node.named_child(1).expect("Par node must have a right named child");
 
@@ -248,6 +248,9 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                     // - No Vec allocation (50-100 cycles)
                     // - No Arc cloning for collection (10 cycles per child)
                     // - No Vector::from_iter conversion (50-200 cycles)
+
+                    // Par's delta is from prev_end (parent's reference) to absolute_start (Par's start)
+                    // But children use absolute_start as reference for sequential positioning
                     let corrected_base = create_correct_node_base(absolute_start, right_end, right_end, prev_end);
 
                     let node = Arc::new(RholangNode::Par {
@@ -587,7 +590,21 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 (Vector::new_with_ptr_kind(), None, name_end)
             };
             let proc_ts = ts_node.child_by_field_name("proc").expect("Contract node must have a process");
+
+            // DEBUG: Log what tree-sitter reports for the contract and its proc child
+            debug!("Contract node: ts_start=({}, {}), ts_end=({}, {}), ts_end_byte={}",
+                   ts_node.start_position().row, ts_node.start_position().column,
+                   ts_node.end_position().row, ts_node.end_position().column,
+                   ts_node.end_byte());
+            debug!("Contract proc child ({}): ts_start=({}, {}), ts_end=({}, {}), ts_end_byte={}",
+                   proc_ts.kind(),
+                   proc_ts.start_position().row, proc_ts.start_position().column,
+                   proc_ts.end_position().row, proc_ts.end_position().column,
+                   proc_ts.end_byte());
+
             let (proc, proc_end) = convert_ts_node_to_ir(proc_ts, rope, formals_end);
+            debug!("After converting proc: proc_end = {:?}", proc_end);
+
             // Create corrected base: Contract's extent is from start to proc's end
             // Contract has no closing delimiter, so content and syntactic ends are the same
             let corrected_base = create_correct_node_base(absolute_start, proc_end, proc_end, prev_end);
@@ -649,6 +666,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             // so all_nodes already contains only process nodes
             let process_nodes = all_nodes;
 
+
             let proc = if process_nodes.len() == 0 {
                 // Empty block - use Nil
                 Arc::new(RholangNode::Nil {
@@ -667,44 +685,106 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 process_nodes[0].clone()
             } else if process_nodes.len() == 2 {
                 // Exactly 2 children - use binary Par
-                // Get the first child's absolute start for Par's start position
-                let first_child_start = SemanticNode::absolute_position(process_nodes[0].as_ref(), absolute_start);
-                // Get the last child's end for Par's end position
+                // Par starts at Block's start (absolute_start), not at first child's start
+                // Children need SEQUENTIAL deltas: first from absolute_start, second from first's end, etc.
+                let mut recalculated_children = Vec::new();
+                let mut current_prev = absolute_start;  // Start at Block/Par's start, advances sequentially
+
+                for child in process_nodes.iter() {
+                    let child_abs_start = SemanticNode::absolute_position(child.as_ref(), absolute_start);
+                    let child_abs_end = SemanticNode::absolute_end(child.as_ref(), child_abs_start);
+
+                    // Compute content end
+                    let content_end = Position {
+                        row: child_abs_start.row + child.base().span_lines(),
+                        column: if child.base().span_lines() > 0 {
+                            child.base().span_columns()
+                        } else {
+                            child_abs_start.column + child.base().span_columns()
+                        },
+                        byte: child_abs_start.byte + child.base().content_length(),
+                    };
+
+                    // Create new base with delta from current_prev (which advances after each child)
+                    let new_base = create_node_base_from_absolute(
+                        child_abs_start,
+                        child_abs_end,
+                        &mut current_prev,  // This updates current_prev to child_abs_end
+                        Some(content_end),
+                    );
+
+                    recalculated_children.push(clone_node_with_new_base(child, new_base));
+                }
+
+                // Get the last child's end for Par's end position using recalculated children
                 let last_child_end = {
-                    let first_child_end = SemanticNode::absolute_end(process_nodes[0].as_ref(), first_child_start);
-                    let last_child_start = SemanticNode::absolute_position(process_nodes[1].as_ref(), first_child_end);
-                    SemanticNode::absolute_end(process_nodes[1].as_ref(), last_child_start)
+                    let first_child_end = SemanticNode::absolute_end(recalculated_children[0].as_ref(), absolute_start);
+                    let last_child_start = SemanticNode::absolute_position(recalculated_children[1].as_ref(), first_child_end);
+                    SemanticNode::absolute_end(recalculated_children[1].as_ref(), last_child_start)
                 };
-                // Par must span from first child to last child to enable position lookups
+
+                // Par must span from Block's start to last child's end to enable position lookups
+                // Use absolute_start as reference point to match children's reference
                 let par_base = create_correct_node_base(
-                    first_child_start,
+                    absolute_start,
                     last_child_end,
                     last_child_end,
                     absolute_start,
                 );
                 Arc::new(RholangNode::Par {
                     base: par_base,
-                    left: Some(process_nodes[0].clone()),
-                    right: Some(process_nodes[1].clone()),
+                    left: Some(recalculated_children[0].clone()),
+                    right: Some(recalculated_children[1].clone()),
                     processes: None,
                     metadata: metadata.clone(),
                 })
             } else {
                 // More than 2 children - use n-ary Par (O(1) depth instead of O(n))
-                // Get the first child's absolute start for Par's start position
-                let first_child_start = SemanticNode::absolute_position(process_nodes[0].as_ref(), absolute_start);
-                // Get the last child's end for Par's end position
+                // Par starts at Block's start (absolute_start), not at first child's start
+                // Children need SEQUENTIAL deltas: first from absolute_start, second from first's end, etc.
+                let mut recalculated_children = Vec::new();
+                let mut current_prev = absolute_start;  // Start at Block/Par's start, advances sequentially
+
+                for child in process_nodes.iter() {
+                    let child_abs_start = SemanticNode::absolute_position(child.as_ref(), absolute_start);
+                    let child_abs_end = SemanticNode::absolute_end(child.as_ref(), child_abs_start);
+
+                    // Compute content end
+                    let content_end = Position {
+                        row: child_abs_start.row + child.base().span_lines(),
+                        column: if child.base().span_lines() > 0 {
+                            child.base().span_columns()
+                        } else {
+                            child_abs_start.column + child.base().span_columns()
+                        },
+                        byte: child_abs_start.byte + child.base().content_length(),
+                    };
+
+                    // Create new base with delta from current_prev (which advances after each child)
+                    let new_base = create_node_base_from_absolute(
+                        child_abs_start,
+                        child_abs_end,
+                        &mut current_prev,  // This updates current_prev to child_abs_end
+                        Some(content_end),
+                    );
+
+                    recalculated_children.push(clone_node_with_new_base(child, new_base));
+                }
+
+                // Get the last child's end for Par's end position using recalculated children
                 let last_child_end = {
-                    let mut prev = first_child_start;
-                    for child in process_nodes.iter() {
+                    let mut prev = absolute_start;
+                    for child in recalculated_children.iter() {
                         let child_start = SemanticNode::absolute_position(child.as_ref(), prev);
                         prev = SemanticNode::absolute_end(child.as_ref(), child_start);
                     }
                     prev
                 };
-                // Par must span from first child to last child to enable position lookups
+
+                // Par must span from Block's start to last child's end to enable position lookups
+                // Use absolute_start as reference point to match children's reference
                 let par_base = create_correct_node_base(
-                    first_child_start,
+                    absolute_start,
                     last_child_end,
                     last_child_end,
                     absolute_start,
@@ -713,7 +793,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                     base: par_base,
                     left: None,
                     right: None,
-                    processes: Some(process_nodes),
+                    processes: Some(recalculated_children.into_iter().collect()),
                     metadata: metadata.clone(),
                 })
             };
