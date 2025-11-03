@@ -15,6 +15,7 @@ use tower_lsp::lsp_types::request::GotoDeclarationParams;
 
 use tracing::{debug, error, info, warn};
 
+use std::io::Read;
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -246,6 +247,35 @@ impl LspClient {
                 return Err(format!("Timeout waiting for response with id {}", request_id));
             }
 
+            // Check if LSP server process is still alive
+            if let Ok(mut server_lock) = self.server.lock() {
+                if let Some(server) = server_lock.as_mut() {
+                    match server.try_wait() {
+                        Ok(Some(status)) => {
+                            // Server has exited! Read stderr for the actual error
+                            let stderr_text = if let Some(mut stderr) = server.stderr.take() {
+                                let mut buf = String::new();
+                                let _ = stderr.read_to_string(&mut buf);
+                                buf
+                            } else {
+                                String::from("(no stderr available)")
+                            };
+
+                            return Err(format!(
+                                "LSP server exited unexpectedly while waiting for response (id: {}) with status: {}.\nStderr:\n{}",
+                                request_id, status, stderr_text
+                            ));
+                        }
+                        Ok(None) => {
+                            // Server still running, continue
+                        }
+                        Err(e) => {
+                            return Err(format!("Failed to check server status: {}", e));
+                        }
+                    }
+                }
+            }
+
             // Calculate remaining time
             let remaining = timeout.saturating_sub(start.elapsed());
             let wait_duration = remaining.min(Duration::from_millis(50)); // Check every 50ms max
@@ -298,6 +328,35 @@ impl LspClient {
             // Check timeout before waiting
             if start.elapsed() >= timeout {
                 return Err(format!("Timeout waiting for diagnostics for document with URI: {}", doc.uri()));
+            }
+
+            // Check if LSP server process is still alive
+            if let Ok(mut server_lock) = self.server.lock() {
+                if let Some(server) = server_lock.as_mut() {
+                    match server.try_wait() {
+                        Ok(Some(status)) => {
+                            // Server has exited! Read stderr for the actual error
+                            let stderr_text = if let Some(mut stderr) = server.stderr.take() {
+                                let mut buf = String::new();
+                                let _ = stderr.read_to_string(&mut buf);
+                                buf
+                            } else {
+                                String::from("(no stderr available)")
+                            };
+
+                            return Err(format!(
+                                "LSP server exited unexpectedly while waiting for diagnostics (URI: {}) with status: {}.\nStderr:\n{}",
+                                doc.uri(), status, stderr_text
+                            ));
+                        }
+                        Ok(None) => {
+                            // Server still running, continue
+                        }
+                        Err(e) => {
+                            return Err(format!("Failed to check server status: {}", e));
+                        }
+                    }
+                }
             }
 
             // Calculate remaining time
