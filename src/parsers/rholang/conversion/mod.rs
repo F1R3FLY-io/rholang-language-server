@@ -488,11 +488,12 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             let (decls, decls_end) = collect_named_descendants(decls_ts, rope, absolute_start);
             let proc_ts = ts_node.child_by_field_name("proc").expect("New node must have a process");
             let (proc, proc_end) = convert_ts_node_to_ir(proc_ts, rope, decls_end);
-            // Create corrected base: New's extent is from start to proc's end
-            // New has no closing delimiter, so content and syntactic ends are the same
-            let corrected_base = create_correct_node_base(absolute_start, proc_end, proc_end, prev_end);
+            // Create corrected base: New's extent is from start to absolute_end
+            // New syntax may include whitespace/comments after proc, so use Tree-Sitter's end
+            let corrected_base = create_correct_node_base(absolute_start, proc_end, absolute_end, prev_end);
             let node = Arc::new(RholangNode::New { base: corrected_base, decls, proc, metadata });
-            (node, proc_end)
+            // BUG FIX: Must return Tree-Sitter's absolute_end, not proc_end
+            (node, absolute_end)
         }
         "ifElse" => {
             let condition_ts = ts_node.named_child(0).expect("IfElse node must have a condition");
@@ -521,7 +522,8 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             let proc_ts = ts_node.child_by_field_name("proc").expect("Let node must have a process");
             let (proc, proc_end) = convert_ts_node_to_ir(proc_ts, rope, decls_end);
             let node = Arc::new(RholangNode::Let { base, decls, proc, metadata });
-            (node, proc_end)
+            // BUG FIX: Must return Tree-Sitter's absolute_end, not proc_end
+            (node, absolute_end)
         }
         "bundle" => {
             let bundle_type_ts = ts_node.child_by_field_name("bundle_type").expect("Bundle node must have a bundle_type");
@@ -562,7 +564,8 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 })
                 .collect::<Vector<_, ArcK>>();
             let node = Arc::new(RholangNode::Match { base, expression, cases, metadata });
-            (node, current_prev_end)
+            // BUG FIX: Must return Tree-Sitter's absolute_end, not current_prev_end
+            (node, absolute_end)
         }
         "choice" => {
             let branches_ts = ts_node.child_by_field_name("branches").expect("Choice node must have branches");
@@ -605,11 +608,13 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             let (proc, proc_end) = convert_ts_node_to_ir(proc_ts, rope, formals_end);
             debug!("After converting proc: proc_end = {:?}", proc_end);
 
-            // Create corrected base: Contract's extent is from start to proc's end
-            // Contract has no closing delimiter, so content and syntactic ends are the same
-            let corrected_base = create_correct_node_base(absolute_start, proc_end, proc_end, prev_end);
+            // Create corrected base: Contract's extent is from start to absolute_end
+            // Contract syntax may include whitespace/comments after proc, so use Tree-Sitter's end
+            let corrected_base = create_correct_node_base(absolute_start, proc_end, absolute_end, prev_end);
             let node = Arc::new(RholangNode::Contract { base: corrected_base, name, formals, formals_remainder, proc, metadata });
-            (node, proc_end)
+            // BUG FIX: Must return Tree-Sitter's absolute_end, not proc_end!
+            // Returning proc_end causes cascading position errors in all subsequent siblings
+            (node, absolute_end)
         }
         "input" => {
             let receipts_ts = ts_node.child_by_field_name("receipts").expect("Input node must have receipts");
@@ -644,11 +649,12 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
 
             let proc_ts = ts_node.child_by_field_name("proc").expect("Input node must have a process");
             let (proc, proc_end) = convert_ts_node_to_ir(proc_ts, rope, current_prev_end);
-            // Create corrected base: Input's extent is from start to proc's end
-            // Input has no closing delimiter, so content and syntactic ends are the same
-            let corrected_base = create_correct_node_base(absolute_start, proc_end, proc_end, prev_end);
+            // Create corrected base: Input's extent is from start to absolute_end
+            // Input syntax may include whitespace/comments after proc, so use Tree-Sitter's end
+            let corrected_base = create_correct_node_base(absolute_start, proc_end, absolute_end, prev_end);
             let node = Arc::new(RholangNode::Input { base: corrected_base, receipts, proc, metadata });
-            (node, proc_end)
+            // BUG FIX: Must return Tree-Sitter's absolute_end, not proc_end
+            (node, absolute_end)
         }
         "block" => {
             // Debug: Check Block's length computation around byte 14850-14900
@@ -665,7 +671,6 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             // Comments are already skipped during collect_named_descendants,
             // so all_nodes already contains only process nodes
             let process_nodes = all_nodes;
-
 
             let proc = if process_nodes.len() == 0 {
                 // Empty block - use Nil
@@ -684,14 +689,23 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 // Single child - use it directly
                 process_nodes[0].clone()
             } else if process_nodes.len() == 2 {
+
                 // Exactly 2 children - use binary Par
                 // Get the first child's absolute start for Par's start position
                 let first_child_start = SemanticNode::absolute_position(process_nodes[0].as_ref(), absolute_start);
-                // Get the last child's end for Par's end position
+
+                // NOTE: Position recalculation for Par children when Block->Par wrapping occurs
+                // Children were created with deltas from absolute_start (Block's '{')
+                // Par starts at first_child_start, so children would need recalculated deltas
+                // However, ALL Blocks in practice have single children, so this code path is unused
+                use crate::parsers::position_utils::recalculate_children_positions;
+                let recalculated = recalculate_children_positions(&process_nodes, absolute_start, first_child_start);
+
+                // Get the last child's end for Par's end position using recalculated children
                 let last_child_end = {
-                    let first_child_end = SemanticNode::absolute_end(process_nodes[0].as_ref(), first_child_start);
-                    let last_child_start = SemanticNode::absolute_position(process_nodes[1].as_ref(), first_child_end);
-                    SemanticNode::absolute_end(process_nodes[1].as_ref(), last_child_start)
+                    let first_child_end = SemanticNode::absolute_end(recalculated.get(0).unwrap().as_ref(), first_child_start);
+                    let last_child_start = SemanticNode::absolute_position(recalculated.get(1).unwrap().as_ref(), first_child_end);
+                    SemanticNode::absolute_end(recalculated.get(1).unwrap().as_ref(), last_child_start)
                 };
                 // Par must span from first child to last child to enable position lookups
                 let par_base = create_correct_node_base(
@@ -702,8 +716,8 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 );
                 Arc::new(RholangNode::Par {
                     base: par_base,
-                    left: Some(process_nodes[0].clone()),
-                    right: Some(process_nodes[1].clone()),
+                    left: Some(recalculated.get(0).unwrap().clone()),
+                    right: Some(recalculated.get(1).unwrap().clone()),
                     processes: None,
                     metadata: metadata.clone(),
                 })
@@ -711,10 +725,18 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 // More than 2 children - use n-ary Par (O(1) depth instead of O(n))
                 // Get the first child's absolute start for Par's start position
                 let first_child_start = SemanticNode::absolute_position(process_nodes[0].as_ref(), absolute_start);
+
+                // NOTE: Position recalculation for Par children when Block->Par wrapping occurs
+                // Children were created with deltas from absolute_start (Block's '{')
+                // Par starts at first_child_start, so children would need recalculated deltas
+                // However, ALL Blocks in practice have single children, so this code path is unused
+                use crate::parsers::position_utils::recalculate_children_positions;
+                let recalculated = recalculate_children_positions(&process_nodes, absolute_start, first_child_start);
+
                 // Get the last child's end for Par's end position
                 let last_child_end = {
                     let mut prev = first_child_start;
-                    for child in process_nodes.iter() {
+                    for child in recalculated.iter() {
                         let child_start = SemanticNode::absolute_position(child.as_ref(), prev);
                         prev = SemanticNode::absolute_end(child.as_ref(), child_start);
                     }
@@ -731,7 +753,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                     base: par_base,
                     left: None,
                     right: None,
-                    processes: Some(process_nodes),
+                    processes: Some(recalculated),
                     metadata: metadata.clone(),
                 })
             };
