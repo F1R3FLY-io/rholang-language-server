@@ -251,9 +251,9 @@ pub fn recalculate_children_positions(
     use rpds::Vector;
     use archery::ArcK;
 
-    eprintln!("DEBUG: recalculate_children_positions called with {} children", children.len());
-    eprintln!("DEBUG:   original_prev_end: byte {}", original_prev_end.byte);
-    eprintln!("DEBUG:   new_prev_end: byte {}", new_prev_end.byte);
+    // eprintln!("DEBUG: recalculate_children_positions called with {} children", children.len());
+    // eprintln!("DEBUG:   original_prev_end: byte {}", original_prev_end.byte);
+    // eprintln!("DEBUG:   new_prev_end: byte {}", new_prev_end.byte);
 
     let mut result = Vector::<Arc<RholangNode>, ArcK>::new_with_ptr_kind();
     let mut current_original_prev = original_prev_end;
@@ -264,8 +264,8 @@ pub fn recalculate_children_positions(
         let child_abs_start = SemanticNode::absolute_position(child.as_ref(), current_original_prev);
         let child_abs_end = SemanticNode::absolute_end(child.as_ref(), child_abs_start);
 
-        eprintln!("DEBUG:   Child {}: old_delta={}, abs_start={}, abs_end={}",
-                  i, child.base().delta_bytes(), child_abs_start.byte, child_abs_end.byte);
+        // eprintln!("DEBUG:   Child {}: old_delta={}, abs_start={}, abs_end={}",
+        //           i, child.base().delta_bytes(), child_abs_start.byte, child_abs_end.byte);
 
         // Compute content end
         let content_end = Position {
@@ -286,8 +286,8 @@ pub fn recalculate_children_positions(
             Some(content_end),
         );
 
-        eprintln!("DEBUG:   Child {}: new_delta={}, current_new_prev={}",
-                  i, new_base.delta_bytes(), current_new_prev.byte);
+        // eprintln!("DEBUG:   Child {}: new_delta={}, current_new_prev={}",
+        //           i, new_base.delta_bytes(), current_new_prev.byte);
 
         // Clone child with new base (simplified - just update base, keep rest)
         let new_child = clone_node_with_new_base(&child, new_base);

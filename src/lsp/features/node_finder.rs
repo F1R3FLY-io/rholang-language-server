@@ -125,10 +125,6 @@ fn find_node_at_position_recursive<'a>(
         debug!("  Children count: {}", node.children_count());
     }
 
-    // Collect all matching children and their results to find the most specific match
-    let mut best_match: Option<&dyn SemanticNode> = None;
-    let mut best_span_size: Option<usize> = None;
-
     for i in 0..node.children_count() {
         if let Some(child) = node.child_at(i) {
             let child_start = child.absolute_position(child_prev_end);
@@ -143,35 +139,12 @@ fn find_node_at_position_recursive<'a>(
 
             // Recursively search child
             if let Some(found) = find_node_at_position_recursive(child, target, &child_prev_end) {
-                trace!("Found candidate in child {}: {}", i, found.type_name());
-
-                // Calculate span size for this match
-                let found_start = found.absolute_position(child_prev_end);
-                let found_end = found.absolute_end(found_start);
-                // Use saturating math to avoid overflow/underflow
-                let row_diff = found_end.row.saturating_sub(found_start.row);
-                let col_diff = if found_end.row == found_start.row {
-                    found_end.column.saturating_sub(found_start.column)
-                } else {
-                    found_end.column // For multi-line spans, just use end column
-                };
-                let span_size = row_diff * 1000 + col_diff;
-
-                // Keep this match if it's more specific (smaller span) than the current best
-                if best_span_size.is_none() || span_size < best_span_size.unwrap() {
-                    best_match = Some(found);
-                    best_span_size = Some(span_size);
-                    trace!("New best match: {} with span size {}", found.type_name(), span_size);
-                }
+                trace!("Found in child: {}", found.type_name());
+                return Some(found); // Found more specific node in child
             }
             // Update prev_end for next sibling
             child_prev_end = child_end;
         }
-    }
-
-    // Return the most specific match if found
-    if let Some(found) = best_match {
-        return Some(found);
     }
 
     trace!("No child found, returning this node: {}", node.type_name());
