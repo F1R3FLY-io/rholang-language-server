@@ -202,6 +202,9 @@ impl SymbolIndexBuilder {
             if let Err(e) = index.add_contract_definition(&contract_name, location) {
                 eprintln!("Warning: Failed to index contract '{}': {}", contract_name, e);
             }
+
+            // Extract and index map keys from formal parameters
+            self.extract_and_index_map_keys(&contract_name, formals, &mut index);
         }
     }
 
@@ -428,6 +431,119 @@ impl SymbolIndexBuilder {
         }
     }
 
+    /// Extract and index map keys from contract formal parameters
+    ///
+    /// Recursively traverses formal parameters looking for map patterns and indexes
+    /// each map key with its location.
+    ///
+    /// # Arguments
+    /// * `contract_name` - Name of the contract
+    /// * `formals` - The formal parameters to traverse
+    /// * `index` - Mutable reference to the GlobalSymbolIndex
+    fn extract_and_index_map_keys(
+        &self,
+        contract_name: &str,
+        formals: &rpds::Vector<Arc<RholangNode>, archery::ArcK>,
+        index: &mut GlobalSymbolIndex,
+    ) {
+        for formal in formals.iter() {
+            // Each formal is typically a Quote node containing the pattern
+            if let RholangNode::Quote { quotable, .. } = formal.as_ref() {
+                // Extract map keys from the quotable content
+                self.extract_map_keys_from_node(contract_name, quotable, "", index);
+            } else {
+                // If not a Quote, traverse it anyway (might be a direct pattern)
+                self.extract_map_keys_from_node(contract_name, formal, "", index);
+            }
+        }
+    }
+
+    /// Recursively extract map keys from a pattern node
+    ///
+    /// # Arguments
+    /// * `contract_name` - Name of the contract
+    /// * `node` - The pattern node to traverse
+    /// * `key_prefix` - Dot-separated prefix for nested keys (e.g., "user" for top level, "user.address" for nested)
+    /// * `index` - Mutable reference to the GlobalSymbolIndex
+    fn extract_map_keys_from_node(
+        &self,
+        contract_name: &str,
+        node: &Arc<RholangNode>,
+        key_prefix: &str,
+        index: &mut GlobalSymbolIndex,
+    ) {
+        match node.as_ref() {
+            // Map patterns: @{key1: val1, key2: val2, ...}
+            RholangNode::Map { pairs, .. } => {
+                for (key_node, value_node) in pairs.iter() {
+                    // Extract the key string
+                    if let Some(key_str) = Self::extract_string_from_node(key_node) {
+                        // Build the full key path
+                        let full_key_path = if key_prefix.is_empty() {
+                            key_str.clone()
+                        } else {
+                            format!("{}.{}", key_prefix, key_str)
+                        };
+
+                        // Get position for this key node
+                        let key_ptr = &**key_node as *const RholangNode as usize;
+                        if let Some((start_pos, _end_pos)) = self.positions.get(&key_ptr) {
+                            let location = SymbolLocation {
+                                uri: self.current_uri.clone(),
+                                range: Range {
+                                    start: Position {
+                                        line: start_pos.row as u32,
+                                        character: start_pos.column as u32,
+                                    },
+                                    end: Position {
+                                        line: start_pos.row as u32,
+                                        character: (start_pos.column + key_str.len()) as u32,
+                                    },
+                                },
+                                kind: SymbolKind::Variable, // Map keys are like variables
+                                documentation: None,
+                                signature: None,
+                            };
+
+                            // Add to index
+                            if let Err(e) = index.add_map_key_pattern(contract_name, &full_key_path, location) {
+                                eprintln!("Warning: Failed to index map key '{}': {}", full_key_path, e);
+                            }
+                        }
+
+                        // Recursively extract from nested patterns in the value
+                        self.extract_map_keys_from_node(contract_name, value_node, &full_key_path, index);
+                    }
+                }
+            }
+
+            // Other pattern types that might contain nested maps
+            RholangNode::List { elements, .. } => {
+                for element in elements.iter() {
+                    self.extract_map_keys_from_node(contract_name, element, key_prefix, index);
+                }
+            }
+
+            RholangNode::Tuple { elements, .. } => {
+                for element in elements.iter() {
+                    self.extract_map_keys_from_node(contract_name, element, key_prefix, index);
+                }
+            }
+
+            // Skip other node types (variables, wildcards, etc.)
+            _ => {}
+        }
+    }
+
+    /// Extract a string value from a node (handles StringLiteral and Var)
+    fn extract_string_from_node(node: &Arc<RholangNode>) -> Option<String> {
+        match node.as_ref() {
+            RholangNode::StringLiteral { value, .. } => Some(value.clone()),
+            RholangNode::Var { name, .. } => Some(name.clone()),
+            _ => None,
+        }
+    }
+
     /// Extract contract name from a channel expression
     /// Returns Some(name) if this is a contract channel reference
     fn extract_contract_name(channel: &Arc<RholangNode>) -> Option<String> {
@@ -479,10 +595,10 @@ mod tests {
         Arc::new(RholangNode::Var {
             name: name.to_string(),
             base: NodeBase::new_simple(
-                crate::ir::rholang_node::RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
+                crate::ir::rholang_node::Position {
+                    row: 0,
+                    column: 0,
+                    byte: 0,
                 },
                 0, 0, name.len()
             ),
