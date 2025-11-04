@@ -41,7 +41,7 @@
 //! ```
 
 use crate::ir::semantic_node::{NodeBase, Position, SemanticNode};
-use crate::ir::rholang_node::{RelativePosition, RholangNode};
+use crate::ir::rholang_node::RholangNode;
 use std::sync::Arc;
 
 /// Convert absolute positions to NodeBase with relative positioning and dual-length tracking.
@@ -148,15 +148,11 @@ pub fn create_node_base_from_absolute(
         absolute_end.column.saturating_sub(absolute_start.column)
     };
 
-    // Update prev_end for next sibling's delta calculation
+    // Update prev_end for next sibling (for API compatibility)
     *prev_end = absolute_end;
 
     NodeBase::new(
-        RelativePosition {
-            delta_lines,
-            delta_columns,
-            delta_bytes,
-        },
+        absolute_start,
         content_length,
         syntactic_length,
         span_lines,
@@ -260,12 +256,12 @@ pub fn recalculate_children_positions(
     let mut current_new_prev = new_prev_end;
 
     for (i, child) in children.iter().enumerate() {
-        // Compute child's absolute positions using original reference
-        let child_abs_start = SemanticNode::absolute_position(child.as_ref(), current_original_prev);
-        let child_abs_end = SemanticNode::absolute_end(child.as_ref(), child_abs_start);
+        // Get child's absolute positions
+        let child_abs_start = child.base().start();
+        let child_abs_end = child.base().end();
 
-        eprintln!("DEBUG:   Child {}: old_delta={}, abs_start={}, abs_end={}",
-                  i, child.base().delta_bytes(), child_abs_start.byte, child_abs_end.byte);
+        eprintln!("DEBUG:   Child {}: syntactic_length={}, abs_start={}, abs_end={}",
+                  i, child.base().syntactic_length(), child_abs_start.byte, child_abs_end.byte);
 
         // Compute content end
         let content_end = Position {
@@ -286,8 +282,8 @@ pub fn recalculate_children_positions(
             Some(content_end),
         );
 
-        eprintln!("DEBUG:   Child {}: new_delta={}, current_new_prev={}",
-                  i, new_base.delta_bytes(), current_new_prev.byte);
+        eprintln!("DEBUG:   Child {}: syntactic_length={}, current_new_prev={}",
+                  i, new_base.syntactic_length(), current_new_prev.byte);
 
         // Clone child with new base (simplified - just update base, keep rest)
         let new_child = clone_node_with_new_base(&child, new_base);
@@ -315,12 +311,12 @@ pub fn clone_node_with_new_base(node: &Arc<RholangNode>, new_base: NodeBase) -> 
                 metadata: metadata.clone(),
             })
         }
-        RholangNode::Send { channel, send_type, send_type_delta, inputs, metadata, .. } => {
+        RholangNode::Send { channel, send_type, send_type_pos, inputs, metadata, .. } => {
             Arc::new(RholangNode::Send {
                 base: new_base,
                 channel: channel.clone(),
                 send_type: send_type.clone(),
-                send_type_delta: send_type_delta.clone(),
+                send_type_pos: send_type_pos.clone(),
                 inputs: inputs.clone(),
                 metadata: metadata.clone(),
             })
@@ -686,9 +682,9 @@ mod tests {
             &mut prev_end,
         );
 
-        assert_eq!(base.delta_bytes(), 0);
-        assert_eq!(base.delta_lines(), 0);
-        assert_eq!(base.delta_columns(), 0);
+        assert_eq!(base.start().row, 0);
+        assert_eq!(base.start().column, 0);
+        assert_eq!(base.start().byte, 0);
         assert_eq!(base.content_length(), 3);
         assert_eq!(base.syntactic_length(), 3);
     }
@@ -731,9 +727,9 @@ mod tests {
             &mut prev_end,
         );
 
-        assert_eq!(base.delta_bytes(), 1); // One space between nodes
-        assert_eq!(base.delta_lines(), 0); // Same line
-        assert_eq!(base.delta_columns(), 1); // One column delta
+        assert_eq!(base.start().row, 0); // Same line
+        assert_eq!(base.start().column, 4); // Starts at column 4 (one space after "foo")
+        assert_eq!(base.start().byte, 4); // Starts at byte 4 (one space between nodes)
         assert_eq!(base.content_length(), 3);
         assert_eq!(base.syntactic_length(), 3);
     }
@@ -830,8 +826,8 @@ mod tests {
     }
 
     #[test]
-    fn test_saturating_sub_prevents_underflow() {
-        // Test that if somehow absolute_start < prev_end, we don't panic
+    fn test_absolute_positions_handle_unusual_cases() {
+        // Test that we handle unusual position ordering without panicking
         let mut prev_end = Position {
             row: 0,
             column: 10,
@@ -852,10 +848,9 @@ mod tests {
             &mut prev_end,
         );
 
-        // Should not panic - saturating_sub prevents byte underflow
-        // Bytes use saturating_sub (usize), so clamps to 0
-        assert_eq!(base.delta_bytes(), 0);
-        // Lines/columns use i32, so can be negative (representing backwards movement)
-        assert_eq!(base.delta_columns(), -5); // 5 - 10 = -5
+        // With absolute positions, we just store the actual start position
+        assert_eq!(base.start().row, 0);
+        assert_eq!(base.start().column, 5);
+        assert_eq!(base.start().byte, 5);
     }
 }

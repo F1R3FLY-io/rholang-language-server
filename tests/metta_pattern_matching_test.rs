@@ -120,15 +120,14 @@ fn test_pattern_matching_find_call() {
 
     // Create a call pattern to match against
     // This simulates what happens when clicking on "is_connected" in "(is_connected room_a room_b)"
-    use rholang_language_server::ir::semantic_node::NodeBase;
-    use rholang_language_server::ir::rholang_node::RelativePosition;
+    use rholang_language_server::ir::semantic_node::{NodeBase, Position};
 
     fn test_base() -> NodeBase {
         NodeBase::new_simple(
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
+            Position {
+                row: 0,
+                column: 0,
+                byte: 0,
             },
             0,
             0,
@@ -190,15 +189,14 @@ fn test_arity_filtering() {
     let table = builder.build(&nodes);
 
     // Create call pattern with arity 2
-    use rholang_language_server::ir::semantic_node::NodeBase;
-    use rholang_language_server::ir::rholang_node::RelativePosition;
+    use rholang_language_server::ir::semantic_node::{NodeBase, Position};
 
     fn test_base() -> NodeBase {
         NodeBase::new_simple(
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
+            Position {
+                row: 0,
+                column: 0,
+                byte: 0,
             },
             0,
             0,

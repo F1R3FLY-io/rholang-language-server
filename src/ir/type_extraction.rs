@@ -295,7 +295,7 @@ impl Default for TypeChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::rholang_node::{NodeBase, RelativePosition};
+    use crate::ir::rholang_node::{NodeBase, Position};
 
     #[test]
     fn test_type_constraint_matches_any() {
@@ -325,10 +325,10 @@ mod tests {
         let var_node = Arc::new(RholangNode::Var {
             name: "x".to_string(),
             base: NodeBase::new_simple(
-                RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
+                Position {
+                    row: 0,
+                    column: 0,
+                    byte: 0,
                 },
                 1,
                 0,
@@ -348,10 +348,10 @@ mod tests {
         let int_node = Arc::new(RholangNode::LongLiteral {
             value: 42,
             base: NodeBase::new_simple(
-                RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
+                Position {
+                    row: 0,
+                    column: 0,
+                    byte: 0,
                 },
                 2,
                 0,
@@ -374,10 +374,10 @@ mod tests {
         let string_node = Arc::new(RholangNode::StringLiteral {
             value: "hello".to_string(),
             base: NodeBase::new_simple(
-                RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
+                Position {
+                    row: 0,
+                    column: 0,
+                    byte: 0,
                 },
                 7,
                 0,
@@ -400,10 +400,10 @@ mod tests {
         let int_node = Arc::new(RholangNode::LongLiteral {
             value: 42,
             base: NodeBase::new_simple(
-                RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
+                Position {
+                    row: 0,
+                    column: 0,
+                    byte: 0,
                 },
                 2,
                 0,

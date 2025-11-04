@@ -4,7 +4,7 @@
 //! transformations on IR trees using the index-based traversal system.
 
 use rholang_language_server::ir::rholang_node::{BinOperator, RholangNode};
-use rholang_language_server::ir::semantic_node::{NodeBase, Position, RelativePosition, SemanticNode, TransformVisitor};
+use rholang_language_server::ir::semantic_node::{NodeBase, Position, SemanticNode, TransformVisitor};
 use rholang_language_server::tree_sitter::{parse_code, parse_to_ir};
 use ropey::Rope;
 use std::sync::Arc;

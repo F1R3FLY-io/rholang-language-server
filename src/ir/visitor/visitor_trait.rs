@@ -2,8 +2,8 @@ use std::sync::Arc;
 use rpds::Vector;
 use archery::ArcK;
 
-use super::super::rholang_node::{RholangNode, RholangNodeVector, Metadata, CommentKind, RholangSendType, RholangBundleType, BinOperator, UnaryOperator, RholangVarRefKind};
-use super::super::semantic_node::{NodeBase, RelativePosition};
+use super::super::rholang_node::{RholangNode, RholangNodeVector, Metadata, CommentKind, RholangSendType, RholangBundleType, BinOperator, UnaryOperator, RholangVarRefKind, Position};
+use super::super::semantic_node::{NodeBase};
 
 /// Provides a visitor pattern for traversing and transforming the Rholang Intermediate Representation (IR) tree.
 /// This module enables implementors to define custom logic for processing each node type, facilitating operations
@@ -26,7 +26,7 @@ pub trait Visitor {
             // Incomplete Par (should not occur, but needed for exhaustiveness) - return as-is
             RholangNode::Par { .. } => Arc::clone(node),
             RholangNode::SendSync { base, channel, inputs, cont, metadata } => self.visit_send_sync(node, base, channel, inputs, cont, metadata),
-            RholangNode::Send { base, channel, send_type, send_type_delta, inputs, metadata } => self.visit_send(node, base, channel, send_type, send_type_delta, inputs, metadata),
+            RholangNode::Send { base, channel, send_type, send_type_pos, inputs, metadata } => self.visit_send(node, base, channel, send_type, send_type_pos, inputs, metadata),
             RholangNode::New { base, decls, proc, metadata } => self.visit_new(node, base, decls, proc, metadata),
             RholangNode::IfElse { base, condition, consequence, alternative, metadata } => self.visit_ifelse(node, base, condition, consequence, alternative, metadata),
             RholangNode::Let { base, decls, proc, metadata } => self.visit_let(node, base, decls, proc, metadata),
@@ -201,7 +201,7 @@ pub trait Visitor {
     /// * base - Metadata including position and text.
     /// * channel - The channel expression.
     /// * send_type - Single !) or multiple !!) send type.
-    /// * send_type_delta - Relative position after the send type token.
+    /// * send_type_pos - Relative position after the send type token.
     /// * inputs - Arguments sent asynchronously.
     /// * metadata - Optional node metadata.
     ///
@@ -216,7 +216,7 @@ pub trait Visitor {
         base: &NodeBase,
         channel: &Arc<RholangNode>,
         send_type: &RholangSendType,
-        send_type_delta: &RelativePosition,
+        send_type_pos: &Position,
         inputs: &Vector<Arc<RholangNode>, ArcK>,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<RholangNode> {
@@ -230,7 +230,7 @@ pub trait Visitor {
                 base: base.clone(),
                 channel: new_channel,
                 send_type: send_type.clone(),
-                send_type_delta: *send_type_delta,
+                send_type_pos: *send_type_pos,
                 inputs: new_inputs,
                 metadata: metadata.clone(),
             })

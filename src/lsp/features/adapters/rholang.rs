@@ -21,11 +21,28 @@ impl HoverProvider for RholangHoverProvider {
     fn hover_for_symbol(
         &self,
         symbol_name: &str,
-        _node: &dyn SemanticNode,
-        _context: &HoverContext,
+        node: &dyn SemanticNode,
+        context: &HoverContext,
     ) -> Option<HoverContents> {
-        // Basic hover info for Rholang symbols
-        let content = format!("**{}**\n\n*Rholang symbol*", symbol_name);
+        use crate::ir::transforms::documentation_attacher::DOC_METADATA_KEY;
+
+        // Check for documentation in context first (may be from parent node)
+        let doc_text = if let Some(ref doc) = context.documentation {
+            Some(doc.as_str())
+        } else {
+            // Fall back to checking node metadata directly
+            node.metadata()
+                .and_then(|m| m.get(DOC_METADATA_KEY))
+                .and_then(|doc_any| doc_any.downcast_ref::<String>())
+                .map(|s| s.as_str())
+        };
+
+        // Format hover content with documentation if available
+        let content = if let Some(doc) = doc_text {
+            format!("**{}**\n\n{}\n\n---\n\n*Rholang symbol*", symbol_name, doc)
+        } else {
+            format!("**{}**\n\n*Rholang symbol*", symbol_name)
+        };
 
         Some(HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
@@ -120,8 +137,30 @@ impl SymbolResolver for RholangSymbolResolver {
             context.uri
         );
 
+        // Try to get symbol table from the IR node's metadata (for nested scopes)
+        // Otherwise fall back to the root symbol table
+        let symbol_table = if let Some(ir_node) = &context.ir_node {
+            if let Some(node) = ir_node.downcast_ref::<Arc<crate::ir::rholang_node::RholangNode>>() {
+                if let Some(metadata) = node.metadata() {
+                    if let Some(table) = metadata.get("symbol_table") {
+                        table.downcast_ref::<Arc<crate::ir::symbol_table::SymbolTable>>()
+                            .map(|t| t.clone())
+                            .unwrap_or_else(|| self.symbol_table.clone())
+                    } else {
+                        self.symbol_table.clone()
+                    }
+                } else {
+                    self.symbol_table.clone()
+                }
+            } else {
+                self.symbol_table.clone()
+            }
+        } else {
+            self.symbol_table.clone()
+        };
+
         // Look up symbol in the symbol table (walks parent chain automatically)
-        if let Some(symbol) = self.symbol_table.lookup(symbol_name) {
+        if let Some(symbol) = symbol_table.lookup(symbol_name) {
             tracing::debug!(
                 "Found symbol '{}' at line {}, col {} (type={:?}, uri={})",
                 symbol.name,

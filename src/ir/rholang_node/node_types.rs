@@ -5,7 +5,7 @@ use archery::ArcK;
 
 
 
-pub use super::super::semantic_node::{Metadata, NodeBase, Position, RelativePosition};
+pub use super::super::semantic_node::{Metadata, NodeBase, Position};
 
 pub type RholangNodeVector = Vector<Arc<RholangNode>, ArcK>;
 pub type RholangNodePairVector = Vector<(Arc<RholangNode>, Arc<RholangNode>), ArcK>;
@@ -46,7 +46,7 @@ pub enum RholangNode {
         base: NodeBase,
         channel: Arc<RholangNode>,
         send_type: RholangSendType,
-        send_type_delta: RelativePosition,
+        send_type_pos: Position,  // Absolute position of the send type (! or !!)
         inputs: RholangNodeVector,
         metadata: Option<Arc<Metadata>>,
     },

@@ -11,7 +11,7 @@ use archery::ArcK;
 use ropey::Rope;
 
 use crate::ir::rholang_node::{
-    RholangNode, NodeBase, Position, RelativePosition,
+    RholangNode, NodeBase, Position,
 };
 use super::conversion::convert_ts_node_to_ir;
 
@@ -102,7 +102,7 @@ pub(crate) fn collect_patterns(
     let mut cursor = node.walk();
     let mut is_remainder = false;
     let mut is_quote = false;
-    let mut quote_delta: Option<RelativePosition> = None;
+    let mut quote_pos: Option<Position> = None;
     let mut quote_start_byte: Option<usize> = None;
 
     for child in node.children(&mut cursor) {
@@ -132,12 +132,7 @@ pub(crate) fn collect_patterns(
             } else {
                 absolute_start.column as i32
             };
-            let delta_bytes = absolute_start.byte - current_prev_end.byte;
-            quote_delta = Some(RelativePosition {
-                delta_lines,
-                delta_columns,
-                delta_bytes,
-            });
+            quote_pos = Some(absolute_start);
             quote_start_byte = Some(absolute_start.byte);
             current_prev_end = Position {
                 row: child.end_position().row,
@@ -158,7 +153,7 @@ pub(crate) fn collect_patterns(
 
             // Wrap in Quote if @-prefixed
             if is_quote {
-                let q_delta = quote_delta.take().expect("Quote delta not set");
+                let q_pos = quote_pos.take().expect("Quote position not set");
                 let q_start_byte = quote_start_byte.take().expect("Quote start byte not set");
                 let length = child.end_byte() - q_start_byte;
                 let span_lines = child.end_position().row - child.start_position().row;
@@ -167,7 +162,7 @@ pub(crate) fn collect_patterns(
                 } else {
                     child.end_position().column
                 };
-                let quote_base = NodeBase::new_simple(q_delta, length, span_lines, span_columns);
+                let quote_base = NodeBase::new_simple(q_pos, length, span_lines, span_columns);
                 child_node = Arc::new(RholangNode::Quote {
                     base: quote_base,
                     quotable: child_node,
@@ -255,4 +250,30 @@ pub(crate) fn is_comment(kind_id: u16) -> bool {
     });
 
     kind_id == line_comment_kind || kind_id == block_comment_kind
+}
+
+/// Recursively walk Tree-Sitter tree to collect all comment nodes
+///
+/// This function traverses the entire parse tree, collecting all line and block
+/// comments. Comments are returned sorted by their byte position in the source.
+///
+/// # Arguments
+/// * `ts_node` - The Tree-Sitter node to start walking from (typically root)
+/// * `comments` - Mutable vector to collect comment nodes into
+///
+/// # Performance
+/// - Uses pre-order traversal (node first, then children)
+/// - Leverages Tree-Sitter's cursor for efficient tree walking
+/// - Comments are already ordered by position due to traversal order
+pub(crate) fn walk_for_comments<'a>(ts_node: TSNode<'a>, comments: &mut Vec<TSNode<'a>>) {
+    // Check if this node is a comment
+    if ts_node.is_named() && is_comment(ts_node.kind_id()) {
+        comments.push(ts_node);
+    }
+
+    // Recursively walk all children
+    let mut cursor = ts_node.walk();
+    for child in ts_node.children(&mut cursor) {
+        walk_for_comments(child, comments);
+    }
 }

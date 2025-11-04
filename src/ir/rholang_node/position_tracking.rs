@@ -1,11 +1,30 @@
+//! Position indexing for fast position lookups
+//!
+//! **Note on Migration (2025-11)**: This module was simplified as part of the migration
+//! from relative to absolute position tracking. Previously, this module computed absolute
+//! positions from deltas. Now, NodeBase stores absolute positions directly from Tree-Sitter,
+//! so this module just extracts and indexes them for fast HashMap lookups.
+//!
+//! The function name `compute_absolute_positions()` is now a misnomer - it should be
+//! `index_node_positions()` but is kept for backward compatibility with existing call sites.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use tracing::{debug, trace};
 
 use super::node_types::*;
-pub use super::node_types::{Position, RelativePosition};
+pub use super::node_types::Position;
 
+/// Build a position index for fast position lookups by node pointer.
+///
+/// Despite the name, this function no longer "computes" positions - it simply
+/// extracts absolute positions that are already stored in NodeBase and builds
+/// a HashMap for O(1) lookup by node address.
+///
+/// # Historical Note
+/// Before the 2025-11 migration, this function computed absolute positions from
+/// relative deltas. Now it's just a position indexer since NodeBase stores positions directly.
 pub fn compute_absolute_positions(root: &Arc<RholangNode>) -> HashMap<usize, (Position, Position)> {
     let mut positions = HashMap::new();
     let initial_prev_end = Position {
@@ -17,13 +36,15 @@ pub fn compute_absolute_positions(root: &Arc<RholangNode>) -> HashMap<usize, (Po
     positions
 }
 
-/// Recursively computes absolute positions for all node types in the IR tree.
-/// - Computes positions from relative offsets and child nodes.
+/// Recursively index positions for all nodes in the IR tree.
+///
+/// Extracts absolute positions from NodeBase and stores them in a HashMap
+/// keyed by node pointer address for fast lookup.
 ///
 /// # Arguments
 /// * node - The current node being processed.
-/// * prev_end - The absolute end position of the previous sibling or parent’s start if first child.
-/// * positions - The HashMap storing computed (start, end) positions.
+/// * prev_end - Unused (kept for compatibility, will be removed in future refactor)
+/// * positions - The HashMap storing extracted (start, end) positions.
 ///
 /// # Returns
 /// The absolute end position of the current node.
@@ -35,40 +56,10 @@ fn compute_positions_helper(
 ) -> Position {
     let base = node.base();
     let key = &**node as *const RholangNode as usize;
-    let relative_start = base.relative_start();
 
-    // Removed debug logging
-
-    let start = Position {
-        row: (prev_end.row as i32 + relative_start.delta_lines) as usize,
-        column: if relative_start.delta_lines == 0 {
-            (prev_end.column as i32 + relative_start.delta_columns) as usize
-        } else {
-            relative_start.delta_columns as usize
-        },
-        byte: prev_end.byte + relative_start.delta_bytes,
-    };
-
-    // Debug: Log ALL nodes up to byte 14850 to find where 2-byte offset is introduced
-    if start.byte <= 14850 {
-        let node_type = match &**node {
-            RholangNode::Input { .. } => "Input".to_string(),
-            RholangNode::LinearBind { .. } => "LinearBind".to_string(),
-            RholangNode::Wildcard { .. } => "Wildcard".to_string(),
-            RholangNode::Var { name, .. } => format!("Var({})", name),
-            RholangNode::Send { .. } => "Send".to_string(),
-            RholangNode::Par { .. } => "Par".to_string(),
-            RholangNode::Block { .. } => "Block".to_string(),
-            RholangNode::New { .. } => "New".to_string(),
-            RholangNode::NameDecl { .. } => "NameDecl".to_string(),
-            _ => format!("{:?}", node).chars().take(15).collect(),
-        };
-        trace!("POS_TRACK [{}]: prev_end={}, delta_bytes={}, COMPUTED start.byte={}",
-               node_type, start.byte - base.delta_bytes(), base.delta_bytes(), start.byte);
-    }
-
-    // Use syntactic_length for reconstruction to include closing delimiters
-    let end = compute_end_position(start, base.span_lines(), base.span_columns(), base.syntactic_length());
+    // Extract absolute positions (no computation needed - they're already absolute!)
+    let start = base.start();
+    let end = base.end();
 
     // Hot path: Position computation runs during parsing for every node
     // Removed per-node debug logging to avoid excessive log volume
@@ -118,24 +109,13 @@ fn compute_positions_helper(
         RholangNode::Send {
             channel,
             inputs,
-            send_type_delta,
+            send_type_pos,
             ..
         } => {
             // Channel starts at the Send node's start position, not current_prev
             let channel_end = compute_positions_helper(channel, start, positions);
-            let send_type_end = Position {
-                row: (channel_end.row as i32 + send_type_delta.delta_lines) as usize,
-                column: if send_type_delta.delta_lines == 0 {
-                    (channel_end.column as i32 + send_type_delta.delta_columns) as usize
-                } else {
-                    send_type_delta.delta_columns as usize
-                },
-                byte: channel_end.byte + send_type_delta.delta_bytes,
-            };
-            if send_type_end.byte >= 14740 && send_type_end.byte <= 14750 {
-                debug!("Send node: send_type_end.byte={}, send_type_delta.delta_bytes={}",
-                       send_type_end.byte, send_type_delta.delta_bytes);
-            }
+            // send_type_pos is now absolute
+            let send_type_end = *send_type_pos;
             let mut temp_prev = send_type_end;
             for (i, input) in inputs.iter().enumerate() {
                 if temp_prev.byte >= 14745 && temp_prev.byte <= 14800 {

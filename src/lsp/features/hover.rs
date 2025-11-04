@@ -18,7 +18,7 @@ use tower_lsp::lsp_types::{Hover, HoverContents, Position as LspPosition, Range,
 use tracing::debug;
 
 use crate::ir::semantic_node::{Position, SemanticCategory, SemanticNode};
-use crate::lsp::features::node_finder::{find_node_at_position, ir_to_lsp_position};
+use crate::lsp::features::node_finder::{find_node_at_position, find_node_with_path, ir_to_lsp_position};
 use crate::lsp::features::traits::{HoverContext, LanguageAdapter};
 
 /// Generic hover feature
@@ -81,17 +81,25 @@ impl GenericHover {
             adapter.language_name()
         );
 
-        // Use pre-found node if provided, otherwise find it
-        let node = match pre_found_node {
+        // Use pre-found node if provided, otherwise find it with parent context
+        let (node, parent) = match pre_found_node {
             Some(n) => {
                 debug!("Using pre-found node: type={}", n.type_name());
-                n
+                (n, None) // No parent context for pre-found nodes
             }
             None => {
-                match find_node_at_position(root, position) {
-                    Some(n) => n,
+                match find_node_with_path(root, position) {
+                    Some((n, path)) => {
+                        // Extract parent (second-to-last in path, last is the node itself)
+                        let parent = if path.len() >= 2 {
+                            Some(path[path.len() - 2])
+                        } else {
+                            None
+                        };
+                        (n, parent)
+                    }
                     None => {
-                        debug!("find_node_at_position returned None for position {:?}", position);
+                        debug!("find_node_with_path returned None for position {:?}", position);
                         return None;
                     }
                 }
@@ -105,6 +113,15 @@ impl GenericHover {
             category
         );
 
+        // Phase 7: Extract documentation from node or parent (now returns owned String with markdown)
+        let documentation = self.extract_documentation(node, parent);
+        if let Some(ref doc) = documentation {
+            debug!("Found documentation for hover: {} chars", doc.len());
+        }
+
+        // Clone documentation for use in fallback case
+        let doc_for_fallback = documentation.clone();
+
         // Create hover context
         let context = HoverContext {
             uri: uri.clone(),
@@ -113,6 +130,7 @@ impl GenericHover {
             category,
             language: adapter.language_name().to_string(),
             parent_uri,
+            documentation,
         };
 
         // Get hover contents based on semantic category
@@ -141,14 +159,37 @@ impl GenericHover {
                 adapter.hover.hover_for_language_specific(node, &context)?
             }
             _ => {
-                debug!("No hover support for category {:?}", category);
-                return None;
+                // For other categories, check if we have documentation from parent context
+                if let Some(ref doc) = doc_for_fallback {
+                    debug!("Using documentation from parent for {} node", node.type_name());
+                    use tower_lsp::lsp_types::{MarkupContent, MarkupKind};
+
+                    // Try to extract symbol name from parent node
+                    let formatted_content = if let Some(parent_node) = parent {
+                        if let Some(symbol_name) = self.extract_symbol_name(parent_node) {
+                            // Format with symbol name like RholangHoverProvider does
+                            format!("**{}**\n\n{}\n\n---\n\n*Rholang symbol*", symbol_name, doc)
+                        } else {
+                            doc.clone()
+                        }
+                    } else {
+                        doc.clone()
+                    };
+
+                    HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: formatted_content,
+                    })
+                } else {
+                    debug!("No hover support for category {:?}", category);
+                    return None;
+                }
             }
         };
 
         // Compute hover range (the node's span)
         let start_pos = ir_to_lsp_position(position);
-        let end = node.absolute_end(*position);
+        let end = node.base().end();
         let end_pos = ir_to_lsp_position(&end);
 
         let range = Range {
@@ -162,6 +203,68 @@ impl GenericHover {
             contents,
             range: Some(range),
         })
+    }
+
+    /// Extract documentation from node or parent metadata (Phase 7: with structured docs)
+    ///
+    /// Checks the node first, then falls back to parent if documentation not found.
+    /// This handles cases where documentation is attached to parent declarations
+    /// (e.g., Contract) but user hovers over child nodes (e.g., contract name Var).
+    ///
+    /// # Phase 7 Enhancement
+    ///
+    /// - Tries `StructuredDocumentation` first, returns markdown with rich formatting
+    /// - Falls back to plain `String` for backwards compatibility
+    /// - Returns owned String since markdown needs to be generated
+    fn extract_documentation(
+        &self,
+        node: &dyn SemanticNode,
+        parent: Option<&dyn SemanticNode>,
+    ) -> Option<String> {
+        use crate::ir::transforms::documentation_attacher::DOC_METADATA_KEY;
+        use crate::ir::StructuredDocumentation;
+
+        // Helper to extract from metadata
+        let extract_from_metadata = |metadata: &std::collections::HashMap<String, std::sync::Arc<dyn std::any::Any + Send + Sync>>| -> Option<String> {
+            if let Some(doc_any) = metadata.get(DOC_METADATA_KEY) {
+                // Phase 7: Try StructuredDocumentation first (new format with rich display)
+                if let Some(structured_doc) = doc_any.downcast_ref::<StructuredDocumentation>() {
+                    debug!("Found StructuredDocumentation with {} params, {} examples",
+                        structured_doc.params.len(), structured_doc.examples.len());
+                    return Some(structured_doc.to_markdown());
+                }
+                // Backwards compatibility: Fall back to plain String
+                else if let Some(doc_ref) = doc_any.downcast_ref::<String>() {
+                    debug!("Found plain String documentation");
+                    return Some(doc_ref.clone());
+                }
+            }
+            None
+        };
+
+        // Try node first
+        if let Some(metadata) = node.metadata() {
+            if let Some(doc) = extract_from_metadata(metadata) {
+                debug!("Found documentation in node: {}", node.type_name());
+                return Some(doc);
+            }
+        }
+
+        // Fall back to parent
+        if let Some(parent_node) = parent {
+            if let Some(metadata) = parent_node.metadata() {
+                if let Some(doc) = extract_from_metadata(metadata) {
+                    debug!(
+                        "Found documentation in parent: {} (child was: {})",
+                        parent_node.type_name(),
+                        node.type_name()
+                    );
+                    return Some(doc);
+                }
+            }
+        }
+
+        None
     }
 
     /// Extract symbol name from node metadata
@@ -213,6 +316,13 @@ impl GenericHover {
                     // For Quote nodes (e.g., @fromRoom), extract from the inner node
                     if let RholangNode::Var { name, .. } = &**quotable {
                         debug!("Extracted symbol name from RholangNode::Quote->Var: {}", name);
+                        return Some(name.as_str());
+                    }
+                }
+                RholangNode::Contract { name: contract_name, .. } => {
+                    // For Contract nodes, extract name from the name field
+                    if let RholangNode::Var { name, .. } = &**contract_name {
+                        debug!("Extracted symbol name from RholangNode::Contract: {}", name);
                         return Some(name.as_str());
                     }
                 }
@@ -292,7 +402,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use tower_lsp::lsp_types::{MarkupContent, MarkupKind};
-    use crate::ir::semantic_node::{NodeBase, RelativePosition, Metadata};
+    use crate::ir::semantic_node::{NodeBase, Position, Metadata};
     use crate::lsp::features::traits::{HoverProvider, CompletionProvider, DocumentationProvider};
     use crate::ir::symbol_resolution::SymbolResolver;
 
@@ -315,10 +425,10 @@ mod tests {
 
             Self {
                 base: NodeBase::new_simple(
-                    RelativePosition {
-                        delta_lines: 0,
-                        delta_columns: 0,
-                        delta_bytes: 0,
+                    Position {
+                        row: 0,
+                        column: 0,
+                        byte: 0,
                     },
                     name_len,
                     0,
@@ -496,10 +606,10 @@ mod tests {
         let hover_feature = GenericHover;
         let node = EmptyNode {
             base: NodeBase::new_simple(
-                RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
+                Position {
+                    row: 0,
+                    column: 0,
+                    byte: 0,
                 },
                 10,
                 0,

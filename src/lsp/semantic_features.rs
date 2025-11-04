@@ -35,11 +35,11 @@ pub fn find_semantic_node_at_position<'a>(
         path.push(node);
 
         let base = node.base();
-        let start = base.relative_start();
+        let start = base.start();
         let node_start = IrPosition {
-            row: start.delta_lines as usize,
-            column: start.delta_columns as usize,
-            byte: start.delta_bytes,
+            row: start.row,
+            column: start.column,
+            byte: start.byte,
         };
 
         let node_end = IrPosition {

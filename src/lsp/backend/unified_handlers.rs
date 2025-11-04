@@ -529,8 +529,7 @@ impl RholangBackend {
                     }
 
                     // Update prev_end for next root
-                    let start = root.absolute_position(prev_end);
-                    prev_end = root.absolute_end(start);
+                    prev_end = root.base().end();
                 }
                 debug!("No definition found in any of the {} root nodes", all_roots.len());
                 None
@@ -644,9 +643,6 @@ impl RholangBackend {
 
                 let mut prev_end = IrPosition { row: 0, column: 0, byte: 0 };
                 for (i, root) in all_roots.iter().enumerate() {
-                    // Compute this root's start position
-                    let root_start = root.absolute_position(prev_end);
-
                     // Try to find the node in this root with the correct prev_end
                     if let Some(node) = find_node_at_position_with_prev_end(root.as_ref(), &ir_position, &prev_end) {
                         debug!("Found node in root {} at position {:?}", i, ir_position);
@@ -672,7 +668,7 @@ impl RholangBackend {
                     }
 
                     // Update prev_end for next root
-                    prev_end = root.absolute_end(root_start);
+                    prev_end = root.base().end();
                 }
                 debug!("No hover found in any of the {} root nodes", all_roots.len());
                 None
@@ -843,10 +839,10 @@ mod tests {
         // This is just a type check - actual functionality will be tested via integration tests
         let root: Arc<dyn SemanticNode> = Arc::new(crate::ir::rholang_node::RholangNode::Nil {
             base: crate::ir::semantic_node::NodeBase::new_simple(
-                crate::ir::semantic_node::RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0
+                crate::ir::semantic_node::Position {
+                    row: 0,
+                    column: 0,
+                    byte: 0
                 },
                 0,
                 0,

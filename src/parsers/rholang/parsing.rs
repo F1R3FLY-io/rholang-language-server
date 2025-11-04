@@ -16,8 +16,10 @@ use ropey::Rope;
 use once_cell::sync::Lazy;
 
 use crate::ir::rholang_node::{RholangNode, Position};
+use crate::ir::{CommentNode, DocumentIR};
 use crate::parsers::ParseCache;
 use super::conversion::convert_ts_node_to_ir;
+use super::helpers::walk_for_comments;
 
 /// Global parse tree cache (shared across all parse operations)
 ///
@@ -66,26 +68,110 @@ pub fn parse_code(code: &str) -> Tree {
     tree
 }
 
-/// Convert a Tree-Sitter syntax tree to RholangNode IR
+/// Collect all comments from the Tree-Sitter tree
+///
+/// This function walks the entire parse tree, extracts all comment nodes,
+/// and converts them to `CommentNode` instances with position tracking.
+///
+/// # Arguments
+/// * `tree` - The Tree-Sitter tree to collect comments from
+/// * `rope` - The source code as a Rope for text extraction
+///
+/// # Returns
+/// A vector of `CommentNode` instances, sorted by position
+///
+/// # Performance
+/// - Uses efficient tree walking with cursors
+/// - Comments are already sorted by traversal order
+/// - Position deltas computed relative to previous comment
+fn collect_comments(tree: &Tree, rope: &Rope) -> Vec<CommentNode> {
+    let mut ts_comments = Vec::new();
+    walk_for_comments(tree.root_node(), &mut ts_comments);
+
+    let mut comment_nodes = Vec::new();
+    let mut prev_end = Position {
+        row: 0,
+        column: 0,
+        byte: 0,
+    };
+
+    for ts_node in ts_comments {
+        let comment_node = CommentNode::from_ts_node(ts_node, rope, prev_end);
+        // Update prev_end to the end of this comment
+        let comment_start = comment_node.absolute_position(prev_end);
+        prev_end = comment_node.absolute_end(comment_start);
+        comment_nodes.push(comment_node);
+    }
+
+    comment_nodes
+}
+
+/// Convert a Tree-Sitter syntax tree to DocumentIR with comment channel
+///
+/// **Phase 1**: This is the new primary parsing function that returns `DocumentIR`
+/// containing both the semantic tree and the comment channel.
 ///
 /// # Arguments
 /// * `tree` - The Tree-Sitter tree to convert
 /// * `rope` - The source code as a Rope for efficient slicing
 ///
 /// # Returns
-/// The root IR node representing the parsed program
-pub fn parse_to_ir(tree: &Tree, rope: &Rope) -> Arc<RholangNode> {
-    debug!("Parsing Tree-Sitter tree into IR");
+/// A `DocumentIR` containing:
+/// - `root`: The semantic IR tree (without comments)
+/// - `comments`: All comments sorted by position
+///
+/// # Examples
+/// ```rust,ignore
+/// let tree = parse_code(source);
+/// let rope = Rope::from_str(source);
+/// let doc_ir = parse_to_document_ir(&tree, &rope);
+///
+/// // Access semantic tree
+/// let root = &doc_ir.root;
+///
+/// // Access comments
+/// for comment in &doc_ir.comments {
+///     if let Some(lang) = comment.parse_directive() {
+///         println!("Found directive: {}", lang);
+///     }
+/// }
+/// ```
+pub fn parse_to_document_ir(tree: &Tree, rope: &Rope) -> Arc<DocumentIR> {
+    debug!("Parsing Tree-Sitter tree into DocumentIR");
     if tree.root_node().has_error() {
         debug!("Parse tree contains errors");
     }
+
+    // Parse semantic tree (without comments)
     let initial_prev_end = Position {
         row: 0,
         column: 0,
         byte: 0,
     };
-    let (node, _) = convert_ts_node_to_ir(tree.root_node(), rope, initial_prev_end);
-    node
+    let (semantic_root, _) = convert_ts_node_to_ir(tree.root_node(), rope, initial_prev_end);
+
+    // Collect comments into separate channel
+    let comments = collect_comments(tree, rope);
+
+    debug!("Parsed {} comments into comment channel", comments.len());
+
+    Arc::new(DocumentIR::new(semantic_root, comments))
+}
+
+/// Convert a Tree-Sitter syntax tree to RholangNode IR
+///
+/// **DEPRECATED**: This function is maintained for backward compatibility.
+/// New code should use `parse_to_document_ir()` to access the comment channel.
+///
+/// # Arguments
+/// * `tree` - The Tree-Sitter tree to convert
+/// * `rope` - The source code as a Rope for efficient slicing
+///
+/// # Returns
+/// The root IR node representing the parsed program (comments excluded)
+#[deprecated(since = "0.1.0", note = "Use parse_to_document_ir() to access comment channel")]
+pub fn parse_to_ir(tree: &Tree, rope: &Rope) -> Arc<RholangNode> {
+    parse_to_document_ir(tree, rope).root.clone()
 }
 
 /// Update a syntax tree incrementally based on text changes

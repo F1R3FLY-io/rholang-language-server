@@ -251,7 +251,7 @@ mod tests {
     use std::any::Any;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use crate::ir::semantic_node::{NodeBase, RelativePosition, SemanticCategory, Metadata};
+    use crate::ir::semantic_node::{NodeBase, Position, SemanticCategory, Metadata};
     use crate::ir::symbol_resolution::{SymbolResolver, SymbolLocation, ResolutionConfidence, SymbolKind};
     use crate::lsp::features::traits::{HoverProvider, CompletionProvider, DocumentationProvider, LanguageAdapter};
 
@@ -270,7 +270,7 @@ mod tests {
 
             Self {
                 base: NodeBase::new_simple(
-                    RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+                    Position { row: 0, column: 0, byte: 0 },
                     name_len,
                     0,
                     name_len,

@@ -623,6 +623,7 @@ impl RholangBackend {
                                 definition_location: symbol_decl.definition.as_ref().map(|d| d.position),
                                 contract_pattern: None,
                                 contract_identifier_node: None,
+                                documentation: None,
                             }));
                         }
                     }
@@ -653,6 +654,7 @@ impl RholangBackend {
                 definition_location: symbol_decl.definition.as_ref().map(|d| d.position),
                 contract_pattern: None,
                 contract_identifier_node: None,
+                documentation: None,
             }));
         }
 
@@ -691,6 +693,7 @@ impl RholangBackend {
                 definition_location: symbol_decl.definition.as_ref().map(|d| d.position),
                 contract_pattern: None,
                 contract_identifier_node: None,
+                documentation: None,
             }));
         }
 
@@ -746,6 +749,7 @@ impl RholangBackend {
                         definition_location: symbol_decl.definition.as_ref().map(|d| d.position),
                         contract_pattern: None,
                         contract_identifier_node: None,
+                        documentation: None,
                     }));
                 }
             }
@@ -790,6 +794,7 @@ impl RholangBackend {
                         definition_location: symbol_decl.definition.as_ref().map(|d| d.position),
                         contract_pattern: None,
                         contract_identifier_node: None,
+                        documentation: None,
                     }));
                 }
             }

@@ -9,7 +9,7 @@ use archery::ArcK;
 
 use crate::ir::rholang_node::{
     BinOperator, RholangBundleType, CommentKind, RholangNode, NodeBase, Metadata, RholangSendType, UnaryOperator,
-    RholangVarRefKind, Position, RelativePosition,
+    RholangVarRefKind, Position,
 };
 use crate::ir::visitor::Visitor;
 
@@ -504,7 +504,7 @@ impl Visitor for PrettyPrinter {
         Arc::clone(node)
     }
 
-    fn visit_send(&self, node: &Arc<RholangNode>, _base: &NodeBase, channel: &Arc<RholangNode>, send_type: &RholangSendType, _send_type_delta: &RelativePosition, inputs: &Vector<Arc<RholangNode>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
+    fn visit_send(&self, node: &Arc<RholangNode>, _base: &NodeBase, channel: &Arc<RholangNode>, send_type: &RholangSendType, _send_type_pos: &Position, inputs: &Vector<Arc<RholangNode>, ArcK>, metadata: &Option<Arc<Metadata>>) -> Arc<RholangNode> {
         self.start_map();
         self.add_field("type", |p| p.append("\"send\""));
         self.add_base_fields(node);
@@ -1010,7 +1010,7 @@ assert_visitor_completeness!(
 mod tests {
     use super::*;
     use indoc::indoc;
-    use crate::ir::rholang_node::{Metadata, RholangNode, NodeBase, RelativePosition};
+    use crate::ir::rholang_node::{Metadata, RholangNode, NodeBase, Position};
     use crate::ir::transforms::pretty_printer::format;
     use std::sync::Arc;
     use ropey::Rope;
@@ -1594,7 +1594,8 @@ Nil"#;
         let ir = crate::tree_sitter::parse_to_ir(&tree, &rope);
 
         let actual = format(&ir, true, &rope).expect("Failed to format tree");
-        // Comments are in extras and filtered out of the IR, so only Nil remains
+        // Phase 1: Comments are in separate channel, so semantic tree only contains Nil
+        // Position is absolute in source file (21 bytes = "// This is a comment\n")
         let expected = indoc! {r#"
             {:type "nil"
              :start_line 1
@@ -1717,7 +1718,7 @@ Nil"#;
 
     /// Creates a Nil node with default metadata containing a version field.
     fn create_nil_node() -> Arc<RholangNode> {
-        let base = NodeBase::new_simple(RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 3, 0, 3);
+        let base = NodeBase::new_simple(Position { row: 0, column: 0, byte: 0 }, 3, 0, 3);
         let mut data = HashMap::new();
         data.insert("version".to_string(), Arc::new(0_usize) as Arc<dyn Any + Send + Sync>);
         let metadata = Some(Arc::new(data));

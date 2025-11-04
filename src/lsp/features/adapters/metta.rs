@@ -223,8 +223,7 @@ impl GotoDefinitionProvider for MettaGotoDefinitionProvider {
                             node.type_name()
                         );
                         // Update prev_end and continue to next root
-                        let start = root.absolute_position(prev_end);
-                        prev_end = root.absolute_end(start);
+                        prev_end = root.base().end();
                         continue;
                     }
                 };
@@ -280,8 +279,7 @@ impl GotoDefinitionProvider for MettaGotoDefinitionProvider {
             }
 
             // Update prev_end for next root
-            let start = root.absolute_position(prev_end);
-            prev_end = root.absolute_end(start);
+            prev_end = root.base().end();
         }
 
         debug!(

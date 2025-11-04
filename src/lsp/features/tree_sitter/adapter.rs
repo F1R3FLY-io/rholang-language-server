@@ -14,7 +14,7 @@ use tower_lsp::lsp_types::{
 };
 use tracing::{debug, trace};
 
-use crate::ir::semantic_node::{Metadata, NodeBase, Position, RelativePosition, SemanticCategory, SemanticNode};
+use crate::ir::semantic_node::{Metadata, NodeBase, Position, SemanticCategory, SemanticNode};
 use crate::ir::symbol_resolution::{SymbolResolver, SymbolLocation, ResolutionContext, ResolutionConfidence, SymbolKind};
 use crate::lsp::features::traits::{
     CompletionContext, CompletionProvider, DocumentationContext, DocumentationProvider,

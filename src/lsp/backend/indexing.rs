@@ -27,9 +27,10 @@ use crate::ir::rholang_node::{RholangNode, compute_absolute_positions, collect_c
 use crate::ir::symbol_table::SymbolTable;
 use crate::ir::transforms::symbol_table_builder::SymbolTableBuilder;
 use crate::ir::transforms::symbol_index_builder::SymbolIndexBuilder;
+use crate::ir::transforms::documentation_attacher::DocumentationAttacher;
 use crate::language_regions::{ChannelFlowAnalyzer, DirectiveParser, SemanticDetector};
 use crate::lsp::models::{CachedDocument, DocumentLanguage};
-use crate::tree_sitter::{parse_code, parse_to_ir};
+use crate::tree_sitter::{parse_code, parse_to_ir, parse_to_document_ir};
 
 use super::state::{RholangBackend, WorkspaceChangeEvent, WorkspaceChangeType};
 
@@ -44,7 +45,7 @@ impl RholangBackend {
     /// This function performs CPU-intensive work (parsing, IR transformation, symbol building) and should
     /// be called via `tokio::task::spawn_blocking` or from a Rayon thread pool.
     pub(super) fn process_document_blocking(
-        ir: Arc<RholangNode>,
+        document_ir: Arc<crate::ir::DocumentIR>,
         uri: &Url,
         text: &Rope,
         content_hash: u64,
@@ -53,6 +54,8 @@ impl RholangBackend {
         version_counter: &Arc<std::sync::atomic::AtomicI32>,
         rholang_symbols: Option<Arc<crate::lsp::rholang_contracts::RholangContracts>>,
     ) -> Result<CachedDocument, String> {
+        // Extract semantic IR from DocumentIR
+        let ir = document_ir.root.clone();
         // Priority 1: Incremental symbol updates
         // Clear old symbols for this URI from global_table BEFORE indexing
         // This ensures we don't have stale symbols from previous versions of the file
@@ -76,6 +79,14 @@ impl RholangBackend {
             id: "symbol_table_builder".to_string(),
             dependencies: vec![],
             kind: crate::ir::pipeline::TransformKind::Specific(builder.clone()),
+        });
+
+        // Documentation attacher for doc comment attachment (Phase 3)
+        let doc_attacher = Arc::new(DocumentationAttacher::new(document_ir.clone()));
+        pipeline.add_transform(crate::ir::pipeline::Transform {
+            id: "documentation_attacher".to_string(),
+            dependencies: vec![],
+            kind: crate::ir::pipeline::TransformKind::Specific(doc_attacher),
         });
 
         // Apply pipeline transformations first to get transformed IR
@@ -121,10 +132,10 @@ impl RholangBackend {
             }
             DocumentLanguage::Metta => {
                 use crate::ir::unified_ir::UnifiedIR;
-                use crate::ir::semantic_node::{NodeBase, RelativePosition};
+                use crate::ir::semantic_node::{NodeBase, Position};
                 Arc::new(UnifiedIR::Error {
                     base: NodeBase::new_simple(
-                        RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+                        Position { row: 0, column: 0, byte: 0 },
                         0,
                         0,
                         0
@@ -144,6 +155,7 @@ impl RholangBackend {
 
         Ok(CachedDocument {
             ir: transformed_ir,
+            document_ir: Some(document_ir),  // Phase 1: Populated with comment channel
             metta_ir: None,
             unified_ir,
             language,
@@ -162,7 +174,7 @@ impl RholangBackend {
     ///
     /// This async wrapper delegates CPU-intensive work to `process_document_blocking` via `spawn_blocking`
     /// to prevent blocking the tokio runtime.
-    pub(super) async fn process_document(&self, ir: Arc<RholangNode>, uri: &Url, text: &Rope, content_hash: u64) -> Result<CachedDocument, String> {
+    pub(super) async fn process_document(&self, document_ir: Arc<crate::ir::DocumentIR>, uri: &Url, text: &Rope, content_hash: u64) -> Result<CachedDocument, String> {
         // Lock and clone global_table for use in blocking task
         let global_table = Arc::new(self.workspace.global_table.read().await.clone());
         let global_index = self.workspace.global_index.clone();
@@ -175,7 +187,7 @@ impl RholangBackend {
 
         tokio::task::spawn_blocking(move || {
             Self::process_document_blocking(
-                ir,
+                document_ir,
                 &uri_clone,
                 &text_clone,
                 content_hash,
@@ -255,10 +267,10 @@ impl RholangBackend {
                 // MeTTa support not yet implemented - for now, just wrap as UnifiedIR
                 // TODO: Implement MeTTa parsing and conversion
                 use crate::ir::unified_ir::UnifiedIR;
-                use crate::ir::semantic_node::{NodeBase, RelativePosition};
+                use crate::ir::semantic_node::{NodeBase, Position};
                 Arc::new(UnifiedIR::Error {
                     base: NodeBase::new_simple(
-                        RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+                        Position { row: 0, column: 0, byte: 0 },
                         0,
                         0,
                         0
@@ -278,6 +290,7 @@ impl RholangBackend {
 
         Ok(CachedDocument {
             ir: transformed_ir,
+            document_ir: None, // TODO: Populate in Phase 1 implementation
             metta_ir: None, // Will be populated for MeTTa files
             unified_ir,
             language,
@@ -335,8 +348,8 @@ impl RholangBackend {
 
                 let tree = Arc::new(tree.unwrap_or_else(|| parse_code(text)));
                 let rope = Rope::from_str(text);
-                let ir = parse_to_ir(&tree, &rope);
-                let cached = self.process_document(ir, uri, &rope, content_hash).await?;
+                let document_ir = parse_to_document_ir(&tree, &rope);
+                let cached = self.process_document(document_ir, uri, &rope, content_hash).await?;
 
                 // Detect embedded language regions asynchronously using hybrid rayon worker
                 // This approach provides 18-19x better throughput than synchronous detection
@@ -393,7 +406,7 @@ impl RholangBackend {
         content_hash: u64,
     ) -> Result<CachedDocument, String> {
         use crate::parsers::MettaParser;
-        use crate::ir::semantic_node::{NodeBase, RelativePosition};
+        use crate::ir::semantic_node::{NodeBase, Position};
         use crate::ir::unified_ir::UnifiedIR;
 
         debug!("Indexing MeTTa file: {}", uri);
@@ -410,7 +423,7 @@ impl RholangBackend {
         // This is temporary - in future we'll refactor CachedDocument to use Arc<dyn SemanticNode>
         let placeholder_ir = Arc::new(RholangNode::Nil {
             base: NodeBase::new_simple(
-                RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+                Position { row: 0, column: 0, byte: 0 },
                 text.len(),
                 0,
                 text.len(),
@@ -429,7 +442,7 @@ impl RholangBackend {
         } else {
             Arc::new(UnifiedIR::Error {
                 base: NodeBase::new_simple(
-                    RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+                    Position { row: 0, column: 0, byte: 0 },
                     0,
                     0,
                     0,
@@ -454,6 +467,7 @@ impl RholangBackend {
 
         let cached_doc = CachedDocument {
             ir: placeholder_ir,
+            document_ir: None, // TODO: Populate in Phase 1 implementation
             metta_ir: Some(metta_nodes),
             unified_ir,
             language: DocumentLanguage::Metta,
@@ -592,7 +606,7 @@ impl RholangBackend {
                         if let Ok(text) = std::fs::read_to_string(path) {
                             let rope = Rope::from_str(&text);
                             let tree = Arc::new(parse_code(&text));
-                            let ir = parse_to_ir(&tree, &rope);
+                            let document_ir = parse_to_document_ir(&tree, &rope);
 
                             use std::collections::hash_map::DefaultHasher;
                             let mut hasher = DefaultHasher::new();
@@ -601,7 +615,7 @@ impl RholangBackend {
 
                             // CPU-intensive work happens here in parallel
                             let result = Self::process_document_blocking(
-                                ir,
+                                document_ir,
                                 &uri,
                                 &rope,
                                 content_hash,

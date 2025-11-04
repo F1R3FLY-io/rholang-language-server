@@ -1,3 +1,4 @@
+pub mod documentation_attacher;
 pub mod document_symbol_visitor;
 pub mod generic_symbol_collector;
 pub mod metta_symbol_collector;

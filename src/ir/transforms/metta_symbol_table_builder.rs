@@ -9,7 +9,7 @@ use tower_lsp::lsp_types::{Location, Position as LspPosition, Range, Url};
 
 use crate::ir::metta_node::MettaNode;
 use crate::ir::metta_pattern_matching::MettaPatternMatcher;
-use crate::ir::semantic_node::Position;
+use crate::ir::semantic_node::{Position, SemanticNode};
 
 /// Type of symbol in MeTTa
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,8 +177,6 @@ pub struct MettaSymbolTableBuilder {
     scopes: Vec<MettaScope>,
     all_occurrences: Vec<SymbolOccurrence>,
     next_scope_id: usize,
-    /// Absolute positions cache
-    positions: HashMap<usize, (Position, Position)>,
     /// Pattern matcher for function definitions
     pattern_matcher: MettaPatternMatcher,
     /// Document URI
@@ -205,7 +203,6 @@ impl MettaSymbolTableBuilder {
             scopes: vec![global_scope],
             all_occurrences: Vec::new(),
             next_scope_id: 1,
-            positions: HashMap::new(),
             pattern_matcher: MettaPatternMatcher::new(),
             uri,
             is_concatenated,
@@ -225,19 +222,9 @@ impl MettaSymbolTableBuilder {
 
     /// Build symbol table from MeTTa IR nodes
     pub fn build(mut self, nodes: &[Arc<MettaNode>]) -> MettaSymbolTable {
-        // Compute absolute positions for all nodes together
-        // Each node's position is relative to the previous node's end
-        let mut prev_end = Position { row: 0, column: 0, byte: 0 };
-
-        for node in nodes {
-            // Import the helper function from metta_node module
-            use crate::ir::metta_node::compute_positions_with_prev_end;
-            let (node_positions, new_prev_end) = compute_positions_with_prev_end(node, prev_end);
-            self.positions.extend(node_positions);
-            prev_end = new_prev_end;
-        }
-
         // Process each top-level node in global scope
+        // Note: Positions are now absolute and stored in NodeBase directly,
+        // so we no longer need to compute them here.
         for node in nodes {
             self.process_node(node, 0);
         }
@@ -295,11 +282,9 @@ impl MettaSymbolTableBuilder {
         };
 
         // Get the pattern's position to create a location
-        let node_ptr = &**pattern as *const MettaNode as usize;
-        let (start, end) = match self.positions.get(&node_ptr) {
-            Some(pos) => pos,
-            None => return, // Position not computed yet
-        };
+        // Positions are now absolute and stored directly in NodeBase
+        let start = pattern.as_ref().base().start();
+        let end = pattern.as_ref().base().end();
 
         // Create location for this definition
         let location = Location {
@@ -507,18 +492,18 @@ impl MettaSymbolTableBuilder {
     }
 
     fn get_node_range(&self, node: &Arc<MettaNode>) -> Option<Range> {
-        let key = &**node as *const MettaNode as usize;
-        self.positions.get(&key).map(|(start, end)| {
-            Range {
-                start: LspPosition {
-                    line: start.row as u32,
-                    character: start.column as u32,
-                },
-                end: LspPosition {
-                    line: end.row as u32,
-                    character: end.column as u32,
-                },
-            }
+        // Positions are now absolute and stored directly in NodeBase
+        let start = node.as_ref().base().start();
+        let end = node.as_ref().base().end();
+        Some(Range {
+            start: LspPosition {
+                line: start.row as u32,
+                character: start.column as u32,
+            },
+            end: LspPosition {
+                line: end.row as u32,
+                character: end.column as u32,
+            },
         })
     }
 }
@@ -539,11 +524,11 @@ fn position_in_range(position: &LspPosition, range: &Range) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::semantic_node::{NodeBase, RelativePosition};
+    use crate::ir::semantic_node::{NodeBase, };
 
     fn test_base() -> NodeBase {
         NodeBase::new_simple(
-            RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+            Position { row: 0, column: 0, byte: 0 },
             10,
             0,
             10,

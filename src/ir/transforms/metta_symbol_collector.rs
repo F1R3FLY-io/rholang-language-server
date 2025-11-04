@@ -163,13 +163,12 @@ fn is_important_operation(op: &str) -> bool {
 /// Convert a MeTTa node to an LSP Range
 fn node_to_range(node: &Arc<MettaNode>) -> Range {
     let base = node.base();
-    let rel_start = base.relative_start();
-    let start_line = rel_start.delta_lines.max(0) as u32;
-    let start_char = rel_start.delta_columns.max(0) as u32;
-
-    // Approximate end position (we don't have precise end positions yet)
-    let end_line = start_line;
-    let end_char = start_char + base.length() as u32;
+    let start = base.start();
+    let end = base.end();
+    let start_line = start.row as u32;
+    let start_char = start.column as u32;
+    let end_line = end.row as u32;
+    let end_char = end.column as u32;
 
     Range {
         start: LspPosition {
@@ -186,11 +185,11 @@ fn node_to_range(node: &Arc<MettaNode>) -> Range {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::semantic_node::{NodeBase, RelativePosition};
+    use crate::ir::semantic_node::{NodeBase, Position};
 
     fn test_base() -> NodeBase {
         NodeBase::new_simple(
-            RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+            Position { row: 0, column: 0, byte: 0 },
             10,
             0,
             10,

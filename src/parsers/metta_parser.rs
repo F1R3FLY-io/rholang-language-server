@@ -9,7 +9,6 @@ use mettatron::ir::{SExpr, Span as MettaSpan};
 
 use crate::ir::metta_node::{MettaNode, MettaVariableType};
 use crate::ir::semantic_node::{NodeBase, Position};
-use crate::ir::rholang_node::RelativePosition;
 use crate::parsers::position_utils::create_simple_node_base;
 
 /// Wrapper around MeTTaTron's Tree-Sitter parser
@@ -322,7 +321,7 @@ impl MettaParser {
 
             let scrutinee = Arc::new(MettaNode::SExpr {
                 base: NodeBase::new_simple(
-                    RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+                    Position { row: 0, column: 0, byte: 0 },
                     scrutinee_length,
                     scrutinee_span_lines,
                     scrutinee_span_columns,
@@ -502,7 +501,7 @@ impl MettaParser {
         } else {
             // No span information - create a minimal base with zero deltas
             NodeBase::new_simple(
-                RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+                Position { row: 0, column: 0, byte: 0 },
                 length,
                 0,
                 length,

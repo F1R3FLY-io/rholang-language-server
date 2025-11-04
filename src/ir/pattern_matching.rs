@@ -64,11 +64,7 @@ impl RholangPatternMatcher {
             if bytes.is_empty() {
                 return Ok(Arc::new(RholangNode::Nil {
                     base: crate::ir::rholang_node::NodeBase::new_simple(
-                        crate::ir::rholang_node::RelativePosition {
-                            delta_lines: 0,
-                            delta_columns: 0,
-                            delta_bytes: 0,
-                        },
+                        crate::ir::rholang_node::Position { row: 0, column: 0, byte: 0 },
                         0, 0, 0
                     ),
                     metadata: None,
@@ -106,11 +102,7 @@ impl RholangPatternMatcher {
                         Ok(Arc::new(RholangNode::LongLiteral {
                             value: num,
                             base: crate::ir::rholang_node::NodeBase::new_simple(
-                                crate::ir::rholang_node::RelativePosition {
-                                    delta_lines: 0,
-                                    delta_columns: 0,
-                                    delta_bytes: 0,
-                                },
+                                crate::ir::rholang_node::Position { row: 0, column: 0, byte: 0 },
                                 0, 0, symbol_bytes.len()
                             ),
                             metadata: None,
@@ -126,11 +118,7 @@ impl RholangPatternMatcher {
                         Ok(Arc::new(RholangNode::StringLiteral {
                             value,
                             base: crate::ir::rholang_node::NodeBase::new_simple(
-                                crate::ir::rholang_node::RelativePosition {
-                                    delta_lines: 0,
-                                    delta_columns: 0,
-                                    delta_bytes: 0,
-                                },
+                                crate::ir::rholang_node::Position { row: 0, column: 0, byte: 0 },
                                 0, 0, symbol_bytes.len()
                             ),
                             metadata: None,
@@ -143,11 +131,7 @@ impl RholangPatternMatcher {
                     // TODO: Parse compound expressions recursively
                     Ok(Arc::new(RholangNode::Nil {
                         base: crate::ir::rholang_node::NodeBase::new_simple(
-                            crate::ir::rholang_node::RelativePosition {
-                                delta_lines: 0,
-                                delta_columns: 0,
-                                delta_bytes: 0,
-                            },
+                            crate::ir::rholang_node::Position { row: 0, column: 0, byte: 0 },
                             0, 0, 0
                         ),
                         metadata: None,
@@ -159,11 +143,7 @@ impl RholangPatternMatcher {
                     Ok(Arc::new(RholangNode::Var {
                         name: "$_".to_string(),
                         base: crate::ir::rholang_node::NodeBase::new_simple(
-                            crate::ir::rholang_node::RelativePosition {
-                                delta_lines: 0,
-                                delta_columns: 0,
-                                delta_bytes: 0,
-                            },
+                            crate::ir::rholang_node::Position { row: 0, column: 0, byte: 0 },
                             0, 0, 1
                         ),
                         metadata: None,
@@ -175,11 +155,7 @@ impl RholangPatternMatcher {
                     Ok(Arc::new(RholangNode::Var {
                         name: "$_".to_string(),
                         base: crate::ir::rholang_node::NodeBase::new_simple(
-                            crate::ir::rholang_node::RelativePosition {
-                                delta_lines: 0,
-                                delta_columns: 0,
-                                delta_bytes: 0,
-                            },
+                            crate::ir::rholang_node::Position { row: 0, column: 0, byte: 0 },
                             0, 0, 1
                         ),
                         metadata: None,
@@ -263,11 +239,7 @@ impl RholangPatternMatcher {
                 matches.push((
                     Arc::new(RholangNode::Nil {
                         base: crate::ir::rholang_node::NodeBase::new_simple(
-                            crate::ir::rholang_node::RelativePosition {
-                                delta_lines: 0,
-                                delta_columns: 0,
-                                delta_bytes: 0,
-                            },
+                            crate::ir::rholang_node::Position { row: 0, column: 0, byte: 0 },
                             0, 0, 0
                         ),
                         metadata: None,
@@ -410,11 +382,7 @@ impl RholangPatternMatcher {
                                 // Fallback to Nil
                                 Arc::new(RholangNode::Nil {
                                     base: crate::ir::rholang_node::NodeBase::new_simple(
-                                        crate::ir::rholang_node::RelativePosition {
-                                            delta_lines: 0,
-                                            delta_columns: 0,
-                                            delta_bytes: 0,
-                                        },
+                                        crate::ir::rholang_node::Position { row: 0, column: 0, byte: 0 },
                                         0, 0, 0
                                     ),
                                     metadata: None,
@@ -425,11 +393,7 @@ impl RholangPatternMatcher {
                         // No binding found for max_idx - shouldn't happen
                         Arc::new(RholangNode::Nil {
                             base: crate::ir::rholang_node::NodeBase::new_simple(
-                                crate::ir::rholang_node::RelativePosition {
-                                    delta_lines: 0,
-                                    delta_columns: 0,
-                                    delta_bytes: 0,
-                                },
+                                crate::ir::rholang_node::Position { row: 0, column: 0, byte: 0 },
                                 0, 0, 0
                             ),
                             metadata: None,
@@ -439,11 +403,7 @@ impl RholangPatternMatcher {
                     // No variables bound - shouldn't happen, but return Nil as fallback
                     Arc::new(RholangNode::Nil {
                         base: crate::ir::rholang_node::NodeBase::new_simple(
-                            crate::ir::rholang_node::RelativePosition {
-                                delta_lines: 0,
-                                delta_columns: 0,
-                                delta_bytes: 0,
-                            },
+                            crate::ir::rholang_node::Position { row: 0, column: 0, byte: 0 },
                             0, 0, 0
                         ),
                         metadata: None,
@@ -489,11 +449,7 @@ impl RholangPatternMatcher {
         let channel = Arc::new(RholangNode::Var {
             name: contract_name.to_string(),
             base: crate::ir::rholang_node::NodeBase::new_simple(
-                crate::ir::rholang_node::RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
-                },
+                crate::ir::rholang_node::Position { row: 0, column: 0, byte: 0 },
                 0, 0, contract_name.len()
             ),
             metadata: None,
@@ -505,11 +461,7 @@ impl RholangPatternMatcher {
             let var_node = Arc::new(RholangNode::Var {
                 name: formal_name.clone(),
                 base: crate::ir::rholang_node::NodeBase::new_simple(
-                    crate::ir::rholang_node::RelativePosition {
-                        delta_lines: 0,
-                        delta_columns: 0,
-                        delta_bytes: 0,
-                    },
+                    crate::ir::rholang_node::Position { row: 0, column: 0, byte: 0 },
                     0, 0, formal_name.len()
                 ),
                 metadata: None,
@@ -521,18 +473,10 @@ impl RholangPatternMatcher {
         let send_pattern = Arc::new(RholangNode::Send {
             channel,
             send_type: crate::ir::rholang_node::RholangSendType::Single,
-            send_type_delta: crate::ir::rholang_node::RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
-            },
+            send_type_pos: crate::ir::rholang_node::Position { row: 0, column: 0, byte: 0 },
             inputs,
             base: crate::ir::rholang_node::NodeBase::new_simple(
-                crate::ir::rholang_node::RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
-                },
+                crate::ir::rholang_node::Position { row: 0, column: 0, byte: 0 },
                 0, 0, 10
             ),
             metadata: None,
@@ -639,17 +583,13 @@ impl Default for RholangPatternMatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::rholang_node::{NodeBase, RelativePosition, RholangSendType};
+    use crate::ir::rholang_node::{NodeBase, Position, RholangSendType};
     use archery::ArcK;
     use rpds::Vector;
 
     fn create_base() -> NodeBase {
         NodeBase::new_simple(
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
-            },
+            Position { row: 0, column: 0, byte: 0 },
             0,  // length
             0,  // span_lines
             0,  // span_columns
@@ -822,11 +762,7 @@ mod tests {
         let pattern = Arc::new(RholangNode::Send {
             channel,
             send_type: RholangSendType::Single,
-            send_type_delta: RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
-            },
+            send_type_pos: Position { row: 0, column: 0, byte: 0 },
             inputs: Vector::<Arc<RholangNode>, ArcK>::new_with_ptr_kind().push_back(input),
             base: create_base(),
             metadata: None,
@@ -856,11 +792,7 @@ mod tests {
         let query = Arc::new(RholangNode::Send {
             channel: query_channel,
             send_type: RholangSendType::Single,
-            send_type_delta: RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
-            },
+            send_type_pos: Position { row: 0, column: 0, byte: 0 },
             inputs: Vector::<Arc<RholangNode>, ArcK>::new_with_ptr_kind().push_back(query_input),
             base: create_base(),
             metadata: None,

@@ -292,14 +292,14 @@ pub fn mork_bindings_to_rholang(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::rholang_node::{NodeBase, RelativePosition};
+    use crate::ir::rholang_node::{NodeBase, Position};
 
     fn create_base() -> NodeBase {
         NodeBase::new_simple(
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
+            Position {
+                row: 0,
+                column: 0,
+                byte: 0,
             },
             0,
             0,
@@ -459,10 +459,10 @@ mod tests {
         let send_node = Arc::new(RholangNode::Send {
             channel,
             send_type: crate::ir::rholang_node::RholangSendType::Single,
-            send_type_delta: RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
+            send_type_pos: Position {
+                row: 0,
+                column: 0,
+                byte: 0,
             },
             inputs,
             base: create_base(),
@@ -625,10 +625,10 @@ mod tests {
         let send = Arc::new(RholangNode::Send {
             channel: var_x,
             send_type: crate::ir::rholang_node::RholangSendType::Single,
-            send_type_delta: RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
+            send_type_pos: Position {
+                row: 0,
+                column: 0,
+                byte: 0,
             },
             inputs: Vector::<Arc<RholangNode>, ArcK>::new_with_ptr_kind().push_back(input),
             base: create_base(),

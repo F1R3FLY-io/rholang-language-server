@@ -41,7 +41,7 @@ pub fn find_node_at_position<'a>(
     debug!("find_node_at_position: Looking for node at position ({}, {})", position.row, position.column);
     let result = find_node_at_position_recursive(root, position, &Position { row: 0, column: 0, byte: 0 });
     if let Some(node) = result {
-        let start = node.absolute_position(Position { row: 0, column: 0, byte: 0 });
+        let start = node.base().start();
         debug!("find_node_at_position: FOUND node type={}, start=({}, {})", node.type_name(), start.row, start.column);
     } else {
         debug!("find_node_at_position: No node found");
@@ -68,9 +68,9 @@ fn find_node_at_position_recursive<'a>(
 ) -> Option<&'a dyn SemanticNode> {
     use tracing::trace;
 
-    // Compute this node's absolute start and end positions
-    let start = node.absolute_position(*prev_end);
-    let end = node.absolute_end(start);
+    // Get this node's absolute start and end positions
+    let start = node.base().start();
+    let end = node.base().end();
 
     trace!(
         "Checking node type={}, start=({}, {}), end=({}, {}), target=({}, {})",
@@ -84,6 +84,12 @@ fn find_node_at_position_recursive<'a>(
     if !position_in_range(target, &start, &end) {
         trace!("Position not in range, skipping");
         return None;
+    }
+
+    // DEBUG: Log Contract nodes and their spans
+    if node.type_name() == "Rholang::Contract" {
+        eprintln!("CONTRACT FOUND: start=({}, {}), end=({}, {}), target=({}, {})",
+            start.row, start.column, end.row, end.column, target.row, target.column);
     }
 
     trace!("Position IS in range, checking {} children", node.children_count());
@@ -127,8 +133,8 @@ fn find_node_at_position_recursive<'a>(
 
     for i in 0..node.children_count() {
         if let Some(child) = node.child_at(i) {
-            let child_start = child.absolute_position(child_prev_end);
-            let child_end = child.absolute_end(child_start);
+            let child_start = child.base().start();
+            let child_end = child.base().end();
 
             // DEBUG: Log each child's computed position
             if node.type_name().contains("Par") || node.type_name().contains("Contract") || node.type_name().contains("Tuple") {
@@ -235,9 +241,9 @@ fn find_node_with_path_recursive<'a>(
     prev_end: &Position,
     path: &mut Vec<&'a dyn SemanticNode>,
 ) -> Option<&'a dyn SemanticNode> {
-    // Compute this node's absolute start and end positions
-    let start = node.absolute_position(*prev_end);
-    let end = node.absolute_end(start);
+    // Get this node's absolute start and end positions
+    let start = node.base().start();
+    let end = node.base().end();
 
     // Check if target position is within this node's span
     if !position_in_range(target, &start, &end) {
@@ -256,8 +262,7 @@ fn find_node_with_path_recursive<'a>(
                 return Some(found); // Found more specific node in child
             }
             // Update prev_end for next sibling
-            let child_start = child.absolute_position(child_prev_end);
-            child_prev_end = child.absolute_end(child_start);
+            child_prev_end = child.base().end();
         }
     }
 
@@ -301,7 +306,7 @@ pub fn ir_to_lsp_position(ir_pos: &Position) -> LspPosition {
 mod tests {
     use super::*;
     use std::any::Any;
-    use crate::ir::semantic_node::{NodeBase, RelativePosition, SemanticCategory, Metadata};
+    use crate::ir::semantic_node::{NodeBase, Position, SemanticCategory, Metadata};
 
     // Mock node for testing
     #[derive(Debug)]
@@ -313,14 +318,14 @@ mod tests {
 
     impl MockNode {
         fn new(
-            relative_start: RelativePosition,
+            start: Position,
             length: usize,
             span_lines: usize,
             span_columns: usize,
             category: SemanticCategory,
         ) -> Self {
             Self {
-                base: NodeBase::new_simple(relative_start, length, span_lines, span_columns),
+                base: NodeBase::new_simple(start, length, span_lines, span_columns),
                 category,
                 children: vec![],
             }
@@ -370,7 +375,7 @@ mod tests {
     fn test_find_node_at_position_root() {
         // Root node: starts at (0, 0), length 10
         let root = MockNode::new(
-            RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+            Position { row: 0, column: 0, byte: 0 },
             10,
             0,
             10,
@@ -390,7 +395,7 @@ mod tests {
         // Root node: (0, 0), length 20
         // Child node: starts after root start + 5 bytes
         let child = MockNode::new(
-            RelativePosition { delta_lines: 0, delta_columns: 5, delta_bytes: 5 },
+            Position { row: 0, column: 5, byte: 5 },
             5,
             0,
             5,
@@ -398,7 +403,7 @@ mod tests {
         );
 
         let root = MockNode::new(
-            RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+            Position { row: 0, column: 0, byte: 0 },
             20,
             0,
             20,
@@ -416,7 +421,7 @@ mod tests {
     #[test]
     fn test_find_node_with_path() {
         let child = MockNode::new(
-            RelativePosition { delta_lines: 0, delta_columns: 5, delta_bytes: 5 },
+            Position { row: 0, column: 5, byte: 5 },
             5,
             0,
             5,
@@ -424,7 +429,7 @@ mod tests {
         );
 
         let root = MockNode::new(
-            RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+            Position { row: 0, column: 0, byte: 0 },
             20,
             0,
             20,

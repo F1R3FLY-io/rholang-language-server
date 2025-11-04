@@ -507,24 +507,12 @@ fn compute_positions_helper(
     prev_end: Position,
     positions: &mut HashMap<usize, (Position, Position)>,
 ) -> Position {
-    use crate::ir::rholang_node::compute_end_position;
-
     let base = node.base();
     let key = &**node as *const MettaNode as usize;
-    let relative_start = base.relative_start();
 
-    // Compute absolute start position from previous end + deltas
-    let start = Position {
-        row: (prev_end.row as i32 + relative_start.delta_lines) as usize,
-        column: if relative_start.delta_lines == 0 {
-            (prev_end.column as i32 + relative_start.delta_columns) as usize
-        } else {
-            relative_start.delta_columns as usize
-        },
-        byte: prev_end.byte + relative_start.delta_bytes,
-    };
-
-    let end = compute_end_position(start, base.span_lines(), base.span_columns(), base.length());
+    // NodeBase now stores absolute positions
+    let start = base.start();
+    let end = base.end();
 
     // Store this node's position
     positions.insert(key, (start, end));
@@ -600,14 +588,14 @@ fn compute_positions_helper(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::rholang_node::RelativePosition;
+    use crate::ir::semantic_node::Position;
 
     fn test_base() -> NodeBase {
         NodeBase::new_simple(
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
+            Position {
+                row: 0,
+                column: 0,
+                byte: 0,
             },
             10,
             0,

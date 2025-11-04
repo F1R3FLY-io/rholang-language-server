@@ -15,7 +15,7 @@ use ropey::Rope;
 
 use crate::ir::rholang_node::{
     BinOperator, RholangBundleType, RholangNode, NodeBase, RholangSendType,
-    UnaryOperator, RholangVarRefKind, Position, RelativePosition,
+    UnaryOperator, RholangVarRefKind, Position,
 };
 use crate::ir::semantic_node::SemanticNode;
 use crate::parsers::position_utils::create_node_base_from_absolute;
@@ -54,22 +54,33 @@ fn get_default_metadata() -> Arc<HashMap<String, Arc<dyn Any + Send + Sync>>> {
 
 /// Creates a NodeBase with correct length based on actual content extent.
 ///
-/// This is a compatibility wrapper around `position_utils::create_node_base_from_absolute`.
-/// It maintains the same signature as the original implementation for backward compatibility
-/// with the Rholang parser's call-by-value pattern.
+/// Simplified for absolute position tracking - no more delta computation.
 ///
 /// # Arguments
-/// * `absolute_start` - The absolute start position of the node
+/// * `absolute_start` - The absolute start position of the node (from Tree-Sitter)
 /// * `content_end` - The content end position (last child's end, for semantic operations)
 /// * `syntactic_end` - The syntactic end position (includes closing delimiters, for reconstruction)
-/// * `prev_end` - The previous sibling's end position (for computing deltas)
 ///
 /// # Note
-/// This function takes `prev_end` by value (not &mut) for backward compatibility.
-/// The common position_utils module provides the underlying implementation.
-fn create_correct_node_base(absolute_start: Position, content_end: Position, syntactic_end: Position, prev_end: Position) -> NodeBase {
-    let mut prev_end_mut = prev_end;
-    create_node_base_from_absolute(absolute_start, syntactic_end, &mut prev_end_mut, Some(content_end))
+/// prev_end parameter removed - no longer needed with absolute positioning
+fn create_correct_node_base(absolute_start: Position, content_end: Position, syntactic_end: Position) -> NodeBase {
+    let content_length = content_end.byte - absolute_start.byte;
+    let syntactic_length = syntactic_end.byte - absolute_start.byte;
+
+    let span_lines = syntactic_end.row - absolute_start.row;
+    let span_columns = if span_lines == 0 {
+        syntactic_end.column - absolute_start.column
+    } else {
+        syntactic_end.column
+    };
+
+    NodeBase::new(
+        absolute_start,
+        content_length,
+        syntactic_length,
+        span_lines,
+        span_columns,
+    )
 }
 
 /// Fast discriminant check for Par nodes without full pattern matching.
@@ -109,34 +120,13 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
         byte: end_byte,
     };
 
-    let delta_lines = absolute_start.row as i32 - prev_end.row as i32;
-    let delta_columns = if delta_lines == 0 {
-        absolute_start.column as i32 - prev_end.column as i32
-    } else {
-        absolute_start.column as i32
-    };
-    // The delta_bytes must include bytes for whitespace and newlines to maintain accurate byte offsets.
-    let delta_bytes = absolute_start.byte - prev_end.byte;
-
-    // Debug: log Tree-Sitter reported positions for nodes around byte 14738, 14831 (Input), 14880 (New), and 14932
-    if (absolute_start.byte >= 14730 && absolute_start.byte <= 14810) ||
-       (absolute_start.byte >= 14825 && absolute_start.byte <= 14950) {
-        debug!("Tree-Sitter '{}' node: start_byte={}, end_byte={}, length={}, prev_end.byte={}, delta_bytes={}, absolute_start.byte={}",
-               ts_node.kind(), start_byte, end_byte,
-               end_byte - start_byte, prev_end.byte, delta_bytes, absolute_start.byte);
-    }
-
-    // Hot path: removed per-node position logging (fires for every AST node during parsing)
-    // Use RUST_LOG=trace for detailed position tracking
-    let relative_start = RelativePosition {
-        delta_lines,
-        delta_columns,
-        delta_bytes,
-    };
+    // Absolute positioning: Tree-Sitter provides correct positions, we preserve them directly
+    // No more delta computation - positions are stored as-is from Tree-Sitter
     trace!(
-        "RholangNode '{}': prev_end={:?}, start={:?}, end={:?}, delta=({}, {}, {})",
-        ts_node.kind(), prev_end, absolute_start, absolute_end, delta_lines, delta_columns, delta_bytes
+        "RholangNode '{}': prev_end={:?}, start={:?}, end={:?}",
+        ts_node.kind(), prev_end, absolute_start, absolute_end
     );
+
     let length = absolute_end.byte - absolute_start.byte;
     let span_lines = absolute_end.row - absolute_start.row;
     let span_columns = if span_lines == 0 {
@@ -147,7 +137,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
     // Use new_simple() for most nodes - they don't have closing delimiters
     // Nodes with delimiters (Block, Parenthesized, List, Set, Map, etc.) will override this
     let base = NodeBase::new_simple(
-        relative_start,
+        absolute_start,
         length,
         span_lines,
         span_columns,
@@ -166,6 +156,14 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 // Skip comments - they're in extras and don't belong in the IR
                 let kind_id = child.kind_id();
                 if is_comment(kind_id) {
+                    // FIX: Update current_prev_end to skip over comment's bytes
+                    // Otherwise next child will have incorrect position reference
+                    let comment_end_pos = child.end_position();
+                    current_prev_end = Position {
+                        row: comment_end_pos.row,
+                        column: comment_end_pos.column,
+                        byte: child.end_byte(),
+                    };
                     continue;
                 }
                 debug!("Before converting child '{}': current_prev_end = {:?}", child.kind(), current_prev_end);
@@ -189,7 +187,6 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                     absolute_start,
                     current_prev_end,
                     current_prev_end,
-                    Position { row: 0, column: 0, byte: 0 },
                 );
                 Arc::new(RholangNode::Par {
                     base: par_base,
@@ -206,7 +203,6 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                     absolute_start,
                     current_prev_end,
                     current_prev_end,
-                    Position { row: 0, column: 0, byte: 0 },
                 );
                 Arc::new(RholangNode::Par {
                     base: par_base,
@@ -231,8 +227,9 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 // Standard binary Par - use direct children to preserve tree-sitter positions
                 let left_ts = ts_node.named_child(0).expect("Par node must have a left named child");
 
-                // FIX: Pass prev_end to maintain consistency with how Par's own delta is computed
-                let (left, left_end) = convert_ts_node_to_ir(left_ts, rope, prev_end);
+                // FIX: Par's left child must use Par's start (absolute_start) as reference
+                // This ensures children have sequential deltas: left from Par start, right from left's end
+                let (left, left_end) = convert_ts_node_to_ir(left_ts, rope, absolute_start);
 
                 let right_ts = ts_node.named_child(1).expect("Par node must have a right named child");
 
@@ -251,7 +248,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
 
                     // Par's delta is from prev_end (parent's reference) to absolute_start (Par's start)
                     // But children use absolute_start as reference for sequential positioning
-                    let corrected_base = create_correct_node_base(absolute_start, right_end, right_end, prev_end);
+                    let corrected_base = create_correct_node_base(absolute_start, right_end, right_end);
 
                     let node = Arc::new(RholangNode::Par {
                         base: corrected_base,
@@ -305,7 +302,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
 
                 // Create corrected base: Par's extent is from its start to right child's end
                 // Par has no closing delimiter, so content and syntactic ends are the same
-                let corrected_base = create_correct_node_base(absolute_start, right_end, right_end, prev_end);
+                let corrected_base = create_correct_node_base(absolute_start, right_end, right_end);
 
                 // Create n-ary Par if we have 3+ processes, binary Par otherwise
                 let node = if all_processes.len() > 2 {
@@ -340,6 +337,14 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 for child in ts_node.named_children(&mut ts_node.walk()) {
                     let kind_id = child.kind_id();
                     if is_comment(kind_id) {
+                        // FIX: Update current_prev_end to skip over comment's bytes
+                        // Otherwise next child will have incorrect position reference
+                        let comment_end_pos = child.end_position();
+                        current_prev_end = Position {
+                            row: comment_end_pos.row,
+                            column: comment_end_pos.column,
+                            byte: child.end_byte(),
+                        };
                         continue;
                     }
                     let (child_node, child_end) = convert_ts_node_to_ir(child, rope, current_prev_end);
@@ -355,7 +360,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 } else {
                     // Create corrected base for Par nodes (2 or more children)
                     // Par has no closing delimiter, so content and syntactic ends are the same
-                    let corrected_base = create_correct_node_base(absolute_start, current_prev_end, current_prev_end, prev_end);
+                    let corrected_base = create_correct_node_base(absolute_start, current_prev_end, current_prev_end);
 
                     if process_children.len() == 2 {
                         // After filtering comments, we have exactly 2 children
@@ -431,22 +436,16 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             let channel_ts = ts_node.child_by_field_name("channel").expect("Send node must have a channel");
             let (channel, channel_end) = convert_ts_node_to_ir(channel_ts, rope, absolute_start);
             let send_type_ts = ts_node.child_by_field_name("send_type").expect("Send node must have a send_type");
+            // Store absolute position of send_type (! or !!)
+            let send_type_pos = Position {
+                row: send_type_ts.start_position().row,
+                column: send_type_ts.start_position().column,
+                byte: send_type_ts.start_byte(),
+            };
             let send_type_abs_end = Position {
                 row: send_type_ts.end_position().row,
                 column: send_type_ts.end_position().column,
                 byte: send_type_ts.end_byte(),
-            };
-            let send_type_delta_lines = send_type_abs_end.row as i32 - channel_end.row as i32;
-            let send_type_delta_columns = if send_type_delta_lines == 0 {
-                send_type_abs_end.column as i32 - channel_end.column as i32
-            } else {
-                send_type_abs_end.column as i32
-            };
-            let send_type_delta_bytes = send_type_abs_end.byte - channel_end.byte;
-            let send_type_delta = RelativePosition {
-                delta_lines: send_type_delta_lines,
-                delta_columns: send_type_delta_columns,
-                delta_bytes: send_type_delta_bytes,
             };
             let inputs_ts = ts_node.child_by_field_name("inputs").expect("Send node must have inputs");
             let mut current_prev_end = send_type_abs_end;
@@ -471,13 +470,13 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             // Send has a closing ')' delimiter:
             // - content_end is after last input (current_prev_end)
             // - syntactic_end includes the ')' (send_end/absolute_end)
-            let corrected_base = create_correct_node_base(absolute_start, current_prev_end, send_end, prev_end);
+            let corrected_base = create_correct_node_base(absolute_start, current_prev_end, send_end);
 
             let node = Arc::new(RholangNode::Send {
                 base: corrected_base,
                 channel,
                 send_type,
-                send_type_delta,
+                send_type_pos,
                 inputs,
                 metadata,
             });
@@ -490,7 +489,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             let (proc, proc_end) = convert_ts_node_to_ir(proc_ts, rope, decls_end);
             // Create corrected base: New's extent is from start to absolute_end
             // New syntax may include whitespace/comments after proc, so use Tree-Sitter's end
-            let corrected_base = create_correct_node_base(absolute_start, proc_end, absolute_end, prev_end);
+            let corrected_base = create_correct_node_base(absolute_start, proc_end, absolute_end);
             let node = Arc::new(RholangNode::New { base: corrected_base, decls, proc, metadata });
             // BUG FIX: Must return Tree-Sitter's absolute_end, not proc_end
             (node, absolute_end)
@@ -610,7 +609,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
 
             // Create corrected base: Contract's extent is from start to absolute_end
             // Contract syntax may include whitespace/comments after proc, so use Tree-Sitter's end
-            let corrected_base = create_correct_node_base(absolute_start, proc_end, absolute_end, prev_end);
+            let corrected_base = create_correct_node_base(absolute_start, proc_end, absolute_end);
             let node = Arc::new(RholangNode::Contract { base: corrected_base, name, formals, formals_remainder, proc, metadata });
             // BUG FIX: Must return Tree-Sitter's absolute_end, not proc_end!
             // Returning proc_end causes cascading position errors in all subsequent siblings
@@ -651,7 +650,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             let (proc, proc_end) = convert_ts_node_to_ir(proc_ts, rope, current_prev_end);
             // Create corrected base: Input's extent is from start to absolute_end
             // Input syntax may include whitespace/comments after proc, so use Tree-Sitter's end
-            let corrected_base = create_correct_node_base(absolute_start, proc_end, absolute_end, prev_end);
+            let corrected_base = create_correct_node_base(absolute_start, proc_end, absolute_end);
             let node = Arc::new(RholangNode::Input { base: corrected_base, receipts, proc, metadata });
             // BUG FIX: Must return Tree-Sitter's absolute_end, not proc_end
             (node, absolute_end)
@@ -676,11 +675,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 // Empty block - use Nil
                 Arc::new(RholangNode::Nil {
                     base: NodeBase::new_simple(
-                        RelativePosition {
-                            delta_lines: 0,
-                            delta_columns: 0,
-                            delta_bytes: 0,
-                        },
+                        absolute_start,
                         0, 0, 0,
                     ),
                     metadata: metadata.clone(),
@@ -692,27 +687,23 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
 
                 // Exactly 2 children - use binary Par
                 // Get the first child's absolute start for Par's start position
-                let first_child_start = SemanticNode::absolute_position(process_nodes[0].as_ref(), absolute_start);
+                let first_child_start = process_nodes[0].base().start();
 
                 // NOTE: Position recalculation for Par children when Block->Par wrapping occurs
-                // Children were created with deltas from absolute_start (Block's '{')
-                // Par starts at first_child_start, so children would need recalculated deltas
+                // Children were created with positions from absolute_start (Block's '{')
+                // Par starts at first_child_start, so children would need recalculated positions
                 // However, ALL Blocks in practice have single children, so this code path is unused
                 use crate::parsers::position_utils::recalculate_children_positions;
                 let recalculated = recalculate_children_positions(&process_nodes, absolute_start, first_child_start);
 
                 // Get the last child's end for Par's end position using recalculated children
-                let last_child_end = {
-                    let first_child_end = SemanticNode::absolute_end(recalculated.get(0).unwrap().as_ref(), first_child_start);
-                    let last_child_start = SemanticNode::absolute_position(recalculated.get(1).unwrap().as_ref(), first_child_end);
-                    SemanticNode::absolute_end(recalculated.get(1).unwrap().as_ref(), last_child_start)
-                };
+                let last_child_end = recalculated.get(1).unwrap().base().end();
+
                 // Par must span from first child to last child to enable position lookups
                 let par_base = create_correct_node_base(
                     first_child_start,
                     last_child_end,
                     last_child_end,
-                    absolute_start,
                 );
                 Arc::new(RholangNode::Par {
                     base: par_base,
@@ -724,30 +715,23 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             } else {
                 // More than 2 children - use n-ary Par (O(1) depth instead of O(n))
                 // Get the first child's absolute start for Par's start position
-                let first_child_start = SemanticNode::absolute_position(process_nodes[0].as_ref(), absolute_start);
+                let first_child_start = process_nodes[0].base().start();
 
                 // NOTE: Position recalculation for Par children when Block->Par wrapping occurs
-                // Children were created with deltas from absolute_start (Block's '{')
-                // Par starts at first_child_start, so children would need recalculated deltas
+                // Children were created with positions from absolute_start (Block's '{')
+                // Par starts at first_child_start, so children would need recalculated positions
                 // However, ALL Blocks in practice have single children, so this code path is unused
                 use crate::parsers::position_utils::recalculate_children_positions;
                 let recalculated = recalculate_children_positions(&process_nodes, absolute_start, first_child_start);
 
                 // Get the last child's end for Par's end position
-                let last_child_end = {
-                    let mut prev = first_child_start;
-                    for child in recalculated.iter() {
-                        let child_start = SemanticNode::absolute_position(child.as_ref(), prev);
-                        prev = SemanticNode::absolute_end(child.as_ref(), child_start);
-                    }
-                    prev
-                };
+                let last_child_end = recalculated.last().unwrap().base().end();
+
                 // Par must span from first child to last child to enable position lookups
                 let par_base = create_correct_node_base(
                     first_child_start,
                     last_child_end,
                     last_child_end,
-                    absolute_start,
                 );
                 Arc::new(RholangNode::Par {
                     base: par_base,
@@ -1033,8 +1017,8 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             if name.contains("robot") {
                 debug!("Tree-Sitter 'var' node: name='{}', ts_node.start_byte()={}, ts_node.end_byte()={}, absolute_start.byte={}, absolute_end.byte={}, prev_end.byte={}",
                        name, ts_node.start_byte(), ts_node.end_byte(), absolute_start.byte, absolute_end.byte, prev_end.byte);
-                debug!("  Relative: delta_lines={}, delta_columns={}, delta_bytes={}",
-                       relative_start.delta_lines, relative_start.delta_columns, relative_start.delta_bytes);
+                debug!("  Absolute: row={}, column={}, byte={}",
+                       absolute_start.row, absolute_start.column, absolute_start.byte);
             }
             let node = Arc::new(RholangNode::Var { base, name, metadata });
             (node, absolute_end)
@@ -1067,7 +1051,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             };
             if names.is_empty() && remainder.is_none() {
                 let wildcard_base = NodeBase::new_simple(
-                    RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+                    absolute_start,
                     1,
                     0,
                     1,
@@ -1088,7 +1072,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             };
             if names.is_empty() && remainder.is_none() {
                 let wildcard_base = NodeBase::new_simple(
-                    RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+                    absolute_start,
                     1,
                     0,
                     1,
@@ -1109,7 +1093,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             };
             if names.is_empty() && remainder.is_none() {
                 let wildcard_base = NodeBase::new_simple(
-                    RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+                    absolute_start,
                     1,
                     0,
                     1,

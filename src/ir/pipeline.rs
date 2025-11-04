@@ -4,7 +4,7 @@ use petgraph::graph::NodeIndex;
 use petgraph::algo::toposort;
 use super::rholang_node::RholangNode;
 use super::visitor::Visitor;
-use super::semantic_node::{GenericVisitor, SemanticNode};
+use super::semantic_node::{GenericVisitor, SemanticNode, Position, NodeBase};
 
 /// Enum representing either a language-specific or language-agnostic visitor.
 pub enum TransformKind {
@@ -122,7 +122,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use super::*;
-    use crate::ir::rholang_node::{Metadata, RholangNode, NodeBase, RelativePosition};
+    use crate::ir::rholang_node::{Metadata, RholangNode, NodeBase};
     use crate::ir::visitor::Visitor;
 
     // Define an IdentityVisitor that preserves the node
@@ -141,7 +141,7 @@ mod tests {
             kind: TransformKind::Specific(Arc::new(IdentityVisitor)),
         };
         pipeline.add_transform(transform);
-        let base = NodeBase::new_simple(RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 }, 0, 0, 0);
+        let base = NodeBase::new_simple(Position { row: 0, column: 0, byte: 0 }, 0, 0, 0);
         let mut data = HashMap::new();
         data.insert("version".to_string(), Arc::new(0_usize) as Arc<dyn Any + Send + Sync>);
         let metadata = Some(Arc::new(data));

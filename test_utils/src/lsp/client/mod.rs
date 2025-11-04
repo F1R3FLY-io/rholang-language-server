@@ -589,6 +589,14 @@ impl LspClient {
             "textDocument/hover".to_string(),
             Self::receive_hover as ResponseHandler,
         );
+        response_handlers.insert(
+            "textDocument/completion".to_string(),
+            Self::receive_completion as ResponseHandler,
+        );
+        response_handlers.insert(
+            "textDocument/signatureHelp".to_string(),
+            Self::receive_signature_help as ResponseHandler,
+        );
 
         let client = LspClient {
             server: Mutex::new(server),

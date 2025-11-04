@@ -42,6 +42,8 @@ pub struct Symbol {
     /// Simple identifiers (Var, Quote(StringLiteral)) are stored in `name` only.
     /// Complex identifiers (Quote(Map), Quote(List), etc.) are stored here for structural matching.
     pub contract_identifier_node: Option<Arc<RholangNode>>,
+    /// Documentation extracted from doc comments (Phase 5: Completion Item Documentation)
+    pub documentation: Option<String>,
 }
 
 impl Symbol {
@@ -55,6 +57,7 @@ impl Symbol {
             definition_location: None,
             contract_pattern: None,
             contract_identifier_node: None,
+            documentation: None,
         }
     }
 
@@ -79,6 +82,7 @@ impl Symbol {
                 proc,
             }),
             contract_identifier_node: None,
+            documentation: None,
         }
     }
 

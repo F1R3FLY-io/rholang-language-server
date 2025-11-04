@@ -5,4 +5,4 @@
 //!
 //! **Note**: New code should use `crate::parsers::rholang` directly.
 
-pub use crate::parsers::rholang::{parse_code, parse_to_ir, update_tree};
+pub use crate::parsers::rholang::{parse_code, parse_to_ir, parse_to_document_ir, update_tree};

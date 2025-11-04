@@ -8,7 +8,7 @@ use rpds::Vector;
 use tower_lsp::lsp_types::Url;
 use tracing::trace;
 
-use crate::ir::rholang_node::{Metadata, RholangNode, RholangNodeVector, NodeBase, Position, RelativePosition, RholangSendType};
+use crate::ir::rholang_node::{Metadata, RholangNode, RholangNodeVector, NodeBase, Position, RholangSendType};
 use crate::ir::symbol_table::{Symbol, SymbolTable, SymbolType};
 use crate::ir::type_extraction::{TypeChecker, TypeExtractor};
 use crate::ir::visitor::Visitor;
@@ -959,7 +959,7 @@ impl Visitor for SymbolTableBuilder {
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<RholangNode> {
         let new_table = self.push_scope();
-        for d in decls {
+        for d in decls.iter() {
             if let RholangNode::NameDecl { var, .. } = &**d {
                 if let RholangNode::Var { name, .. } = &**var {
                     if !name.is_empty() {  // Skip empty variable names
@@ -971,9 +971,6 @@ impl Visitor for SymbolTableBuilder {
                             location,
                         ));
                         new_table.insert(symbol);
-                        trace!("Declared variable '{}' in new scope at {:?}", name, location);
-                    } else {
-                        trace!("Skipped empty variable name in new declaration at {:?}", var.absolute_start(&self.root));
                     }
                 }
             }
@@ -1017,6 +1014,7 @@ impl Visitor for SymbolTableBuilder {
                                 definition_location: Some(def_loc),
                                 contract_pattern: None,
                                 contract_identifier_node: None,
+                                documentation: None,
                             });
                             new_table.insert(symbol);
                             trace!("Declared variable '{}' in let scope at {:?}", var_name, decl_loc);
@@ -1153,6 +1151,26 @@ impl Visitor for SymbolTableBuilder {
 
             // Set definition location to the contract position
             symbol.definition_location = Some(contract_pos);
+
+            // Phase 5/7: Extract documentation from metadata (supports both String and StructuredDocumentation)
+            if let Some(meta) = metadata {
+                use crate::ir::transforms::documentation_attacher::DOC_METADATA_KEY;
+                use crate::ir::StructuredDocumentation;
+
+                if let Some(doc_any) = meta.get(DOC_METADATA_KEY) {
+                    // Phase 7: Try StructuredDocumentation first (new format)
+                    if let Some(structured_doc) = doc_any.downcast_ref::<StructuredDocumentation>() {
+                        symbol.documentation = Some(structured_doc.to_plain_text());
+                        trace!("Extracted structured documentation for contract '{}': summary length = {}, params = {}",
+                            contract_name, structured_doc.summary.len(), structured_doc.params.len());
+                    }
+                    // Phase 5: Fall back to plain String (old format - backwards compatibility)
+                    else if let Some(doc_string) = doc_any.downcast_ref::<String>() {
+                        symbol.documentation = Some(doc_string.clone());
+                        trace!("Extracted plain documentation for contract '{}': {} chars", contract_name, doc_string.len());
+                    }
+                }
+            }
 
             // Store complex identifier node for structural matching (Phase 2)
             if let Some(complex_node) = identifier_node {
@@ -1525,7 +1543,7 @@ impl Visitor for SymbolTableBuilder {
         base: &NodeBase,
         channel: &Arc<RholangNode>,
         send_type: &RholangSendType,
-        send_type_delta: &RelativePosition,
+        send_type_pos: &Position,
         inputs: &Vector<Arc<RholangNode>, ArcK>,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<RholangNode> {
@@ -1565,7 +1583,7 @@ impl Visitor for SymbolTableBuilder {
                 base: base.clone(),
                 channel: new_channel,
                 send_type: send_type.clone(),
-                send_type_delta: *send_type_delta,
+                send_type_pos: *send_type_pos,
                 inputs: new_inputs,
                 metadata: metadata.clone(),
             })

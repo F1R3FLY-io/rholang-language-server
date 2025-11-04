@@ -1160,6 +1160,94 @@ impl LspClient {
         Ok(())
     }
 
+    pub fn completion(&self, uri: &str, position: Position) -> Result<Option<tower_lsp::lsp_types::CompletionResponse>, String> {
+        debug!("Sending completion request for URI: {}, position: {:?}", uri, position);
+
+        let params = tower_lsp::lsp_types::CompletionParams {
+            text_document_position: tower_lsp::lsp_types::TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Url::parse(uri).map_err(|e| format!("Invalid URI: {}", e))?,
+                },
+                position,
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: None,
+        };
+
+        let request_id = self.next_request_id();
+        self.send_request(
+            request_id,
+            "textDocument/completion",
+            Some(serde_json::to_value(params).map_err(|e| format!("Failed to serialize params: {}", e))?),
+        );
+
+        let response = self.await_response(request_id)?;
+        if let Some(result) = response.get("result") {
+            if result.is_null() {
+                debug!("Received null completion response for URI: {}, position: {:?}", uri, position);
+                Ok(None)
+            } else {
+                let completion: tower_lsp::lsp_types::CompletionResponse = serde_json::from_value(result.clone())
+                    .map_err(|e| format!("Failed to parse completion: {}", e))?;
+                debug!("Received completion for URI: {}, position: {:?}", uri, position);
+                Ok(Some(completion))
+            }
+        } else {
+            debug!("No result in completion response for URI: {}, position: {:?}", uri, position);
+            Ok(None)
+        }
+    }
+
+    pub fn receive_completion(&self, _response: Arc<Value>) -> Result<(), String> {
+        debug!("Received completion response");
+        Ok(())
+    }
+
+    /// Phase 6: Request signature help at a position
+    pub fn signature_help(&self, uri: &str, position: Position) -> Result<Option<tower_lsp::lsp_types::SignatureHelp>, String> {
+        debug!("Sending signature help request for URI: {}, position: {:?}", uri, position);
+
+        let params = tower_lsp::lsp_types::SignatureHelpParams {
+            text_document_position_params: tower_lsp::lsp_types::TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Url::parse(uri).map_err(|e| format!("Invalid URI: {}", e))?,
+                },
+                position,
+            },
+            work_done_progress_params: Default::default(),
+            context: None,
+        };
+
+        let request_id = self.next_request_id();
+        self.send_request(
+            request_id,
+            "textDocument/signatureHelp",
+            Some(serde_json::to_value(params).map_err(|e| format!("Failed to serialize params: {}", e))?),
+        );
+
+        let response = self.await_response(request_id)?;
+        if let Some(result) = response.get("result") {
+            if result.is_null() {
+                debug!("Received null signature help response for URI: {}, position: {:?}", uri, position);
+                Ok(None)
+            } else {
+                let sig_help: tower_lsp::lsp_types::SignatureHelp = serde_json::from_value(result.clone())
+                    .map_err(|e| format!("Failed to parse signature help: {}", e))?;
+                debug!("Received signature help for URI: {}, position: {:?}", uri, position);
+                Ok(Some(sig_help))
+            }
+        } else {
+            debug!("No result in signature help response for URI: {}, position: {:?}", uri, position);
+            Ok(None)
+        }
+    }
+
+    pub fn receive_signature_help(&self, _response: Arc<Value>) -> Result<(), String> {
+        debug!("Received signature help response");
+        Ok(())
+    }
+
     pub fn document_highlight(&self, uri: &str, position: Position) -> Result<Vec<DocumentHighlight>, String> {
         debug!("Sending documentHighlight request for URI: {}, position: {:?}", uri, position);
 

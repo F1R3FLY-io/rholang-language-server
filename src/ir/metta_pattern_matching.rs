@@ -381,14 +381,15 @@ impl MettaPatternMatcher {
 mod tests {
     use super::*;
     use crate::ir::semantic_node::NodeBase;
-    use crate::ir::rholang_node::RelativePosition;
+    use crate::ir::semantic_node::Position as IrPosition;
+    use tower_lsp::lsp_types::Position as LspPosition;
 
     fn test_base() -> NodeBase {
         NodeBase::new_simple(
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
+            IrPosition {
+                row: 0,
+                column: 0,
+                byte: 0,
             },
             0,
             0,
@@ -399,7 +400,10 @@ mod tests {
     fn test_location() -> Location {
         Location {
             uri: Url::parse("file:///test.metta").unwrap(),
-            range: Range::new(Position::new(0, 0), Position::new(0, 10)),
+            range: Range::new(
+                LspPosition { line: 0, character: 0 },
+                LspPosition { line: 0, character: 10 }
+            ),
         }
     }
 

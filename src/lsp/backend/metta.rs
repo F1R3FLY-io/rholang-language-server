@@ -87,9 +87,9 @@ impl RholangBackend {
         // TODO: Build position index for O(log n) lookup
         for (index, node) in metta_ir.iter().enumerate() {
             let base = node.base();
-            let rel_start = base.relative_start();
-            let node_line = rel_start.delta_lines.max(0) as u32;
-            let node_col = rel_start.delta_columns.max(0) as u32;
+            let start = base.start();
+            let node_line = start.row as u32;
+            let node_col = start.column as u32;
             let node_end_col = node_col + base.length() as u32;
 
             // Check if position is within this node

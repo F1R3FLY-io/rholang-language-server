@@ -100,6 +100,8 @@ pub struct HoverContext {
     pub language: String,
     /// Parent URI for virtual documents
     pub parent_uri: Option<Url>,
+    /// Documentation extracted from node or parent (if available)
+    pub documentation: Option<String>,
 }
 
 /// Context for completion operations
@@ -477,7 +479,7 @@ impl LanguageAdapter {
 mod tests {
     use super::*;
     use std::any::Any;
-    use crate::ir::semantic_node::{NodeBase, RelativePosition, Metadata};
+    use crate::ir::semantic_node::{NodeBase, Position, Metadata};
 
     // Mock semantic node for testing
     #[derive(Debug)]
@@ -625,7 +627,7 @@ mod tests {
         let provider = MockHoverProvider;
         let node = MockNode {
             base: NodeBase::new_simple(
-                RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+                Position { row: 0, column: 0, byte: 0 },
                 10,
                 0,
                 10,
@@ -641,6 +643,7 @@ mod tests {
             category: SemanticCategory::Variable,
             language: "test".to_string(),
             parent_uri: None,
+            documentation: None,
         };
 
         let result = provider.hover_for_symbol("test_var", &node, &context);
@@ -652,7 +655,7 @@ mod tests {
         let provider = MockCompletionProvider;
         let node = MockNode {
             base: NodeBase::new_simple(
-                RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+                Position { row: 0, column: 0, byte: 0 },
                 10,
                 0,
                 10,

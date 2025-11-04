@@ -95,16 +95,14 @@ impl GenericSymbolCollector {
         None
     }
 
-    /// Computes absolute position for a node (simplified - uses delta as position)
+    /// Gets absolute position for a node
     fn get_position(&self, node: &dyn SemanticNode) -> Position {
         let base = node.base();
-        let rel = base.relative_start();
-        // Simplified: treat relative position as absolute
-        // In a full implementation, this would track parent positions
+        let start = base.start();
         Position {
-            row: rel.delta_lines as usize,
-            column: rel.delta_columns as usize,
-            byte: rel.delta_bytes,
+            row: start.row,
+            column: start.column,
+            byte: start.byte,
         }
     }
 }

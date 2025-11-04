@@ -4,6 +4,7 @@
 //! validated, and diagnostics are mapped back to parent document positions.
 
 use rholang_language_server::language_regions::{DirectiveParser, VirtualDocumentRegistry};
+use rholang_language_server::parsers::rholang::parse_to_document_ir;
 use rholang_language_server::tree_sitter::parse_code;
 use ropey::Rope;
 use tower_lsp::lsp_types::{DiagnosticSeverity, Position};
@@ -19,7 +20,8 @@ fn test_embedded_metta_with_valid_code() {
     let rope = Rope::from_str(source);
 
     // Scan for embedded regions
-    let regions = DirectiveParser::scan_directives(source, &tree, &rope);
+    let doc_ir = parse_to_document_ir(&tree, &rope);
+    let regions = DirectiveParser::scan_directives(source, &doc_ir, &tree);
 
     assert_eq!(regions.len(), 1, "Should find one embedded MeTTa region");
     assert_eq!(regions[0].language, "metta");
@@ -51,7 +53,8 @@ fn test_embedded_metta_with_invalid_code() {
     let rope = Rope::from_str(source);
 
     // Scan for embedded regions
-    let regions = DirectiveParser::scan_directives(source, &tree, &rope);
+    let doc_ir = parse_to_document_ir(&tree, &rope);
+    let regions = DirectiveParser::scan_directives(source, &doc_ir, &tree);
 
     assert_eq!(regions.len(), 1, "Should find one embedded MeTTa region");
 
@@ -94,7 +97,8 @@ Nil |
     let rope = Rope::from_str(source);
 
     // Scan for embedded regions
-    let regions = DirectiveParser::scan_directives(source, &tree, &rope);
+    let doc_ir = parse_to_document_ir(&tree, &rope);
+    let regions = DirectiveParser::scan_directives(source, &doc_ir, &tree);
 
     assert_eq!(regions.len(), 2, "Should find two embedded MeTTa regions");
 
@@ -130,7 +134,8 @@ fn test_diagnostic_position_mapping() {
     let tree = parse_code(source);
     let rope = Rope::from_str(source);
 
-    let regions = DirectiveParser::scan_directives(source, &tree, &rope);
+    let doc_ir = parse_to_document_ir(&tree, &rope);
+    let regions = DirectiveParser::scan_directives(source, &doc_ir, &tree);
     assert_eq!(regions.len(), 1);
 
     let mut registry = VirtualDocumentRegistry::new();
@@ -172,7 +177,8 @@ fn test_no_embedded_regions_without_directive() {
     let tree = parse_code(source);
     let rope = Rope::from_str(source);
 
-    let regions = DirectiveParser::scan_directives(source, &tree, &rope);
+    let doc_ir = parse_to_document_ir(&tree, &rope);
+    let regions = DirectiveParser::scan_directives(source, &doc_ir, &tree);
 
     // Without a directive, no regions should be detected
     assert_eq!(
@@ -192,7 +198,8 @@ fn test_virtual_document_cleanup() {
     let tree = parse_code(source);
     let rope = Rope::from_str(source);
 
-    let regions = DirectiveParser::scan_directives(source, &tree, &rope);
+    let doc_ir = parse_to_document_ir(&tree, &rope);
+    let regions = DirectiveParser::scan_directives(source, &doc_ir, &tree);
 
     let mut registry = VirtualDocumentRegistry::new();
     let parent_uri = tower_lsp::lsp_types::Url::parse("file:///test.rho").unwrap();

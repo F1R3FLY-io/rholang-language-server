@@ -654,17 +654,40 @@ impl LanguageServer for RholangBackend {
                             let arity = symbol.arity().unwrap_or(0);
                             let variadic_suffix = if symbol.is_variadic() { "..." } else { "" };
 
-                            // Build parameter list
+                            // Phase 6: Extract actual parameter names from contract pattern
+                            let param_names = Self::extract_parameter_names(symbol);
+
+                            // Build parameter list with actual names if available
                             let parameters: Vec<ParameterInformation> = (0..arity)
-                                .map(|i| ParameterInformation {
-                                    label: ParameterLabel::Simple(format!("param{}", i + 1)),
-                                    documentation: None,
+                                .map(|i| {
+                                    let label = param_names.get(i)
+                                        .cloned()
+                                        .unwrap_or_else(|| format!("param{}", i + 1));
+                                    ParameterInformation {
+                                        label: ParameterLabel::Simple(label),
+                                        documentation: None,
+                                    }
                                 })
                                 .collect();
 
+                            // Phase 6: Use symbol documentation if available
+                            let documentation = symbol.documentation.as_ref()
+                                .map(|doc| tower_lsp::lsp_types::Documentation::String(doc.clone()))
+                                .or_else(|| Some(tower_lsp::lsp_types::Documentation::String(
+                                    format!("Contract with {} parameter{}", arity, if arity == 1 { "" } else { "s" })
+                                )));
+
+                            // Build label with actual parameter names
+                            let params_str = param_names.join(", ");
+                            let label = if params_str.is_empty() {
+                                format!("{}(){}", contract_name, variadic_suffix)
+                            } else {
+                                format!("{}({}){}", contract_name, params_str, variadic_suffix)
+                            };
+
                             SignatureInformation {
-                                label: format!("{}({}){}", contract_name, arity, variadic_suffix),
-                                documentation: None,
+                                label,
+                                documentation,
                                 parameters: Some(parameters),
                                 active_parameter: None,
                             }
@@ -682,19 +705,40 @@ impl LanguageServer for RholangBackend {
                         let arity = symbol.arity().unwrap_or(0);
                         let variadic_suffix = if symbol.is_variadic() { "..." } else { "" };
 
-                        // Build parameter list
+                        // Phase 6: Extract actual parameter names from contract pattern
+                        let param_names = Self::extract_parameter_names(symbol);
+
+                        // Build parameter list with actual names if available
                         let parameters: Vec<ParameterInformation> = (0..arity)
-                            .map(|i| ParameterInformation {
-                                label: ParameterLabel::Simple(format!("param{}", i + 1)),
-                                documentation: None,
+                            .map(|i| {
+                                let label = param_names.get(i)
+                                    .cloned()
+                                    .unwrap_or_else(|| format!("param{}", i + 1));
+                                ParameterInformation {
+                                    label: ParameterLabel::Simple(label),
+                                    documentation: None,
+                                }
                             })
                             .collect();
 
-                        SignatureInformation {
-                            label: format!("{}({}){}", contract_name, arity, variadic_suffix),
-                            documentation: Some(tower_lsp::lsp_types::Documentation::String(
+                        // Phase 6: Use symbol documentation if available, fallback to generic message
+                        let documentation = symbol.documentation.as_ref()
+                            .map(|doc| tower_lsp::lsp_types::Documentation::String(doc.clone()))
+                            .or_else(|| Some(tower_lsp::lsp_types::Documentation::String(
                                 format!("Contract with {} parameter{}", arity, if arity == 1 { "" } else { "s" })
-                            )),
+                            )));
+
+                        // Build label with actual parameter names
+                        let params_str = param_names.join(", ");
+                        let label = if params_str.is_empty() {
+                            format!("{}(){}", contract_name, variadic_suffix)
+                        } else {
+                            format!("{}({}){}", contract_name, params_str, variadic_suffix)
+                        };
+
+                        SignatureInformation {
+                            label,
+                            documentation,
                             parameters: Some(parameters),
                             active_parameter: None,
                         }
@@ -790,16 +834,24 @@ impl LanguageServer for RholangBackend {
                         format!("contract {}", arities.first().unwrap_or(&"".to_string()))
                     };
 
-                    completions.push(CompletionItem {
-                        label: symbol.name.clone(),
-                        kind: Some(CompletionItemKind::FUNCTION),
-                        detail: Some(detail),
-                        documentation: Some(tower_lsp::lsp_types::Documentation::String(
+                    // Phase 5: Use symbol documentation if available
+                    let documentation = if let Some(ref doc) = symbol.documentation {
+                        Some(tower_lsp::lsp_types::Documentation::String(doc.clone()))
+                    } else {
+                        // Fallback to showing overload count if no documentation
+                        Some(tower_lsp::lsp_types::Documentation::String(
                             format!("Contract with {} overload{}",
                                 overloads.len(),
                                 if overloads.len() == 1 { "" } else { "s" }
                             )
-                        )),
+                        ))
+                    };
+
+                    completions.push(CompletionItem {
+                        label: symbol.name.clone(),
+                        kind: Some(CompletionItemKind::FUNCTION),
+                        detail: Some(detail),
+                        documentation,
                         ..Default::default()
                     });
                 }
@@ -828,11 +880,15 @@ impl LanguageServer for RholangBackend {
                 continue;
             }
 
+            // Phase 5: Include symbol documentation if available
+            let documentation = symbol.documentation.as_ref()
+                .map(|doc| tower_lsp::lsp_types::Documentation::String(doc.clone()));
+
             completions.push(CompletionItem {
                 label: symbol.name.clone(),
                 kind: Some(kind),
                 detail: Some(type_str.to_string()),
-                documentation: None,
+                documentation,
                 ..Default::default()
             });
         }
@@ -931,6 +987,34 @@ impl RholangBackend {
                 }
             }
             _ => None,
+        }
+    }
+
+    /// Extracts parameter names from a contract pattern.
+    /// Phase 6: Used for signature help to show actual parameter names.
+    fn extract_parameter_names(symbol: &crate::ir::symbol_table::Symbol) -> Vec<String> {
+        if let Some(ref pattern) = symbol.contract_pattern {
+            pattern.formals.iter().filter_map(|formal| {
+                // Contract formals can be:
+                // 1. Direct Var nodes (e.g., x)
+                // 2. Quote(Var) nodes (e.g., @username)
+                // 3. Other pattern types (we extract var name if present)
+                match &**formal {
+                    RholangNode::Var { name, .. } => {
+                        Some(name.clone())
+                    }
+                    RholangNode::Quote { quotable, .. } => {
+                        if let RholangNode::Var { name, .. } = &**quotable {
+                            Some(format!("@{}", name))
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None
+                }
+            }).collect()
+        } else {
+            Vec::new()
         }
     }
 

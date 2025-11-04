@@ -161,14 +161,14 @@ impl RholangNode {
                 metadata,
                 channel,
                 send_type,
-                send_type_delta,
+                send_type_pos,
                 inputs,
                 ..
             } => Arc::new(RholangNode::Send {
                 base: new_base,
                 channel: channel.clone(),
                 send_type: send_type.clone(),
-                send_type_delta: *send_type_delta,
+                send_type_pos: *send_type_pos,
                 inputs: inputs.clone(),
                 metadata: metadata.clone(),
             }),
@@ -820,14 +820,14 @@ impl RholangNode {
                 base,
                 channel,
                 send_type,
-                send_type_delta,
+                send_type_pos,
                 inputs,
                 ..
             } => Arc::new(RholangNode::Send {
                 base: base.clone(),
                 channel: channel.clone(),
                 send_type: send_type.clone(),
-                send_type_delta: *send_type_delta,
+                send_type_pos: *send_type_pos,
                 inputs: inputs.clone(),
                 metadata: new_metadata,
             }),
@@ -1476,12 +1476,12 @@ impl RholangNode {
         left: Arc<RholangNode>,
         right: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Par {
                 processes: None,
             base,
@@ -1497,12 +1497,12 @@ impl RholangNode {
         inputs: RholangNodeVector,
         cont: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::SendSync {
             base,
             channel,
@@ -1516,20 +1516,20 @@ impl RholangNode {
     pub fn new_send(
         channel: Arc<RholangNode>,
         send_type: RholangSendType,
-        send_type_delta: RelativePosition,
+        send_type_pos: Position,
         inputs: RholangNodeVector,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Send {
             base,
             channel,
             send_type,
-            send_type_delta,
+            send_type_pos,
             inputs,
             metadata,
         }
@@ -1540,12 +1540,12 @@ impl RholangNode {
         decls: RholangNodeVector,
         proc: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::New {
             base,
             decls,
@@ -1560,12 +1560,12 @@ impl RholangNode {
         consequence: Arc<RholangNode>,
         alternative: Option<Arc<RholangNode>>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::IfElse {
             base,
             condition,
@@ -1580,12 +1580,12 @@ impl RholangNode {
         decls: RholangNodeVector,
         proc: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Let {
             base,
             decls,
@@ -1599,12 +1599,12 @@ impl RholangNode {
         bundle_type: RholangBundleType,
         proc: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Bundle {
             base,
             bundle_type,
@@ -1618,12 +1618,12 @@ impl RholangNode {
         expression: Arc<RholangNode>,
         cases: RholangNodePairVector,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Match {
             base,
             expression,
@@ -1636,12 +1636,12 @@ impl RholangNode {
     pub fn new_choice(
         branches: RholangBranchVector,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Choice {
             base,
             branches,
@@ -1656,12 +1656,12 @@ impl RholangNode {
         formals_remainder: Option<Arc<RholangNode>>,
         proc: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Contract {
             base,
             name,
@@ -1677,12 +1677,12 @@ impl RholangNode {
         receipts: RholangReceiptVector,
         proc: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Input {
             base,
             receipts,
@@ -1695,12 +1695,12 @@ impl RholangNode {
     pub fn new_block(
         proc: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Block {
             base,
             proc,
@@ -1712,12 +1712,12 @@ impl RholangNode {
     pub fn new_parenthesized(
         expr: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Parenthesized {
             base,
             expr,
@@ -1731,12 +1731,12 @@ impl RholangNode {
         left: Arc<RholangNode>,
         right: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::BinOp {
             base,
             op,
@@ -1751,12 +1751,12 @@ impl RholangNode {
         op: UnaryOperator,
         operand: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::UnaryOp {
             base,
             op,
@@ -1771,12 +1771,12 @@ impl RholangNode {
         name: String,
         args: RholangNodeVector,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Method {
             base,
             receiver,
@@ -1790,12 +1790,12 @@ impl RholangNode {
     pub fn new_eval(
         name: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Eval {
             base,
             name,
@@ -1807,12 +1807,12 @@ impl RholangNode {
     pub fn new_quote(
         quotable: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Quote {
             base,
             quotable,
@@ -1825,12 +1825,12 @@ impl RholangNode {
         kind: RholangVarRefKind,
         var: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::VarRef {
             base,
             kind,
@@ -1843,12 +1843,12 @@ impl RholangNode {
     pub fn new_bool_literal(
         value: bool,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::BoolLiteral {
             base,
             value,
@@ -1860,12 +1860,12 @@ impl RholangNode {
     pub fn new_long_literal(
         value: i64,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::LongLiteral {
             base,
             value,
@@ -1877,12 +1877,12 @@ impl RholangNode {
     pub fn new_string_literal(
         value: String,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::StringLiteral {
             base,
             value,
@@ -1894,12 +1894,12 @@ impl RholangNode {
     pub fn new_uri_literal(
         value: String,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::UriLiteral {
             base,
             value,
@@ -1910,12 +1910,12 @@ impl RholangNode {
     /// Constructs a new Nil node with the given attributes.
     pub fn new_nil(
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Nil { base, metadata }
     }
 
@@ -1924,12 +1924,12 @@ impl RholangNode {
         elements: RholangNodeVector,
         remainder: Option<Arc<RholangNode>>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::List {
             base,
             elements,
@@ -1943,12 +1943,12 @@ impl RholangNode {
         elements: RholangNodeVector,
         remainder: Option<Arc<RholangNode>>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Set {
             base,
             elements,
@@ -1962,12 +1962,12 @@ impl RholangNode {
         pairs: RholangNodePairVector,
         remainder: Option<Arc<RholangNode>>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Map {
             base,
             pairs,
@@ -1980,12 +1980,12 @@ impl RholangNode {
     pub fn new_tuple(
         elements: RholangNodeVector,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Tuple {
             base,
             elements,
@@ -1997,12 +1997,12 @@ impl RholangNode {
     pub fn new_var(
         name: String,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Var { base, name, metadata }
     }
 
@@ -2011,12 +2011,12 @@ impl RholangNode {
         var: Arc<RholangNode>,
         uri: Option<Arc<RholangNode>>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::NameDecl {
             base,
             var,
@@ -2031,12 +2031,12 @@ impl RholangNode {
         names_remainder: Option<Arc<RholangNode>>,
         procs: RholangNodeVector,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Decl {
             base,
             names,
@@ -2052,12 +2052,12 @@ impl RholangNode {
         remainder: Option<Arc<RholangNode>>,
         source: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::LinearBind {
             base,
             names,
@@ -2073,12 +2073,12 @@ impl RholangNode {
         remainder: Option<Arc<RholangNode>>,
         source: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::RepeatedBind {
             base,
             names,
@@ -2094,12 +2094,12 @@ impl RholangNode {
         remainder: Option<Arc<RholangNode>>,
         source: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::PeekBind {
             base,
             names,
@@ -2113,12 +2113,12 @@ impl RholangNode {
     pub fn new_comment(
         kind: CommentKind,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Comment {
             base,
             kind,
@@ -2129,12 +2129,12 @@ impl RholangNode {
     /// Constructs a new Wildcard node with the given attributes.
     pub fn new_wildcard(
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Wildcard { base, metadata }
     }
 
@@ -2142,12 +2142,12 @@ impl RholangNode {
     pub fn new_simple_type(
         value: String,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::SimpleType {
             base,
             value,
@@ -2159,12 +2159,12 @@ impl RholangNode {
     pub fn new_receive_send_source(
         name: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::ReceiveSendSource {
             base,
             name,
@@ -2177,12 +2177,12 @@ impl RholangNode {
         name: Arc<RholangNode>,
         inputs: RholangNodeVector,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::SendReceiveSource {
             base,
             name,
@@ -2195,12 +2195,12 @@ impl RholangNode {
     pub fn new_error(
         children: RholangNodeVector,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Error {
             base,
             children,
@@ -2213,12 +2213,12 @@ impl RholangNode {
         left: Arc<RholangNode>,
         right: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Disjunction {
             base,
             left,
@@ -2232,12 +2232,12 @@ impl RholangNode {
         left: Arc<RholangNode>,
         right: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Conjunction {
             base,
             left,
@@ -2250,12 +2250,12 @@ impl RholangNode {
     pub fn new_negation(
         operand: Arc<RholangNode>,
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Negation {
             base,
             operand,
@@ -2266,12 +2266,12 @@ impl RholangNode {
     /// Constructs a new Unit node with the given attributes.
     pub fn new_unit(
         metadata: Option<Arc<Metadata>>,
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
-        let base = NodeBase::new_simple(relative_start, length, span_lines, span_columns);
+        let base = NodeBase::new_simple(start, length, span_lines, span_columns);
         RholangNode::Unit { base, metadata }
     }
 }
@@ -2936,11 +2936,7 @@ mod tests {
         );
         let metadata = Arc::new(data);
         let base = NodeBase::new_simple(
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
-            },
+            Position { row: 0, column: 0, byte: 0 },
             0,
             0,
             0,
@@ -2984,11 +2980,7 @@ mod tests {
     fn test_match_pat_simple() {
         let wild = Arc::new(RholangNode::new_wildcard(
             None,
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
-            },
+            Position { row: 0, column: 0, byte: 0 },
             1,
             0,
             1,
@@ -2996,11 +2988,7 @@ mod tests {
         let var_pat = Arc::new(RholangNode::new_var(
             "x".to_string(),
             None,
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
-            },
+            Position { row: 0, column: 0, byte: 0 },
             1,
             0,
             1,
@@ -3008,11 +2996,7 @@ mod tests {
         let var_con = Arc::new(RholangNode::new_var(
             "y".to_string(),
             None,
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
-            },
+            Position { row: 0, column: 0, byte: 0 },
             1,
             0,
             1,
@@ -3020,11 +3004,7 @@ mod tests {
         let string_pat = Arc::new(RholangNode::new_string_literal(
             "foo".to_string(),
             None,
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
-            },
+            Position { row: 0, column: 0, byte: 0 },
             5,
             0,
             5,
@@ -3032,11 +3012,7 @@ mod tests {
         let string_con = Arc::new(RholangNode::new_string_literal(
             "foo".to_string(),
             None,
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
-            },
+            Position { row: 0, column: 0, byte: 0 },
             5,
             0,
             5,
@@ -3044,11 +3020,7 @@ mod tests {
         let string_con_diff = Arc::new(RholangNode::new_string_literal(
             "bar".to_string(),
             None,
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
-            },
+            Position { row: 0, column: 0, byte: 0 },
             5,
             0,
             5,
@@ -3066,11 +3038,7 @@ mod tests {
         let var_pat = Arc::new(RholangNode::new_var(
             "x".to_string(),
             None,
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
-            },
+            Position { row: 0, column: 0, byte: 0 },
             1,
             0,
             1,
@@ -3078,11 +3046,7 @@ mod tests {
         let con1 = Arc::new(RholangNode::new_long_literal(
             1,
             None,
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
-            },
+            Position { row: 0, column: 0, byte: 0 },
             1,
             0,
             1,
@@ -3090,11 +3054,7 @@ mod tests {
         let con2 = Arc::new(RholangNode::new_long_literal(
             1,
             None,
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
-            },
+            Position { row: 0, column: 0, byte: 0 },
             1,
             0,
             1,
@@ -3102,11 +3062,7 @@ mod tests {
         let con_diff = Arc::new(RholangNode::new_long_literal(
             2,
             None,
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
-            },
+            Position { row: 0, column: 0, byte: 0 },
             1,
             0,
             1,
@@ -3122,11 +3078,7 @@ mod tests {
         let channel = Arc::new(RholangNode::new_var(
             "foo".to_string(),
             None,
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
-            },
+            Position { row: 0, column: 0, byte: 0 },
             3,
             0,
             3,
@@ -3134,11 +3086,7 @@ mod tests {
         let inputs = Vector::new_with_ptr_kind().push_back(Arc::new(RholangNode::new_long_literal(
             1,
             None,
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
-            },
+            Position { row: 0, column: 0, byte: 0 },
             1,
             0,
             1,
@@ -3146,11 +3094,7 @@ mod tests {
         let contract_name = Arc::new(RholangNode::new_var(
             "foo".to_string(),
             None,
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
-            },
+            Position { row: 0, column: 0, byte: 0 },
             3,
             0,
             3,
@@ -3158,11 +3102,7 @@ mod tests {
         let contract_formals = Vector::new_with_ptr_kind().push_back(Arc::new(RholangNode::new_var(
             "x".to_string(),
             None,
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
-            },
+            Position { row: 0, column: 0, byte: 0 },
             1,
             0,
             1,
@@ -3173,21 +3113,13 @@ mod tests {
             None,
             Arc::new(RholangNode::new_nil(
                 None,
-                RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
-                },
+                Position { row: 0, column: 0, byte: 0 },
                 3,
                 0,
                 3,
             )),
             None,
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
-            },
+            Position { row: 0, column: 0, byte: 0 },
             0,
             0,
             0,
@@ -3202,11 +3134,7 @@ mod tests {
         let p_e = Vector::new_with_ptr_kind()
             .push_back(Arc::new(RholangNode::LongLiteral {
                 base: NodeBase::new_simple(
-                    RelativePosition {
-                        delta_lines: 0,
-                        delta_columns: 0,
-                        delta_bytes: 0,
-                    },
+                    Position { row: 0, column: 0, byte: 0 },
                     1,
                     0,
                     1,
@@ -3216,11 +3144,7 @@ mod tests {
             }))
             .push_back(Arc::new(RholangNode::LongLiteral {
                 base: NodeBase::new_simple(
-                    RelativePosition {
-                        delta_lines: 0,
-                        delta_columns: 0,
-                        delta_bytes: 0,
-                    },
+                    Position { row: 0, column: 0, byte: 0 },
                     1,
                     0,
                     1,
@@ -3230,11 +3154,7 @@ mod tests {
             }));
         let pat = Arc::new(RholangNode::Set {
             base: NodeBase::new_simple(
-                RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
-                },
+                Position { row: 0, column: 0, byte: 0 },
                 0,
                 0,
                 0,
@@ -3246,11 +3166,7 @@ mod tests {
         let c_e = Vector::new_with_ptr_kind()
             .push_back(Arc::new(RholangNode::LongLiteral {
                 base: NodeBase::new_simple(
-                    RelativePosition {
-                        delta_lines: 0,
-                        delta_columns: 0,
-                        delta_bytes: 0,
-                    },
+                    Position { row: 0, column: 0, byte: 0 },
                     1,
                     0,
                     1,
@@ -3260,11 +3176,7 @@ mod tests {
             }))
             .push_back(Arc::new(RholangNode::LongLiteral {
                 base: NodeBase::new_simple(
-                    RelativePosition {
-                        delta_lines: 0,
-                        delta_columns: 0,
-                        delta_bytes: 0,
-                    },
+                    Position { row: 0, column: 0, byte: 0 },
                     1,
                     0,
                     1,
@@ -3274,11 +3186,7 @@ mod tests {
             }));
         let concrete = Arc::new(RholangNode::Set {
             base: NodeBase::new_simple(
-                RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
-                },
+                Position { row: 0, column: 0, byte: 0 },
                 0,
                 0,
                 0,
@@ -3296,11 +3204,7 @@ mod tests {
         let p_pair1 = (
             Arc::new(RholangNode::StringLiteral {
                 base: NodeBase::new_simple(
-                    RelativePosition {
-                        delta_lines: 0,
-                        delta_columns: 0,
-                        delta_bytes: 0,
-                    },
+                    Position { row: 0, column: 0, byte: 0 },
                     3,
                     0,
                     3,
@@ -3310,11 +3214,7 @@ mod tests {
             }),
             Arc::new(RholangNode::LongLiteral {
                 base: NodeBase::new_simple(
-                    RelativePosition {
-                        delta_lines: 0,
-                        delta_columns: 0,
-                        delta_bytes: 0,
-                    },
+                    Position { row: 0, column: 0, byte: 0 },
                     1,
                     0,
                     1,
@@ -3326,11 +3226,7 @@ mod tests {
         let p_pair2 = (
             Arc::new(RholangNode::StringLiteral {
                 base: NodeBase::new_simple(
-                    RelativePosition {
-                        delta_lines: 0,
-                        delta_columns: 0,
-                        delta_bytes: 0,
-                    },
+                    Position { row: 0, column: 0, byte: 0 },
                     3,
                     0,
                     3,
@@ -3340,11 +3236,7 @@ mod tests {
             }),
             Arc::new(RholangNode::LongLiteral {
                 base: NodeBase::new_simple(
-                    RelativePosition {
-                        delta_lines: 0,
-                        delta_columns: 0,
-                        delta_bytes: 0,
-                    },
+                    Position { row: 0, column: 0, byte: 0 },
                     1,
                     0,
                     1,
@@ -3356,11 +3248,7 @@ mod tests {
         let p_pairs = Vector::new_with_ptr_kind().push_back(p_pair1).push_back(p_pair2);
         let pat = Arc::new(RholangNode::Map {
             base: NodeBase::new_simple(
-                RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
-                },
+                Position { row: 0, column: 0, byte: 0 },
                 0,
                 0,
                 0,
@@ -3372,11 +3260,7 @@ mod tests {
         let c_pair1 = (
             Arc::new(RholangNode::StringLiteral {
                 base: NodeBase::new_simple(
-                    RelativePosition {
-                        delta_lines: 0,
-                        delta_columns: 0,
-                        delta_bytes: 0,
-                    },
+                    Position { row: 0, column: 0, byte: 0 },
                     3,
                     0,
                     3,
@@ -3386,11 +3270,7 @@ mod tests {
             }),
             Arc::new(RholangNode::LongLiteral {
                 base: NodeBase::new_simple(
-                    RelativePosition {
-                        delta_lines: 0,
-                        delta_columns: 0,
-                        delta_bytes: 0,
-                    },
+                    Position { row: 0, column: 0, byte: 0 },
                     1,
                     0,
                     1,
@@ -3402,11 +3282,7 @@ mod tests {
         let c_pair2 = (
             Arc::new(RholangNode::StringLiteral {
                 base: NodeBase::new_simple(
-                    RelativePosition {
-                        delta_lines: 0,
-                        delta_columns: 0,
-                        delta_bytes: 0,
-                    },
+                    Position { row: 0, column: 0, byte: 0 },
                     3,
                     0,
                     3,
@@ -3416,11 +3292,7 @@ mod tests {
             }),
             Arc::new(RholangNode::LongLiteral {
                 base: NodeBase::new_simple(
-                    RelativePosition {
-                        delta_lines: 0,
-                        delta_columns: 0,
-                        delta_bytes: 0,
-                    },
+                    Position { row: 0, column: 0, byte: 0 },
                     1,
                     0,
                     1,
@@ -3432,11 +3304,7 @@ mod tests {
         let c_pairs = Vector::new_with_ptr_kind().push_back(c_pair1).push_back(c_pair2);
         let concrete = Arc::new(RholangNode::Map {
             base: NodeBase::new_simple(
-                RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
-                },
+                Position { row: 0, column: 0, byte: 0 },
                 0,
                 0,
                 0,
@@ -3453,11 +3321,7 @@ mod tests {
     fn test_match_pat_disjunction() {
         let p_left = Arc::new(RholangNode::LongLiteral {
             base: NodeBase::new_simple(
-                RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
-                },
+                Position { row: 0, column: 0, byte: 0 },
                 1,
                 0,
                 1,
@@ -3467,11 +3331,7 @@ mod tests {
         });
         let p_right = Arc::new(RholangNode::LongLiteral {
             base: NodeBase::new_simple(
-                RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
-                },
+                Position { row: 0, column: 0, byte: 0 },
                 1,
                 0,
                 1,
@@ -3481,11 +3341,7 @@ mod tests {
         });
         let pat = Arc::new(RholangNode::Disjunction {
             base: NodeBase::new_simple(
-                RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
-                },
+                Position { row: 0, column: 0, byte: 0 },
                 0,
                 0,
                 0,
@@ -3496,11 +3352,7 @@ mod tests {
         });
         let c_left = Arc::new(RholangNode::LongLiteral {
             base: NodeBase::new_simple(
-                RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
-                },
+                Position { row: 0, column: 0, byte: 0 },
                 1,
                 0,
                 1,
@@ -3510,11 +3362,7 @@ mod tests {
         });
         let c_right = Arc::new(RholangNode::LongLiteral {
             base: NodeBase::new_simple(
-                RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
-                },
+                Position { row: 0, column: 0, byte: 0 },
                 1,
                 0,
                 1,
@@ -3524,11 +3372,7 @@ mod tests {
         });
         let concrete = Arc::new(RholangNode::Disjunction {
             base: NodeBase::new_simple(
-                RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
-                },
+                Position { row: 0, column: 0, byte: 0 },
                 0,
                 0,
                 0,

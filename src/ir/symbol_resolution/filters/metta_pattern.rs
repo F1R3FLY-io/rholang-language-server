@@ -152,14 +152,14 @@ mod tests {
     use super::*;
     use tower_lsp::lsp_types::{Range, Url, Position as LspPosition};
     use crate::ir::symbol_resolution::{SymbolKind, ResolutionConfidence, ResolutionContext};
-    use crate::ir::semantic_node::{NodeBase, RelativePosition};
+    use crate::ir::semantic_node::{NodeBase, Position};
 
     fn test_base() -> NodeBase {
         NodeBase::new_simple(
-            RelativePosition {
-                delta_lines: 0,
-                delta_columns: 0,
-                delta_bytes: 0,
+            Position {
+                row: 0,
+                column: 0,
+                byte: 0,
             },
             10,
             0,

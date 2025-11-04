@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::any::Any;
 use rholang_language_server::ir::rholang_node::{
     BinOperator, RholangBundleType, CommentKind, Metadata, RholangNode, NodeBase, Position,
-    RelativePosition, RholangSendType, UnaryOperator, RholangVarRefKind
+    RholangSendType, UnaryOperator, RholangVarRefKind
 };
 use rholang_language_server::ir::visitor::Visitor;
 use rholang_language_server::ir::pipeline::{Pipeline, Transform};
@@ -35,7 +35,7 @@ impl Visitor for SimplifyDoubleUnary {
             if *inner_op == op {
                 debug!("Simplifying double unary operation: {:?}", op);
                 let new_base = NodeBase::new_simple(
-                    base.relative_start(),
+                    base.start(),
                     inner_operand.base().length(),
                     0,
                     inner_operand.base().length(),
@@ -53,7 +53,7 @@ impl Visitor for SimplifyDoubleUnary {
                     let new_length = new_text.len();
                     debug!("Simplifying neg(long_literal({})) to {}", value, new_value);
                     let new_base = NodeBase::new_simple(
-                        base.relative_start(),
+                        base.start(),
                         new_length,
                         0,
                         new_length,
@@ -72,7 +72,7 @@ impl Visitor for SimplifyDoubleUnary {
                     let new_length = new_text.len();
                     debug!("Simplifying not(bool_literal({})) to {}", value, new_value);
                     let new_base = NodeBase::new_simple(
-                        base.relative_start(),
+                        base.start(),
                         new_length,
                         0,
                         new_length,
@@ -155,7 +155,7 @@ impl Visitor for IncrementVersion {
         base: &NodeBase,
         channel: &Arc<RholangNode>,
         send_type: &RholangSendType,
-        send_type_delta: &RelativePosition,
+        send_type_pos: &Position,
         inputs: &Vector<Arc<RholangNode>, ArcK>,
         metadata: &Option<Arc<Metadata>>,
     ) -> Arc<RholangNode> {
@@ -169,7 +169,7 @@ impl Visitor for IncrementVersion {
             base: base.clone(),
             channel: new_channel,
             send_type: send_type.clone(),
-            send_type_delta: *send_type_delta,
+            send_type_pos: *send_type_pos,
             inputs: new_inputs,
             metadata: Some(Arc::new(data)),
         })

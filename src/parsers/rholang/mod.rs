@@ -26,7 +26,7 @@ pub mod helpers;
 pub mod conversion;
 
 // Re-export public API for backward compatibility
-pub use parsing::{parse_code, parse_to_ir, update_tree};
+pub use parsing::{parse_code, parse_to_ir, parse_to_document_ir, update_tree};
 
 // Note: helpers and conversion are internal implementation details
 // and are not re-exported at the module level

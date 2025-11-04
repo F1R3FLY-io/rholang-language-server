@@ -2,10 +2,16 @@
 //!
 //! Scans Rholang source files for comment directives like `// @metta` or `// @language: metta`
 //! that indicate embedded language regions within string literals.
+//!
+//! **Phase 2**: Migrated to use DocumentIR comment channel instead of Tree-Sitter traversal.
 
+use std::sync::Arc;
 use tree_sitter::{Node as TSNode, Tree};
 use ropey::Rope;
 use tracing::{debug, trace};
+
+use crate::ir::{DocumentIR, CommentNode};
+use crate::ir::semantic_node::Position;
 
 /// Source of a language region detection
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +52,8 @@ pub struct DirectiveParser;
 impl DirectiveParser {
     /// Scans a document for comment directives above string literals
     ///
+    /// **Phase 2**: Now uses DocumentIR comment channel for efficient directive access.
+    ///
     /// Looks for patterns like:
     /// - `// @metta`
     /// - `// @language: metta`
@@ -54,30 +62,29 @@ impl DirectiveParser {
     ///
     /// # Arguments
     /// * `source` - The source text to scan
-    /// * `tree` - The Tree-Sitter parse tree
-    /// * `rope` - The rope representation of the source
+    /// * `document_ir` - The DocumentIR with semantic tree and comment channel
+    /// * `tree` - The Tree-Sitter parse tree (for string literal extraction)
     ///
     /// # Returns
     /// Vector of detected language regions
-    pub fn scan_directives(source: &str, tree: &Tree, _rope: &Rope) -> Vec<LanguageRegion> {
+    pub fn scan_directives(source: &str, document_ir: &Arc<DocumentIR>, tree: &Tree) -> Vec<LanguageRegion> {
         let mut regions = Vec::new();
-        let root = tree.root_node();
 
-        // Collect all comments with their positions
-        let comments = Self::collect_comments(&root, source);
-        debug!("Found {} comment nodes", comments.len());
+        // Phase 2: Use comment channel instead of Tree-Sitter traversal
+        debug!("Found {} comments total via comment channel", document_ir.comments.len());
 
-        // Collect all string literals with their positions
-        let string_literals = Self::collect_string_literals(&root, source);
+        // Collect all string literals with their positions (still need Tree-Sitter for this)
+        let string_literals = Self::collect_string_literals(&tree.root_node(), source);
         debug!("Found {} string literal nodes", string_literals.len());
 
-        // Match comments to string literals
+        // Match directive comments to string literals
         for (string_node, string_text) in &string_literals {
-            // Look for a comment immediately before this string literal
-            if let Some((directive_lang, _comment_node)) = Self::find_directive_before(
+            // Look for a directive comment immediately before this string literal
+            // Pass ALL comments, not just filtered directives, to maintain position tracking
+            if let Some((directive_lang, _comment)) = Self::find_directive_before_v2(
                 string_node.start_byte(),
                 string_node.start_position().row,
-                &comments,
+                &document_ir.comments,
             ) {
                 debug!(
                     "Found {} directive for string at line {}",
@@ -104,43 +111,12 @@ impl DirectiveParser {
         regions
     }
 
-    /// Collects all comment nodes from the tree
-    fn collect_comments<'a>(node: &TSNode<'a>, source: &'a str) -> Vec<(TSNode<'a>, String)> {
-        let mut comments = Vec::new();
-        let mut cursor = node.walk();
-
-        Self::walk_tree_for_comments(&mut cursor, source, &mut comments);
-
-        comments
-    }
-
-    /// Recursively walks the tree to find all comment nodes
-    fn walk_tree_for_comments<'a>(
-        cursor: &mut tree_sitter::TreeCursor<'a>,
-        source: &'a str,
-        comments: &mut Vec<(TSNode<'a>, String)>,
-    ) {
-        let node = cursor.node();
-
-        // Check if this is a comment node
-        if node.kind() == "line_comment" || node.kind() == "block_comment" {
-            if let Ok(text) = node.utf8_text(source.as_bytes()) {
-                trace!("Found comment: {:?}", text);
-                comments.push((node, text.to_string()));
-            }
-        }
-
-        // Recurse into children
-        if cursor.goto_first_child() {
-            loop {
-                Self::walk_tree_for_comments(cursor, source, comments);
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-            cursor.goto_parent();
-        }
-    }
+    /// **REMOVED (Phase 2)**: Comment collection now handled by DocumentIR comment channel
+    ///
+    /// Old implementation traversed Tree-Sitter tree. Now we use:
+    /// ```rust
+    /// let directives = document_ir.directive_comments();
+    /// ```
 
     /// Collects all string literal nodes from the tree
     fn collect_string_literals<'a>(
@@ -193,36 +169,55 @@ impl DirectiveParser {
         }
     }
 
-    /// Finds a language directive comment before a string literal
+    /// **Phase 2**: Finds a language directive comment before a string literal
+    ///
+    /// Uses the comment channel from DocumentIR for efficient access.
+    /// Iterates through ALL comments to maintain proper position tracking.
     ///
     /// Returns the language name if a directive is found
-    fn find_directive_before<'a>(
+    fn find_directive_before_v2(
         string_start_byte: usize,
         string_line: usize,
-        comments: &[(TSNode<'a>, String)],
-    ) -> Option<(String, TSNode<'a>)> {
-        // Look for a comment on the line immediately before the string literal
+        comments: &[CommentNode],
+    ) -> Option<(String, CommentNode)> {
+        let mut prev_end = Position {
+            row: 0,
+            column: 0,
+            byte: 0,
+        };
+
+        // Look for a directive comment on the line immediately before the string literal
         // or on the same line before the string
-        for (comment_node, comment_text) in comments {
-            let comment_line = comment_node.start_position().row;
-            let comment_end_byte = comment_node.end_byte();
+        // IMPORTANT: Iterate through ALL comments to maintain position tracking
+        for comment in comments {
+            let comment_start = comment.absolute_position(prev_end);
+            let comment_end = comment.absolute_end(comment_start);
 
-            // Comment should be before the string (same line or previous line)
-            let is_before = comment_end_byte < string_start_byte
-                && (comment_line == string_line || comment_line + 1 == string_line);
+            // Check if this comment is a directive
+            let mut comment_copy = comment.clone();
+            if let Some(lang) = comment_copy.parse_directive() {
+                // Comment should be before the string (same line or previous line)
+                let is_before = comment_end.byte < string_start_byte
+                    && (comment_start.row == string_line || comment_start.row + 1 == string_line);
 
-            if is_before {
-                // Check if comment contains a directive
-                if let Some(lang) = Self::parse_directive(comment_text) {
-                    return Some((lang, *comment_node));
+                if is_before {
+                    // Directive already parsed by CommentNode - just use it!
+                    return Some((lang.to_string(), comment.clone()));
                 }
             }
+
+            prev_end = comment_end;
         }
 
         None
     }
 
     /// Parses a comment to extract a language directive
+    ///
+    /// **DEPRECATED (Phase 2)**: Use `CommentNode::parse_directive()` from comment channel instead.
+    ///
+    /// This method is kept for backward compatibility and testing only.
+    /// The comment channel now provides pre-parsed directives via `document_ir.directive_comments()`.
     ///
     /// Matches patterns:
     /// - `@metta`
@@ -231,6 +226,7 @@ impl DirectiveParser {
     ///
     /// Whitespace between `@language`, `:`, and the language name is completely ignored.
     /// Examples: `@language:metta`, `@language: metta`, `@language :metta`, `@language : metta`
+    #[deprecated(since = "0.1.0", note = "Use CommentNode::parse_directive() from comment channel")]
     fn parse_directive(comment_text: &str) -> Option<String> {
         // Remove comment markers and normalize whitespace
         let content = comment_text
@@ -283,13 +279,19 @@ impl DirectiveParser {
 }
 
 /// Implementation of VirtualDocumentDetector trait for DirectiveParser
+///
+/// **Phase 2**: Internally creates DocumentIR from tree/rope for efficient comment access.
 impl super::detector::VirtualDocumentDetector for DirectiveParser {
     fn name(&self) -> &str {
         "directive-parser"
     }
 
     fn detect(&self, source: &str, tree: &Tree, rope: &Rope) -> Vec<LanguageRegion> {
-        Self::scan_directives(source, tree, rope)
+        // Phase 2: Create DocumentIR internally to access comment channel
+        use crate::parsers::rholang::parse_to_document_ir;
+        let document_ir = parse_to_document_ir(tree, rope);
+
+        Self::scan_directives(source, &document_ir, tree)
     }
 
     fn priority(&self) -> i32 {
@@ -310,9 +312,10 @@ impl super::detector::VirtualDocumentDetector for DirectiveParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tree_sitter::parse_code;
+    use crate::tree_sitter::{parse_code, parse_to_document_ir};
 
     #[test]
+    #[allow(deprecated)]
     fn test_parse_directive_metta() {
         assert_eq!(
             DirectiveParser::parse_directive("// @metta"),
@@ -321,6 +324,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_parse_directive_language_metta() {
         assert_eq!(
             DirectiveParser::parse_directive("// @language: metta"),
@@ -329,6 +333,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_parse_directive_language_meta() {
         assert_eq!(
             DirectiveParser::parse_directive("// @language:meta"),
@@ -337,6 +342,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_parse_directive_whitespace_variations() {
         // Test all whitespace variations
         assert_eq!(
@@ -372,6 +378,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_parse_directive_block_comment() {
         assert_eq!(
             DirectiveParser::parse_directive("/* @metta */"),
@@ -380,6 +387,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_parse_directive_no_match() {
         assert_eq!(DirectiveParser::parse_directive("// regular comment"), None);
     }
@@ -404,8 +412,9 @@ mod tests {
 "#;
         let tree = parse_code(source);
         let rope = Rope::from_str(source);
+        let document_ir = parse_to_document_ir(&tree, &rope);
 
-        let regions = DirectiveParser::scan_directives(source, &tree, &rope);
+        let regions = DirectiveParser::scan_directives(source, &document_ir, &tree);
 
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].language, "metta");
@@ -429,8 +438,9 @@ Nil |
 "#;
         let tree = parse_code(source);
         let rope = Rope::from_str(source);
+        let document_ir = parse_to_document_ir(&tree, &rope);
 
-        let regions = DirectiveParser::scan_directives(source, &tree, &rope);
+        let regions = DirectiveParser::scan_directives(source, &document_ir, &tree);
 
         assert_eq!(regions.len(), 2);
         assert_eq!(regions[0].language, "metta");
@@ -447,8 +457,9 @@ Nil |
 "#;
         let tree = parse_code(source);
         let rope = Rope::from_str(source);
+        let document_ir = parse_to_document_ir(&tree, &rope);
 
-        let regions = DirectiveParser::scan_directives(source, &tree, &rope);
+        let regions = DirectiveParser::scan_directives(source, &document_ir, &tree);
 
         // Should not detect anything without a directive
         assert_eq!(regions.len(), 0);

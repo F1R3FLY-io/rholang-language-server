@@ -67,7 +67,23 @@ pub struct VersionedChanges {
 #[derive(Debug)]
 pub struct CachedDocument {
     /// Language-specific IR (RholangNode or MettaNode)
+    ///
+    /// DEPRECATED: This field will be replaced by `document_ir.root` in a future version.
+    /// For backward compatibility, both fields are populated during the migration period.
     pub ir: Arc<RholangNode>,
+
+    /// NEW: Document IR with separate comment channel
+    ///
+    /// This field contains the semantic tree (same as `ir`) plus a separate channel
+    /// of comments sorted by position. The comment channel enables:
+    /// - Directive parsing for embedded languages (e.g., `// @metta`)
+    /// - Documentation extraction (e.g., `///` or `/**` doc comments)
+    /// - Comment-aware features without polluting the semantic tree
+    ///
+    /// During the migration period (Phase 1), this field is optional and both
+    /// `ir` and `document_ir.root` are kept in sync. In Phase 4, `ir` will be removed.
+    pub document_ir: Option<Arc<crate::ir::DocumentIR>>,
+
     /// MeTTa-specific IR (only present for MeTTa files)
     pub metta_ir: Option<Vec<Arc<MettaNode>>>,
     /// Language-agnostic unified IR for cross-language features

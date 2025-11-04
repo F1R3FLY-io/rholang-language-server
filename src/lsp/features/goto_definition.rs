@@ -86,7 +86,7 @@ impl GenericGotoDefinition {
         );
 
         // Get symbol name based on semantic category
-        let symbol_name = match self.extract_symbol_name(node) {
+        let symbol_name = match self.extract_symbol_name(node, position) {
             Some(name) => {
                 debug!("GenericGotoDefinition: Extracted symbol name: '{}'", name);
                 name
@@ -97,9 +97,12 @@ impl GenericGotoDefinition {
             }
         };
 
+        // Try to get the actual Var node from wrapped structures like LinearBind
+        let var_node = self.find_var_node_in_tree(node).unwrap_or(node);
+
         // Check if node has referenced_symbol metadata (set by SymbolTableBuilder)
         // If so, use it directly to get the definition location, bypassing resolver
-        if let Some(metadata) = node.metadata() {
+        if let Some(metadata) = var_node.metadata() {
             if let Some(sym_any) = metadata.get("referenced_symbol") {
                 if let Some(symbol) = sym_any.downcast_ref::<Arc<crate::ir::symbol_table::Symbol>>() {
                     debug!("Using referenced_symbol metadata for '{}'", symbol.name);
@@ -163,11 +166,38 @@ impl GenericGotoDefinition {
         Some(self.symbol_locations_to_response(locations))
     }
 
+    /// Check if a position is within a range using line/column comparison
+    ///
+    /// Position must be >= start and < end (half-open interval: [start, end))
+    fn position_in_range(pos: &Position, start: &Position, end: &Position) -> bool {
+        // Position must be >= start
+        if pos.row < start.row {
+            return false;
+        }
+        if pos.row == start.row && pos.column < start.column {
+            return false;
+        }
+
+        // Position must be < end (exclusive)
+        if pos.row > end.row {
+            return false;
+        }
+        if pos.row == end.row && pos.column >= end.column {
+            return false;
+        }
+
+        true
+    }
+
     /// Extract symbol name from a node
     ///
     /// This examines the node's type and metadata to extract a symbol name.
     /// The exact extraction logic depends on the semantic category.
-    fn extract_symbol_name<'a>(&self, node: &'a dyn SemanticNode) -> Option<&'a str> {
+    ///
+    /// # Arguments
+    /// * `node` - The node to extract a symbol name from
+    /// * `position` - The target position (used for position-aware traversal of collections)
+    fn extract_symbol_name<'a>(&self, node: &'a dyn SemanticNode, position: &Position) -> Option<&'a str> {
         // Try to get symbol name from metadata
         if let Some(metadata) = node.metadata() {
             debug!(
@@ -229,16 +259,31 @@ impl GenericGotoDefinition {
                     }
                 }
                 RholangNode::Quote { quotable, .. } => {
-                    // For Quote nodes (e.g., @fromRoom), extract from the inner node
+                    // For Quote nodes (e.g., @fromRoom or @"myContract"), extract from the inner node
                     if let RholangNode::Var { name, .. } = &**quotable {
                         debug!("Extracted symbol name from RholangNode::Quote->Var: {}", name);
                         return Some(name.as_str());
                     }
+                    // Also handle quoted string literals (e.g., @"myContract")
+                    if let RholangNode::StringLiteral { value, .. } = &**quotable {
+                        debug!("Extracted symbol name from RholangNode::Quote->StringLiteral: {}", value);
+                        return Some(value.as_str());
+                    }
+                }
+                RholangNode::LinearBind { source, .. } => {
+                    // For LinearBind nodes (e.g., @result <- queryResult), extract from the source
+                    debug!("Found LinearBind node, recursively extracting from source");
+                    return self.extract_symbol_name(&**source, position);
+                }
+                RholangNode::RepeatedBind { source, .. } => {
+                    // For RepeatedBind nodes (e.g., x <= ch), extract from the source
+                    debug!("Found RepeatedBind node, recursively extracting from source");
+                    return self.extract_symbol_name(&**source, position);
                 }
                 RholangNode::Block { proc, .. } => {
                     // For Block nodes (e.g., { x!() }), recursively extract from the inner proc
                     debug!("Found Block node, recursively extracting from inner proc");
-                    return self.extract_symbol_name(&**proc);
+                    return self.extract_symbol_name(&**proc, position);
                 }
                 RholangNode::Par { processes: Some(procs), .. } => {
                     // For Par nodes, recursively extract from the first process
@@ -247,44 +292,138 @@ impl GenericGotoDefinition {
                     if procs.len() >= 1 {
                         if let Some(first_proc) = procs.get(0) {
                             debug!("Recursively extracting from first process in Par");
-                            return self.extract_symbol_name(&**first_proc);
+                            return self.extract_symbol_name(&**first_proc, position);
                         }
                     }
                 }
-                RholangNode::Par { left: Some(left), right: Some(right), .. } => {
-                    // Binary Par node - try left first, then right
-                    debug!("Found binary Par node, trying left child");
-                    if let Some(name) = self.extract_symbol_name(&**left) {
+                RholangNode::Par { left: Some(left), right: Some(right), base, .. } => {
+                    // Binary Par node - use position-aware traversal to determine which child
+                    debug!("Found binary Par node, using position-aware traversal");
+
+                    let left_start = left.base().start();
+                    let left_end = left.base().end();
+                    let right_start = right.base().start();
+                    let right_end = right.base().end();
+
+                    debug!("  Left: start=({}, {}), end=({}, {})", left_start.row, left_start.column, left_end.row, left_end.column);
+                    debug!("  Right: start=({}, {}), end=({}, {})", right_start.row, right_start.column, right_end.row, right_end.column);
+                    debug!("  Target: ({}, {})", position.row, position.column);
+
+                    // Check if position is in left child
+                    if Self::position_in_range(position, &left_start, &left_end) {
+                        debug!("  Position is in left child, recursing");
+                        return self.extract_symbol_name(&**left, position);
+                    }
+
+                    // Check if position is in right child
+                    if Self::position_in_range(position, &right_start, &right_end) {
+                        debug!("  Position is in right child, recursing");
+                        return self.extract_symbol_name(&**right, position);
+                    }
+
+                    // Fallback: position doesn't match either child, try both
+                    debug!("  Position not in either child's range, trying left then right");
+                    if let Some(name) = self.extract_symbol_name(&**left, position) {
                         return Some(name);
                     }
-                    debug!("Left child didn't yield a symbol, trying right child");
-                    return self.extract_symbol_name(&**right);
+                    return self.extract_symbol_name(&**right, position);
                 }
                 RholangNode::Par { left: Some(left), .. } => {
                     // Par node with only left child
                     debug!("Found Par node with only left child");
-                    return self.extract_symbol_name(&**left);
+                    return self.extract_symbol_name(&**left, position);
                 }
                 RholangNode::Par { right: Some(right), .. } => {
                     // Par node with only right child
                     debug!("Found Par node with only right child");
-                    return self.extract_symbol_name(&**right);
+                    return self.extract_symbol_name(&**right, position);
                 }
-                RholangNode::Tuple { elements, .. } if elements.len() > 0 => {
-                    // For Tuple nodes, try to extract from each element
-                    // This handles cases where find_node_at_position returns Tuple instead of descending to Var
-                    // Note: This is a fallback - ideally find_node_at_position should return the Var directly
-                    debug!("Tuple fallback: trying to extract symbol from tuple elements");
+                RholangNode::Tuple { elements, base, .. } if elements.len() > 0 => {
+                    // For Tuple nodes, use position-aware traversal to find the correct element
+                    debug!("Tuple with {} elements: using position-aware traversal", elements.len());
 
+                    // Try to find element containing the position
                     for (i, elem) in elements.iter().enumerate() {
-                        // Try to extract from this element
-                        if let Some(symbol) = self.extract_symbol_name(&**elem) {
-                            debug!("  Found symbol '{}' in tuple element[{}]", symbol, i);
-                            return Some(symbol);
+                        let elem_start = elem.base().start();
+                        let elem_end = elem.base().end();
+
+                        // Check if position is within this element's span
+                        if Self::position_in_range(position, &elem_start, &elem_end) {
+                            debug!("  Position is in tuple element[{}], recursing", i);
+                            return self.extract_symbol_name(&**elem, position);
                         }
                     }
 
-                    debug!("No symbol found in any tuple element");
+                    debug!("Position not found in any tuple element, using fallback");
+                    // Fallback: try each element if position comparison failed
+                    for (i, elem) in elements.iter().enumerate() {
+                        if let Some(symbol) = self.extract_symbol_name(&**elem, position) {
+                            debug!("  Fallback found symbol '{}' in tuple element[{}]", symbol, i);
+                            return Some(symbol);
+                        }
+                    }
+                }
+                RholangNode::Map { pairs, base, .. } if pairs.len() > 0 => {
+                    // For Map nodes, use position-aware traversal to find the correct pair element
+                    debug!("Map with {} pairs: using position-aware traversal", pairs.len());
+
+                    // Try to find key/value containing the position
+                    for (i, (key, value)) in pairs.iter().enumerate() {
+                        let key_start = key.base().start();
+                        let key_end = key.base().end();
+                        let value_start = value.base().start();
+                        let value_end = value.base().end();
+
+                        // Check if position is within the key
+                        if Self::position_in_range(position, &key_start, &key_end) {
+                            debug!("  Position is in map pair[{}] key, recursing", i);
+                            return self.extract_symbol_name(&**key, position);
+                        }
+
+                        // Check if position is within the value
+                        if Self::position_in_range(position, &value_start, &value_end) {
+                            debug!("  Position is in map pair[{}] value, recursing", i);
+                            return self.extract_symbol_name(&**value, position);
+                        }
+                    }
+
+                    debug!("Position not found in any map pair, using fallback");
+                    // Fallback: try each key and value if position comparison failed
+                    for (i, (key, value)) in pairs.iter().enumerate() {
+                        if let Some(symbol) = self.extract_symbol_name(&**key, position) {
+                            debug!("  Fallback found symbol '{}' in map pair[{}] key", symbol, i);
+                            return Some(symbol);
+                        }
+                        if let Some(symbol) = self.extract_symbol_name(&**value, position) {
+                            debug!("  Fallback found symbol '{}' in map pair[{}] value", symbol, i);
+                            return Some(symbol);
+                        }
+                    }
+                }
+                RholangNode::List { elements, base, .. } if elements.len() > 0 => {
+                    // For List nodes, use position-aware traversal to find the correct element
+                    debug!("List with {} elements: using position-aware traversal", elements.len());
+
+                    // Try to find element containing the position
+                    for (i, elem) in elements.iter().enumerate() {
+                        let elem_start = elem.base().start();
+                        let elem_end = elem.base().end();
+
+                        // Check if position is within this element's span
+                        if Self::position_in_range(position, &elem_start, &elem_end) {
+                            debug!("  Position is in list element[{}], recursing", i);
+                            return self.extract_symbol_name(&**elem, position);
+                        }
+                    }
+
+                    debug!("Position not found in any list element, using fallback");
+                    // Fallback: try each element if position comparison failed
+                    for (i, elem) in elements.iter().enumerate() {
+                        if let Some(symbol) = self.extract_symbol_name(&**elem, position) {
+                            debug!("  Fallback found symbol '{}' in list element[{}]", symbol, i);
+                            return Some(symbol);
+                        }
+                    }
                 }
                 RholangNode::Par { processes: None, left: None, right: None, .. } => {
                     debug!("Found empty Par node (no processes, no left, no right)");
@@ -390,6 +529,38 @@ impl GenericGotoDefinition {
             None
         }
     }
+
+    /// Recursively search for a Var node within the given node tree.
+    /// This is useful for finding the actual Var node when the cursor is on a LinearBind or other wrapper.
+    fn find_var_node_in_tree<'a>(&self, node: &'a dyn SemanticNode) -> Option<&'a dyn SemanticNode> {
+        use crate::ir::rholang_node::RholangNode;
+
+        // If this is already a Var node with referenced_symbol, return it
+        if let Some(metadata) = node.metadata() {
+            if metadata.contains_key("referenced_symbol") {
+                debug!("Found Var node with referenced_symbol");
+                return Some(node);
+            }
+        }
+
+        // Otherwise, recursively search children
+        if let Some(rholang_node) = node.as_any().downcast_ref::<RholangNode>() {
+            match rholang_node {
+                RholangNode::LinearBind { source, .. } => {
+                    return self.find_var_node_in_tree(&**source);
+                }
+                RholangNode::RepeatedBind { source, .. } => {
+                    return self.find_var_node_in_tree(&**source);
+                }
+                RholangNode::Block { proc, .. } => {
+                    return self.find_var_node_in_tree(&**proc);
+                }
+                _ => {}
+            }
+        }
+
+        None
+    }
 }
 
 #[cfg(test)]
@@ -397,7 +568,7 @@ mod tests {
     use super::*;
     use std::any::Any;
     use std::collections::HashMap;
-    use crate::ir::semantic_node::{NodeBase, RelativePosition, Metadata};
+    use crate::ir::semantic_node::{NodeBase, Position, Metadata};
     use crate::ir::symbol_resolution::{ResolutionConfidence, SymbolKind, SymbolResolver};
 
     // Mock node with symbol name in metadata
@@ -416,7 +587,7 @@ mod tests {
 
             Self {
                 base: NodeBase::new_simple(
-                    RelativePosition { delta_lines: 0, delta_columns: 0, delta_bytes: 0 },
+                    Position { row: 0, column: 0, byte: 0 },
                     name_len,
                     0,
                     name_len,

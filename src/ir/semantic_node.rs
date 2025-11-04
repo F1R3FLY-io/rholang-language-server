@@ -56,7 +56,7 @@ impl std::hash::Hash for Position {
 /// Provides the foundation for tracking node locations and source text.
 #[derive(Debug, Clone)]
 pub struct NodeBase {
-    relative_start: RelativePosition, // Position relative to the previous node's end
+    start: Position,                  // Absolute start position (preserved from Tree-Sitter)
     content_length: usize,            // "Soft" length: content up to last child (for semantic operations)
     syntactic_length: usize,          // "Hard" length: includes closing delimiters (for reconstruction)
     span_lines: usize,                // Number of lines spanned by the node
@@ -67,20 +67,20 @@ impl NodeBase {
     /// Creates a new NodeBase instance with the specified attributes.
     ///
     /// # Arguments
-    /// * `relative_start` - Position relative to previous node's end
+    /// * `start` - Absolute start position (preserved from Tree-Sitter)
     /// * `content_length` - Soft length: content up to last child (for semantics)
     /// * `syntactic_length` - Hard length: includes closing delimiters (for reconstruction)
     /// * `span_lines` - Number of lines spanned
     /// * `span_columns` - Columns on the last line
     pub fn new(
-        relative_start: RelativePosition,
+        start: Position,
         content_length: usize,
         syntactic_length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
         NodeBase {
-            relative_start,
+            start,
             content_length,
             syntactic_length,
             span_lines,
@@ -91,13 +91,13 @@ impl NodeBase {
     /// Convenience constructor for nodes without closing delimiters.
     /// Sets syntactic_length = content_length.
     pub fn new_simple(
-        relative_start: RelativePosition,
+        start: Position,
         length: usize,
         span_lines: usize,
         span_columns: usize,
     ) -> Self {
         NodeBase {
-            relative_start,
+            start,
             content_length: length,
             syntactic_length: length,
             span_lines,
@@ -105,9 +105,9 @@ impl NodeBase {
         }
     }
 
-    /// Returns the relative start position of the node.
-    pub fn relative_start(&self) -> RelativePosition {
-        self.relative_start
+    /// Returns the absolute start position of the node.
+    pub fn start(&self) -> Position {
+        self.start
     }
 
     /// Returns the content length (soft length) - content up to last child.
@@ -140,19 +140,17 @@ impl NodeBase {
         self.span_columns
     }
 
-    /// Returns the delta in bytes from the previous node's end.
-    pub fn delta_bytes(&self) -> usize {
-        self.relative_start.delta_bytes
-    }
-
-    /// Returns the delta in lines from the previous node's end.
-    pub fn delta_lines(&self) -> i32 {
-        self.relative_start.delta_lines
-    }
-
-    /// Returns the delta in columns from the previous node's end.
-    pub fn delta_columns(&self) -> i32 {
-        self.relative_start.delta_columns
+    /// Computes the absolute end position of this node.
+    pub fn end(&self) -> Position {
+        Position {
+            row: self.start.row + self.span_lines,
+            column: if self.span_lines > 0 {
+                self.span_columns
+            } else {
+                self.start.column + self.span_columns
+            },
+            byte: self.start.byte + self.syntactic_length,
+        }
     }
 }
 
@@ -315,47 +313,20 @@ pub trait SemanticNode: Send + Sync + fmt::Debug + Any {
     /// Use this with `downcast_ref::<ConcreteType>()` to access language-specific structure.
     fn as_any(&self) -> &dyn Any;
 
-    /// Computes the absolute position of this node given the previous node's end position
-    ///
-    /// # Arguments
-    /// - `prev_end`: The absolute position where the previous node ended
+    /// Returns the absolute start position of this node.
     ///
     /// # Returns
-    /// The absolute position of this node's start
-    fn absolute_position(&self, prev_end: Position) -> Position {
-        let base = self.base();
-        let rel = base.relative_start();
-
-        Position {
-            row: (prev_end.row as i32 + rel.delta_lines) as usize,
-            column: if rel.delta_lines > 0 {
-                rel.delta_columns as usize
-            } else {
-                (prev_end.column as i32 + rel.delta_columns) as usize
-            },
-            byte: prev_end.byte + rel.delta_bytes,
-        }
+    /// The absolute position where this node starts
+    fn start(&self) -> Position {
+        self.base().start()
     }
 
-    /// Computes the absolute end position of this node given its start position
-    ///
-    /// # Arguments
-    /// - `start`: The absolute start position of this node
+    /// Returns the absolute end position of this node.
     ///
     /// # Returns
     /// The absolute position where this node ends
-    fn absolute_end(&self, start: Position) -> Position {
-        let base = self.base();
-
-        Position {
-            row: start.row + base.span_lines(),
-            column: if base.span_lines() > 0 {
-                base.span_columns()
-            } else {
-                start.column + base.span_columns()
-            },
-            byte: start.byte + base.length(),
-        }
+    fn end(&self) -> Position {
+        self.base().end()
     }
 }
 
@@ -767,14 +738,14 @@ pub trait TransformVisitor {
             }
 
             // Send (channel + inputs)
-            RholangNode::Send { base, send_type, send_type_delta, metadata, .. } if !transformed_children.is_empty() => {
+            RholangNode::Send { base, send_type, send_type_pos, metadata, .. } if !transformed_children.is_empty() => {
                 let channel = to_rholang(&transformed_children[0]);
                 let inputs = transformed_children[1..].iter().map(to_rholang).collect();
 
                 Arc::new(RholangNode::Send {
                     base: base.clone(),
                     send_type: send_type.clone(),
-                    send_type_delta: *send_type_delta,
+                    send_type_pos: *send_type_pos,
                     channel,
                     inputs,
                     metadata: metadata.clone(),

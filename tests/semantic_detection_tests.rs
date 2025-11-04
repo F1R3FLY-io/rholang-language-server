@@ -5,6 +5,7 @@
 //! compiler channels and sends via channel flow analysis.
 
 use rholang_language_server::language_regions::{ChannelFlowAnalyzer, DirectiveParser, SemanticDetector, RegionSource};
+use rholang_language_server::parsers::rholang::parse_to_document_ir;
 use rholang_language_server::tree_sitter::parse_code;
 use ropey::Rope;
 
@@ -37,7 +38,8 @@ fn test_both_directive_and_semantic_detection() {
     let rope = Rope::from_str(source);
 
     // Both methods should find the region
-    let directive_regions = DirectiveParser::scan_directives(source, &tree, &rope);
+    let doc_ir = parse_to_document_ir(&tree, &rope);
+    let directive_regions = DirectiveParser::scan_directives(source, &doc_ir, &tree);
     let semantic_regions = SemanticDetector::detect_regions(source, &tree, &rope);
 
     assert_eq!(directive_regions.len(), 1, "Directive parser should find it");
@@ -105,7 +107,8 @@ fn test_combined_detection_no_duplicates() {
     let tree = parse_code(source);
     let rope = Rope::from_str(source);
 
-    let directive_regions = DirectiveParser::scan_directives(source, &tree, &rope);
+    let doc_ir = parse_to_document_ir(&tree, &rope);
+    let directive_regions = DirectiveParser::scan_directives(source, &doc_ir, &tree);
     let semantic_regions = SemanticDetector::detect_regions(source, &tree, &rope);
 
     // Directive parser finds the first one
@@ -248,7 +251,8 @@ new metta in {
     let tree = parse_code(source);
     let rope = Rope::from_str(source);
 
-    let directive_regions = DirectiveParser::scan_directives(source, &tree, &rope);
+    let doc_ir = parse_to_document_ir(&tree, &rope);
+    let directive_regions = DirectiveParser::scan_directives(source, &doc_ir, &tree);
     let semantic_regions = SemanticDetector::detect_regions(source, &tree, &rope);
     let flow_regions = ChannelFlowAnalyzer::analyze(source, &tree, &rope);
 
