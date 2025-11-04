@@ -74,8 +74,8 @@ with_lsp_client!(test_map_pattern_goto_definition, CommType::Stdio, |client: &Ls
 });
 
 /// Test goto-definition for variable bound in list pattern
-/// Line 14: @[first, second, third]
-/// Line 15: first usage should resolve to line 13, character 15 (first binding)
+/// Line 13: contract with @[first, second, third]
+/// Line 14: first usage should resolve to line 13, character 15 (first binding)
 with_lsp_client!(test_list_pattern_goto_definition, CommType::Stdio, |client: &LspClient| {
     println!("\n=== Testing goto-definition for list pattern variable ===");
 
@@ -91,8 +91,8 @@ with_lsp_client!(test_list_pattern_goto_definition, CommType::Stdio, |client: &L
     let _diagnostics = client.await_diagnostics(&doc)
         .expect("Failed to receive diagnostics");
 
-    // Usage position: line 15, column 10 (0-indexed: 14, 9) - "first" in return statement
-    let usage_line = 14u32;
+    // Usage position: line 14, column 10 (0-indexed: 13, 9) - "first" in return statement
+    let usage_line = 13u32;
     let usage_char = 9u32;
 
     println!("\nRequesting goto-definition at line {}, character {}...", usage_line, usage_char);
@@ -140,8 +140,8 @@ with_lsp_client!(test_nested_map_pattern_goto_definition, CommType::Stdio, |clie
     let _diagnostics = client.await_diagnostics(&doc)
         .expect("Failed to receive diagnostics");
 
-    // Usage position: line 31, column 30 (0-indexed: 30, 29) - "cityName" in stdout call
-    let usage_line = 30u32;
+    // Usage position: line 25, column 30 (0-indexed: 24, 29) - "cityName" in stdout call
+    let usage_line = 24u32;
     let usage_char = 29u32;
 
     println!("\nRequesting goto-definition at line {}, character {}...", usage_line, usage_char);
@@ -189,8 +189,8 @@ with_lsp_client!(test_tuple_pattern_goto_definition, CommType::Stdio, |client: &
     let _diagnostics = client.await_diagnostics(&doc)
         .expect("Failed to receive diagnostics");
 
-    // Usage position: line 21, column 11 (0-indexed: 20, 10) - "x" in ret!((x, y, z))
-    let usage_line = 20u32;
+    // Usage position: line 20, column 11 (0-indexed: 19, 10) - "x" in ret!((x, y, z))
+    let usage_line = 19u32;
     let usage_char = 10u32;
 
     println!("\nRequesting goto-definition at line {}, character {}...", usage_line, usage_char);
@@ -237,10 +237,10 @@ with_lsp_client!(test_complex_pattern_scoping, CommType::Stdio, |client: &LspCli
     let _diagnostics = client.await_diagnostics(&doc)
         .expect("Failed to receive diagnostics");
 
-    // Try to get definition for "userName" from a different contract's scope
-    // This should NOT resolve to processUser's userName parameter
-    // Using position in sumThree contract (line 15)
-    let usage_line = 14u32;
+    // Try to get definition for "first" in sumThree contract
+    // This should resolve to sumThree's parameter, NOT to processUser
+    // Using position in sumThree contract (line 14, character 9) - "first" in ret!(first + second + third)
+    let usage_line = 13u32;
     let usage_char = 9u32;  // "first" variable
 
     println!("\nVerifying variable 'first' is scoped to sumThree contract...");
@@ -249,13 +249,13 @@ with_lsp_client!(test_complex_pattern_scoping, CommType::Stdio, |client: &LspCli
         Ok(locations) if !locations.is_empty() => {
             println!("✓ Found {} definition location(s)", locations.len());
 
-            // All definitions should be on line 13 (sumThree's parameter line)
-            // NOT on line 7 (processUser's parameter line)
+            // All definitions should be on line 12 (sumThree's parameter line)
+            // NOT on line 6 (processUser's parameter line)
             for loc in &locations {
-                assert_ne!(loc.range.start.line, 7,
+                assert_ne!(loc.range.start.line, 6,
                     "Variable 'first' should NOT resolve to processUser's parameters");
-                assert_eq!(loc.range.start.line, 13,
-                    "Variable 'first' should resolve to sumThree's parameter on line 13");
+                assert_eq!(loc.range.start.line, 12,
+                    "Variable 'first' should resolve to sumThree's parameter on line 12");
             }
 
             println!("\n=== TEST PASSED ===");
@@ -274,15 +274,28 @@ with_lsp_client!(test_complex_pattern_scoping, CommType::Stdio, |client: &LspCli
     client.close_document(&doc).expect("Failed to close document");
 });
 
-/// Test goto-definition for variable bound in pathmap pattern
-/// Line 108: @{| key1, key2, key3 |}
-/// Line 110: key1 usage should resolve to line 107, parameter binding
+/// Test goto-definition for map literal keys in contract invocations
 ///
-/// NOTE: This test is disabled because pathmap pattern syntax ({| ... |}) triggers parser bugs.
-/// The pattern should be added to the test file once parser support is complete.
-#[ignore = "pathmap pattern syntax triggers parser bugs - awaiting parser implementation"]
+/// Contract definition (line 70, 0-indexed 69):
+///   contract processComplex(@{
+///     user: {name: n, email: e},  <-- "email:" pattern key here
+///     ...
+///   }, ret)
+///
+/// Invocation (line 111, 0-indexed 110):
+///   processComplex!({
+///     "user": {"name": "Bob", "email": "bob@example.com"},  <-- "email" literal key here
+///     ...
+///   })
+///
+/// Expected: Clicking on "email" in the invocation should jump to "email:" in the pattern
+///
+/// This requires MORK pattern matching to link map literal keys to map pattern keys through
+/// structural analysis of contract signatures.
+///
+/// STATUS: Test is enabled but will fail until Phases 2-5 are implemented.
 with_lsp_client!(test_pathmap_pattern_goto_definition, CommType::Stdio, |client: &LspClient| {
-    println!("\n=== Testing goto-definition for pathmap pattern variable ===");
+    println!("\n=== Testing goto-definition for map literal keys ===");
 
     let file_path = "tests/resources/complex_quote_patterns.rho";
     let source = fs::read_to_string(file_path)
@@ -296,9 +309,10 @@ with_lsp_client!(test_pathmap_pattern_goto_definition, CommType::Stdio, |client:
     let _diagnostics = client.await_diagnostics(&doc)
         .expect("Failed to receive diagnostics");
 
-    // Usage position: line 110, column 29 (0-indexed: 109, 28) - "key1" in stdout call
-    let usage_line = 109u32;
-    let usage_char = 28u32;
+    // Click on "email" key in: {"user": {"name": "Bob", "email": "bob@example.com"}, ...}
+    // Line 111 (0-indexed 110), the opening quote of "email" is at column 41 (0-indexed 40)
+    let usage_line = 110u32;
+    let usage_char = 40u32;
 
     println!("\nRequesting goto-definition at line {}, character {}...", usage_line, usage_char);
 
@@ -308,15 +322,16 @@ with_lsp_client!(test_pathmap_pattern_goto_definition, CommType::Stdio, |client:
 
             assert!(locations.len() >= 1, "Expected at least one definition");
 
-            // The definition should be on line 106 (0-indexed) in the parameter pattern
-            let on_param_line = locations.iter().any(|loc| loc.range.start.line == 106);
-            assert!(on_param_line, "Definition should be on the parameter line (106)");
+            // The definition should be on line 70 (0-indexed 69) where "email: e" pattern is defined
+            // in contract processComplex parameter: user: {name: n, email: e}
+            let on_param_line = locations.iter().any(|loc| loc.range.start.line == 69);
+            assert!(on_param_line, "Definition should be on the parameter line (69) where 'email: e' is defined");
 
             println!("\n=== TEST PASSED ===");
         }
         Ok(_) => {
             client.close_document(&doc).expect("Failed to close document");
-            panic!("No definitions found for key1 in pathmap pattern");
+            panic!("No definitions found for map literal key 'email' in contract invocation");
         }
         Err(e) => {
             client.close_document(&doc).expect("Failed to close document");
