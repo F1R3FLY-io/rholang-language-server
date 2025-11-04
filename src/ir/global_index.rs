@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use tower_lsp::lsp_types::{Location, Range, Position, Url};
 use crate::ir::pattern_matching::RholangPatternMatcher;
-use crate::ir::rholang_node::{RholangNode, NodeBase, RelativePosition};
+use crate::ir::rholang_node::{RholangNode, NodeBase, Position as IrPosition};
 
 /// Unique identifier for a symbol in the workspace
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -74,10 +74,10 @@ impl SymbolLocation {
         Arc::new(RholangNode::StringLiteral {
             value: location_data,
             base: NodeBase::new_simple(
-                RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
+                IrPosition {
+                    row: 0,
+                    column: 0,
+                    byte: 0,
                 },
                 0, 0, data_len
             ),
@@ -137,6 +137,14 @@ pub struct GlobalSymbolIndex {
     /// Pattern: (new "<channel_name>" ...) -> SymbolLocation
     pub channel_definitions: RholangPatternMatcher,
 
+    /// Index of map key patterns in contract parameters
+    /// Pattern: (map-key-pattern "<contract_name>" "<key_path>") -> SymbolLocation
+    /// Example: For contract processComplex(@{user: {name: n, email: e}}, ret)
+    ///   - (map-key-pattern "processComplex" "user") -> location of "user:" key
+    ///   - (map-key-pattern "processComplex" "user.name") -> location of "name:" key
+    ///   - (map-key-pattern "processComplex" "user.email") -> location of "email:" key
+    pub map_key_patterns: RholangPatternMatcher,
+
     /// Inverted index: SymbolId -> [reference locations]
     /// Used for find-references
     pub references: HashMap<SymbolId, Vec<SymbolLocation>>,
@@ -159,6 +167,7 @@ impl GlobalSymbolIndex {
             contract_definitions: RholangPatternMatcher::new(),
             contract_invocations: RholangPatternMatcher::new(),
             channel_definitions: RholangPatternMatcher::new(),
+            map_key_patterns: RholangPatternMatcher::new(),
             references: HashMap::new(),
             definitions: HashMap::new(),
         }
@@ -346,10 +355,10 @@ impl GlobalSymbolIndex {
         Arc::new(RholangNode::StringLiteral {
             value: format!("contract:{}", name),
             base: NodeBase::new_simple(
-                RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
+                IrPosition {
+                    row: 0,
+                    column: 0,
+                    byte: 0,
                 },
                 0, 0, name.len()
             ),
@@ -365,10 +374,10 @@ impl GlobalSymbolIndex {
         Arc::new(RholangNode::StringLiteral {
             value: format!("send:contract:{}", name),
             base: NodeBase::new_simple(
-                RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
+                IrPosition {
+                    row: 0,
+                    column: 0,
+                    byte: 0,
                 },
                 0, 0, name.len()
             ),
@@ -383,12 +392,100 @@ impl GlobalSymbolIndex {
         Arc::new(RholangNode::StringLiteral {
             value: format!("channel:{}", name),
             base: NodeBase::new_simple(
-                RelativePosition {
-                    delta_lines: 0,
-                    delta_columns: 0,
-                    delta_bytes: 0,
+                IrPosition {
+                    row: 0,
+                    column: 0,
+                    byte: 0,
                 },
                 0, 0, name.len()
+            ),
+            metadata: None,
+        })
+    }
+
+    /// Add a map key pattern to the index
+    ///
+    /// # Arguments
+    /// * `contract_name` - Name of the contract containing the map pattern
+    /// * `key_path` - Dot-separated path to the key (e.g., "user.email")
+    /// * `location` - Location of the key in the pattern definition
+    ///
+    /// # Example
+    /// For `contract processComplex(@{user: {name: n, email: e}}, ret)`:
+    /// - add_map_key_pattern("processComplex", "user", location_of_user_key)
+    /// - add_map_key_pattern("processComplex", "user.name", location_of_name_key)
+    /// - add_map_key_pattern("processComplex", "user.email", location_of_email_key)
+    pub fn add_map_key_pattern(
+        &mut self,
+        contract_name: &str,
+        key_path: &str,
+        location: SymbolLocation,
+    ) -> Result<(), String> {
+        // Create pattern: (map-key-pattern "<contract_name>" "<key_path>")
+        let pattern = Self::create_map_key_pattern(contract_name, key_path);
+
+        // Store in pattern matcher
+        let location_node = location.to_rholang_node();
+        self.map_key_patterns.add_pattern(&pattern, &location_node)?;
+
+        Ok(())
+    }
+
+    /// Query map key patterns for a specific contract and key path
+    ///
+    /// # Arguments
+    /// * `contract_name` - Name of the contract
+    /// * `key_path` - Dot-separated path to the key
+    ///
+    /// # Returns
+    /// Vector of matching symbol locations
+    ///
+    /// # Example
+    /// ```
+    /// let locations = index.query_map_key_pattern("processComplex", "user.email")?;
+    /// ```
+    pub fn query_map_key_pattern(
+        &self,
+        contract_name: &str,
+        key_path: &str,
+    ) -> Result<Vec<SymbolLocation>, String> {
+        // Query pattern: (map-key-pattern "<contract_name>" "<key_path>")
+        let query = Self::create_map_key_pattern(contract_name, key_path);
+
+        let matches = self.map_key_patterns.match_query(&query)?;
+
+        // Convert results to SymbolLocations
+        let mut locations = Vec::new();
+        for (node, _bindings) in matches {
+            match SymbolLocation::from_rholang_node(&node) {
+                Ok(loc) => locations.push(loc),
+                Err(e) => eprintln!("Warning: Failed to parse location: {}", e),
+            }
+        }
+
+        Ok(locations)
+    }
+
+    /// Create a map key pattern for MORK matching
+    ///
+    /// Pattern format: "map-key:<contract_name>:<key_path>"
+    ///
+    /// # Arguments
+    /// * `contract_name` - Name of the contract
+    /// * `key_path` - Dot-separated key path (e.g., "user.email")
+    fn create_map_key_pattern(contract_name: &str, key_path: &str) -> Arc<RholangNode> {
+        // Pattern: (map-key-pattern "<contract_name>" "<key_path>")
+        // Use StringLiteral for constant pattern matching
+        let pattern_value = format!("map-key:{}:{}", contract_name, key_path);
+        Arc::new(RholangNode::StringLiteral {
+            value: pattern_value.clone(),
+            base: NodeBase::new_simple(
+                IrPosition {
+                    row: 0,
+                    column: 0,
+                    byte: 0,
+                },
+                0, 0, pattern_value.len()
             ),
             metadata: None,
         })
@@ -399,6 +496,7 @@ impl GlobalSymbolIndex {
         self.contract_definitions = RholangPatternMatcher::new();
         self.contract_invocations = RholangPatternMatcher::new();
         self.channel_definitions = RholangPatternMatcher::new();
+        self.map_key_patterns = RholangPatternMatcher::new();
         self.references.clear();
         self.definitions.clear();
     }
@@ -464,5 +562,87 @@ mod tests {
         index.clear();
         assert_eq!(index.definitions.len(), 0);
         assert_eq!(index.references.len(), 0);
+    }
+
+    #[test]
+    fn test_add_map_key_pattern() {
+        let mut index = GlobalSymbolIndex::new();
+
+        // Create location for "user" key
+        let user_location = create_test_location("file:///test.rho", 5, 10);
+
+        // Add map key pattern
+        let result = index.add_map_key_pattern("processComplex", "user", user_location);
+        assert!(result.is_ok(), "Should add map key pattern successfully");
+    }
+
+    #[test]
+    fn test_query_map_key_pattern() {
+        let mut index = GlobalSymbolIndex::new();
+
+        // Add patterns for nested map keys
+        let user_location = create_test_location("file:///test.rho", 5, 10);
+        let email_location = create_test_location("file:///test.rho", 5, 20);
+
+        index.add_map_key_pattern("processComplex", "user", user_location.clone()).unwrap();
+        index.add_map_key_pattern("processComplex", "user.email", email_location.clone()).unwrap();
+
+        // Query for "user" key
+        let results = index.query_map_key_pattern("processComplex", "user").unwrap();
+        assert_eq!(results.len(), 1, "Should find one match for 'user' key");
+        assert_eq!(results[0].range.start.line, 5);
+        assert_eq!(results[0].range.start.character, 10);
+
+        // Query for "user.email" key
+        let results = index.query_map_key_pattern("processComplex", "user.email").unwrap();
+        assert_eq!(results.len(), 1, "Should find one match for 'user.email' key");
+        assert_eq!(results[0].range.start.line, 5);
+        assert_eq!(results[0].range.start.character, 20);
+
+        // Query for non-existent key
+        let results = index.query_map_key_pattern("processComplex", "nonexistent").unwrap();
+        assert_eq!(results.len(), 0, "Should find no matches for non-existent key");
+    }
+
+    #[test]
+    fn test_map_key_pattern_multiple_contracts() {
+        let mut index = GlobalSymbolIndex::new();
+
+        // Add same key path for different contracts
+        let location1 = create_test_location("file:///test1.rho", 5, 10);
+        let location2 = create_test_location("file:///test2.rho", 10, 20);
+
+        index.add_map_key_pattern("contractA", "user.email", location1).unwrap();
+        index.add_map_key_pattern("contractB", "user.email", location2).unwrap();
+
+        // Query for contractA's pattern
+        let results = index.query_map_key_pattern("contractA", "user.email").unwrap();
+        assert_eq!(results.len(), 1, "Should find contractA's pattern");
+        assert_eq!(results[0].uri.as_str(), "file:///test1.rho");
+
+        // Query for contractB's pattern
+        let results = index.query_map_key_pattern("contractB", "user.email").unwrap();
+        assert_eq!(results.len(), 1, "Should find contractB's pattern");
+        assert_eq!(results[0].uri.as_str(), "file:///test2.rho");
+    }
+
+    #[test]
+    fn test_clear_index_includes_map_patterns() {
+        let mut index = GlobalSymbolIndex::new();
+        let location = create_test_location("file:///test.rho", 5, 10);
+
+        // Add map key pattern
+        index.add_map_key_pattern("processComplex", "user", location).unwrap();
+
+        // Verify it's added (query should succeed)
+        let results = index.query_map_key_pattern("processComplex", "user").unwrap();
+        assert_eq!(results.len(), 1, "Pattern should be added");
+
+        // Clear the index
+        index.clear();
+
+        // Verify it's cleared (query should return empty)
+        let results = index.query_map_key_pattern("processComplex", "user").unwrap();
+        assert_eq!(results.len(), 0, "Pattern should be cleared");
     }
 }
