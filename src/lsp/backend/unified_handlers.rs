@@ -315,7 +315,10 @@ impl RholangBackend {
     fn get_adapter(&self, context: &LanguageContext) -> Option<LanguageAdapter> {
         match context {
             LanguageContext::Rholang { symbol_table, .. } => {
-                Some(crate::lsp::features::adapters::create_rholang_adapter(symbol_table.clone()))
+                Some(crate::lsp::features::adapters::create_rholang_adapter(
+                    symbol_table.clone(),
+                    self.workspace.global_index.clone(),
+                ))
             }
             LanguageContext::MettaVirtual { symbol_table, parent_uri, .. } => {
                 Some(crate::lsp::features::adapters::create_metta_adapter(
@@ -405,6 +408,7 @@ impl RholangBackend {
                 // Fallback: Try MORK pattern matching for map key navigation
                 // This handles clicking on map literal keys in contract invocations
                 debug!("Generic goto-definition returned None, trying MORK fallback for map keys");
+
                 self.try_mork_map_key_navigation(root.as_ref(), &ir_position, &uri).await
             }
             LanguageContext::MettaVirtual {
@@ -850,7 +854,8 @@ impl RholangBackend {
     /// 5. Return the location of the pattern key definition
     ///
     /// # Arguments
-    /// * `root` - Root of the Rholang IR tree
+    /// * `root` - Root of the Rholang IR tree (as trait object)
+    /// * `root_arc` - Root as Arc<RholangNode> for position computation
     /// * `position` - Position where goto-definition was requested (IR coordinates)
     /// * `uri` - URI of the document
     ///
@@ -936,23 +941,136 @@ impl RholangBackend {
     /// Traverses up through parent Map nodes to build paths like "user.email"
     fn build_map_key_path(
         &self,
-        _root: &dyn SemanticNode,
-        _position: &Position,
-        key_node: &crate::ir::rholang_node::RholangNode,
+        root: &dyn SemanticNode,
+        position: &Position,
+        _key_node: &crate::ir::rholang_node::RholangNode,
     ) -> Option<String> {
         use crate::ir::rholang_node::RholangNode;
 
-        // For now, just return the key name directly
-        // TODO: Implement nested key path building by traversing parent maps
-        match key_node {
-            RholangNode::StringLiteral { value, .. } => Some(value.clone()),
-            _ => None,
+        debug!("build_map_key_path: Starting traversal from root at position {:?}", position);
+
+        // Downcast root to RholangNode
+        let rholang_root = root.as_any().downcast_ref::<RholangNode>()?;
+
+        // Find map key by traversing from root
+        let result = self.find_map_key_in_tree(rholang_root, position, Vec::new());
+        debug!("build_map_key_path: Traversal result = {:?}", result);
+        result
+    }
+
+    /// Recursively find map key at position, building path along the way
+    fn find_map_key_in_tree(
+        &self,
+        node: &crate::ir::rholang_node::RholangNode,
+        target_pos: &Position,
+        mut path: Vec<String>,
+    ) -> Option<String> {
+        use crate::ir::rholang_node::RholangNode;
+        use crate::ir::semantic_node::SemanticNode;
+
+        // Get node's absolute position using base
+        let abs_start = node.base().start();
+        let abs_end = node.base().end();
+
+        debug!("find_map_key_in_tree: node type={}, start={:?}, end={:?}, target={:?}, path={:?}",
+            node.type_name(), abs_start, abs_end, target_pos, path);
+
+        // Check if target is within this node
+        if target_pos < &abs_start || target_pos > &abs_end {
+            debug!("  -> Position not in range, returning None");
+            return None;
+        }
+
+        debug!("  -> Position IN range, matching node type...");
+        match node {
+            RholangNode::Map { pairs, .. } => {
+                debug!("  -> Map has {} pairs", pairs.len());
+                for (i, (key_node, value_node)) in pairs.iter().enumerate() {
+                    let key_start = key_node.base().start();
+                    let key_end = key_node.base().end();
+
+                    debug!("    Pair {}: key type={}, start={:?}, end={:?}",
+                        i, key_node.type_name(), key_start, key_end);
+
+                    if let RholangNode::StringLiteral { value, .. } = key_node.as_ref() {
+                        debug!("      Key name: '{}'", value);
+                    }
+
+                    // Check if clicking on the key itself
+                    if target_pos >= &key_start && target_pos <= &key_end {
+                        debug!("      -> MATCH on key! Returning path with this key");
+                        // Extract key name
+                        if let RholangNode::StringLiteral { value, .. } = key_node.as_ref() {
+                            path.push(value.clone());
+                            return Some(path.join("."));
+                        }
+                    } else {
+                        debug!("      -> No match on key (target={:?} not in {:?}..{:?})",
+                            target_pos, key_start, key_end);
+                    }
+
+                    // Check if target is in the value (might be nested map)
+                    let value_start = value_node.base().start();
+                    let value_end = value_node.base().end();
+
+                    debug!("      Value: type={}, start={:?}, end={:?}",
+                        value_node.type_name(), value_start, value_end);
+
+                    if target_pos >= &value_start && target_pos <= &value_end {
+                        debug!("      -> MATCH on value! Recursing into value node");
+                        // Add this key to path and recurse into value
+                        if let RholangNode::StringLiteral { value: key_name, .. } = key_node.as_ref() {
+                            path.push(key_name.clone());
+                        }
+                        return self.find_map_key_in_tree(value_node.as_ref(), target_pos, path);
+                    } else {
+                        debug!("      -> No match on value (target={:?} not in {:?}..{:?})",
+                            target_pos, value_start, value_end);
+                    }
+                }
+                debug!("  -> No matches in Map, returning None");
+                None
+            }
+
+            // Recurse into other container nodes
+            RholangNode::Par { processes, .. } => {
+                if let Some(procs) = processes {
+                    for proc in procs.iter() {
+                        if let Some(result) = self.find_map_key_in_tree(proc.as_ref(), target_pos, path.clone()) {
+                            return Some(result);
+                        }
+                    }
+                }
+                None
+            }
+
+            RholangNode::Send { inputs, .. } => {
+                for input in inputs.iter() {
+                    if let Some(result) = self.find_map_key_in_tree(input.as_ref(), target_pos, path.clone()) {
+                        return Some(result);
+                    }
+                }
+                None
+            }
+
+            RholangNode::New { proc, .. } => {
+                self.find_map_key_in_tree(proc.as_ref(), target_pos, path)
+            }
+
+            RholangNode::Block { proc, .. } => {
+                self.find_map_key_in_tree(proc.as_ref(), target_pos, path)
+            }
+
+            _ => {
+                debug!("  -> Unhandled node type: {}", node.type_name());
+                None
+            }
         }
     }
 
     /// Find the contract name from the containing Send node
     ///
-    /// Traverses up to find a Send node and extracts the contract name from the channel
+    /// Traverses the tree to find a Send node containing the position
     fn find_contract_name_from_send(
         &self,
         root: &dyn SemanticNode,
@@ -960,17 +1078,61 @@ impl RholangBackend {
     ) -> Option<String> {
         use crate::ir::rholang_node::RholangNode;
 
-        // Downcast root to RholangNode to traverse
+        // Downcast root to RholangNode
         let rholang_root = root.as_any().downcast_ref::<RholangNode>()?;
 
-        // TODO: Implement traversal to find parent Send node
-        // For now, try to extract from the test file structure
-        // The test clicks on "email" in: processComplex!({"user": {"email": "..."}})
-        // So we know the contract name is "processComplex"
+        self.find_send_node_for_position(rholang_root, position)
+    }
 
-        // Temporary: Just return "processComplex" for testing
-        // This will be replaced with proper traversal
-        Some("processComplex".to_string())
+    /// Recursively find Send node containing the target position
+    fn find_send_node_for_position(
+        &self,
+        node: &crate::ir::rholang_node::RholangNode,
+        target_pos: &Position,
+    ) -> Option<String> {
+        use crate::ir::rholang_node::RholangNode;
+        use crate::ir::semantic_node::SemanticNode;
+
+        let abs_start = node.base().start();
+        let abs_end = node.base().end();
+
+        if target_pos < &abs_start || target_pos > &abs_end {
+            return None;
+        }
+
+        match node {
+            RholangNode::Send { channel, .. } => {
+                // Extract contract name from channel
+                match channel.as_ref() {
+                    RholangNode::Quote { quotable, .. } => {
+                        match quotable.as_ref() {
+                            RholangNode::Var { name, .. } => Some(name.clone()),
+                            RholangNode::StringLiteral { value, .. } => Some(value.clone()),
+                            _ => None,
+                        }
+                    }
+                    RholangNode::Var { name, .. } => Some(name.clone()),
+                    _ => None,
+                }
+            }
+
+            RholangNode::Par { processes, .. } => {
+                if let Some(procs) = processes {
+                    for proc in procs.iter() {
+                        if let Some(name) = self.find_send_node_for_position(proc.as_ref(), target_pos) {
+                            return Some(name);
+                        }
+                    }
+                }
+                None
+            }
+
+            RholangNode::New { proc, .. } => {
+                self.find_send_node_for_position(proc.as_ref(), target_pos)
+            }
+
+            _ => None,
+        }
     }
 }
 

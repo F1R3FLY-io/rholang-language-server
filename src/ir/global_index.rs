@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use tower_lsp::lsp_types::{Location, Range, Position, Url};
 use crate::ir::pattern_matching::RholangPatternMatcher;
 use crate::ir::rholang_node::{RholangNode, NodeBase, Position as IrPosition};
+use crate::ir::rholang_pattern_index::RholangPatternIndex;
 
 /// Unique identifier for a symbol in the workspace
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -125,11 +126,16 @@ impl SymbolLocation {
 /// Global workspace symbol index using pattern matching
 #[derive(Debug)]
 pub struct GlobalSymbolIndex {
-    /// Index of contract definitions
+    /// NEW: MORK+PathMap-based pattern index for contract parameter matching
+    /// Enables goto-definition with pattern unification and overload resolution
+    /// Path structure: ["contract", <name>, <param0_mork>, <param1_mork>, ...]
+    pub pattern_index: RholangPatternIndex,
+
+    /// LEGACY: Index of contract definitions (to be replaced by pattern_index)
     /// Pattern: (contract "<name>" ...) -> SymbolLocation
     pub contract_definitions: RholangPatternMatcher,
 
-    /// Index of contract invocations (sends to contract channels)
+    /// LEGACY: Index of contract invocations (to be replaced by pattern_index)
     /// Pattern: (send (contract "<name>") ...) -> SymbolLocation
     pub contract_invocations: RholangPatternMatcher,
 
@@ -164,6 +170,7 @@ impl GlobalSymbolIndex {
     /// Create a new empty global symbol index
     pub fn new() -> Self {
         Self {
+            pattern_index: RholangPatternIndex::new(),
             contract_definitions: RholangPatternMatcher::new(),
             contract_invocations: RholangPatternMatcher::new(),
             channel_definitions: RholangPatternMatcher::new(),
@@ -491,8 +498,135 @@ impl GlobalSymbolIndex {
         })
     }
 
+    /// Index a contract using the new MORK+PathMap pattern index
+    ///
+    /// This method uses pattern-based matching and supports:
+    /// - Exact pattern matching
+    /// - Overload resolution by arity
+    /// - Parameter pattern unification
+    ///
+    /// # Arguments
+    ///
+    /// * `contract_node` - The Contract RholangNode from IR
+    /// * `location` - LSP location of the contract definition
+    ///
+    /// # Returns
+    ///
+    /// Ok(()) on success, Err with description on failure
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let location = SymbolLocation {
+    ///     uri: Url::parse("file:///test.rho").unwrap(),
+    ///     range: Range { ... },
+    ///     kind: SymbolKind::Contract,
+    ///     documentation: None,
+    ///     signature: Some("contract echo(@x)".to_string()),
+    /// };
+    /// index.add_contract_with_pattern_index(&contract_node, location)?;
+    /// ```
+    pub fn add_contract_with_pattern_index(
+        &mut self,
+        contract_node: &RholangNode,
+        location: SymbolLocation,
+    ) -> Result<(), String> {
+        // Convert LSP SymbolLocation to pattern index SymbolLocation
+        let pattern_location = crate::ir::rholang_pattern_index::SymbolLocation {
+            uri: location.uri.to_string(),
+            start: IrPosition {
+                row: location.range.start.line as usize,
+                column: location.range.start.character as usize,
+                byte: 0, // Not used in this context
+            },
+            end: IrPosition {
+                row: location.range.end.line as usize,
+                column: location.range.end.character as usize,
+                byte: 0, // Not used in this context
+            },
+        };
+
+        // Index using the pattern index
+        self.pattern_index.index_contract(contract_node, pattern_location)
+    }
+
+    /// Query contracts by call-site pattern using the pattern index
+    ///
+    /// Converts call-site arguments to MORK patterns and queries the index
+    /// for matching contract definitions.
+    ///
+    /// # Arguments
+    ///
+    /// * `contract_name` - Name of the contract being called
+    /// * `arguments` - Argument nodes from the call site
+    ///
+    /// # Returns
+    ///
+    /// Vector of matching SymbolLocations (converted from PatternMetadata)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Query: echo!(42)
+    /// let matches = index.query_contract_by_pattern("echo", &[&int_node])?;
+    /// ```
+    pub fn query_contract_by_pattern(
+        &self,
+        contract_name: &str,
+        arguments: &[&RholangNode],
+    ) -> Result<Vec<SymbolLocation>, String> {
+        // Query the pattern index
+        let matches = self.pattern_index.query_call_site(contract_name, arguments)?;
+
+        // Convert PatternMetadata to SymbolLocation
+        let mut locations = Vec::new();
+        for metadata in matches {
+            let uri = Url::parse(&metadata.location.uri)
+                .map_err(|e| format!("Invalid URI in pattern metadata: {}", e))?;
+
+            let location = SymbolLocation {
+                uri,
+                range: Range {
+                    start: Position {
+                        line: metadata.location.start.row as u32,
+                        character: metadata.location.start.column as u32,
+                    },
+                    end: Position {
+                        line: metadata.location.end.row as u32,
+                        character: metadata.location.end.column as u32,
+                    },
+                },
+                kind: SymbolKind::Contract,
+                documentation: None,
+                signature: Some(Self::format_contract_signature(&metadata)),
+            };
+
+            locations.push(location);
+        }
+
+        Ok(locations)
+    }
+
+    /// Format a contract signature from pattern metadata for display
+    fn format_contract_signature(
+        metadata: &crate::ir::rholang_pattern_index::PatternMetadata,
+    ) -> String {
+        if let Some(ref param_names) = metadata.param_names {
+            // Use actual parameter names if available
+            format!("contract {}({})", metadata.name, param_names.join(", "))
+        } else {
+            // Use generic parameter names
+            let params = (0..metadata.arity)
+                .map(|i| format!("@param{}", i))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("contract {}({})", metadata.name, params)
+        }
+    }
+
     /// Clear all indices (useful for workspace refresh)
     pub fn clear(&mut self) {
+        self.pattern_index = RholangPatternIndex::new();
         self.contract_definitions = RholangPatternMatcher::new();
         self.contract_invocations = RholangPatternMatcher::new();
         self.channel_definitions = RholangPatternMatcher::new();

@@ -48,7 +48,7 @@ impl SymbolIndexBuilder {
     fn visit_node(&mut self, node: &Arc<RholangNode>) {
         match node.as_ref() {
             RholangNode::Contract { name, formals, proc, .. } => {
-                self.index_contract(name, formals, proc);
+                self.index_contract(node.as_ref(), name, formals, proc);
 
                 // Continue traversal
                 self.visit_node(name);
@@ -155,6 +155,7 @@ impl SymbolIndexBuilder {
     /// Index a contract definition
     fn index_contract(
         &mut self,
+        contract_node: &RholangNode,
         name: &Arc<RholangNode>,
         formals: &rpds::Vector<Arc<RholangNode>, archery::ArcK>,
         _proc: &Arc<RholangNode>,
@@ -199,12 +200,17 @@ impl SymbolIndexBuilder {
 
         // Add to index
         if let Ok(mut index) = self.index.write() {
-            if let Err(e) = index.add_contract_definition(&contract_name, location) {
+            if let Err(e) = index.add_contract_definition(&contract_name, location.clone()) {
                 eprintln!("Warning: Failed to index contract '{}': {}", contract_name, e);
             }
 
             // Extract and index map keys from formal parameters
             self.extract_and_index_map_keys(&contract_name, formals, &mut index);
+
+            // NEW: Pattern-based contract indexing for overload resolution
+            if let Err(e) = index.add_contract_with_pattern_index(contract_node, location) {
+                eprintln!("Warning: Failed to index contract pattern for '{}': {}", contract_name, e);
+            }
         }
     }
 

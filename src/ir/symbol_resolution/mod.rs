@@ -39,12 +39,14 @@ pub mod composable;
 pub mod filters;
 pub mod global;
 pub mod generic;
+pub mod pattern_aware_resolver;
 
 pub use lexical_scope::LexicalScopeResolver;
 pub use composable::ComposableSymbolResolver;
 pub use filters::{MettaPatternFilter, ChainedFilter};
 pub use global::GlobalVirtualSymbolResolver;
 pub use generic::GenericSymbolResolver;
+pub use pattern_aware_resolver::PatternAwareContractResolver;
 
 /// Resolution confidence level for symbol locations
 ///

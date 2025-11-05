@@ -28,7 +28,7 @@ pub struct RelativePosition {
 ///
 /// Note: Hash and Eq are based on (row, column) only. The byte field is metadata for O(1) seeking.
 /// Two positions are considered equal if they refer to the same (row, column) location.
-#[derive(Debug, Clone, Copy, Ord, PartialOrd)]
+#[derive(Debug, Clone, Copy, Ord, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub struct Position {
     pub row: usize,    // Line number (0-based)
     pub column: usize, // Column number (0-based)

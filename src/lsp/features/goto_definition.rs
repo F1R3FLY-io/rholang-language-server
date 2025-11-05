@@ -137,10 +137,22 @@ impl GenericGotoDefinition {
         // Fallback: Use language adapter's resolver to find definition
         // The LexicalScopeResolver will query the symbol table at this position
         // to find the symbol and its scope_id, so we don't need to extract it here
+        //
+        // For pattern-aware resolution (e.g., Rholang contracts), we need to pass the Send node
+        // so the resolver can extract arguments for pattern matching.
+        let ir_node_any: Option<Arc<dyn std::any::Any + Send + Sync>> = if adapter.language_name() == "rholang" {
+            // For Rholang, find the containing Send node for contract invocations
+            use crate::ir::rholang_node::RholangNode;
+            self.find_containing_send_node(root, position)
+                .map(|send_node| Arc::new(send_node) as Arc<dyn std::any::Any + Send + Sync>)
+        } else {
+            None
+        };
+
         let context = ResolutionContext {
             uri: uri.clone(),
             scope_id: None, // LexicalScopeResolver will extract from symbol table via position
-            ir_node: None,  // Not needed - resolver uses position lookup
+            ir_node: ir_node_any,  // Pass Send node for pattern-aware resolution
             language: adapter.language_name().to_string(),
             parent_uri: None, // Set by caller if this is a virtual document
         };
@@ -554,6 +566,84 @@ impl GenericGotoDefinition {
                 }
                 RholangNode::Block { proc, .. } => {
                     return self.find_var_node_in_tree(&**proc);
+                }
+                _ => {}
+            }
+        }
+
+        None
+    }
+
+    /// Find the containing Send node for a given position
+    ///
+    /// This is used for pattern-aware contract resolution. When clicking on a contract name
+    /// in an invocation like `echo!("hello")`, we need to find the Send node that contains
+    /// both the contract name and its arguments.
+    ///
+    /// # Arguments
+    /// * `root` - The root node to search from
+    /// * `position` - The position to search at
+    ///
+    /// # Returns
+    /// The Send node if found, None otherwise
+    fn find_containing_send_node(
+        &self,
+        root: &dyn SemanticNode,
+        position: &Position,
+    ) -> Option<crate::ir::rholang_node::RholangNode> {
+        use crate::ir::rholang_node::RholangNode;
+        use crate::lsp::features::node_finder::find_node_at_position;
+
+        // Strategy: Search from root to find Send nodes that contain this position
+        // We need to traverse the tree and check each Send node
+        self.find_send_recursive(root, position)
+    }
+
+    /// Recursive helper to find Send node containing position
+    fn find_send_recursive(
+        &self,
+        node: &dyn SemanticNode,
+        position: &Position,
+    ) -> Option<crate::ir::rholang_node::RholangNode> {
+        use crate::ir::rholang_node::RholangNode;
+
+        // Check if this node contains the position by using base positions
+        let node_base = node.base();
+        let node_start = node_base.start();
+        let node_end = node_base.end();
+
+        if !Self::position_in_range(position, &node_start, &node_end) {
+            return None;
+        }
+
+        // If this is a Send node, check if position is in the channel (contract name)
+        if let Some(rholang_node) = node.as_any().downcast_ref::<RholangNode>() {
+            if let RholangNode::Send { channel, .. } = rholang_node {
+                // Check if position is within the channel part using base positions
+                let chan_base = channel.base();
+                let chan_start = chan_base.start();
+                let chan_end = chan_base.end();
+
+                if Self::position_in_range(position, &chan_start, &chan_end) {
+                    // Position is in the channel name - return this Send node
+                    debug!("Found containing Send node for position {:?}", position);
+                    return Some(rholang_node.clone());
+                }
+            }
+
+            // Recursively search children
+            match rholang_node {
+                RholangNode::Par { left: Some(left), right: Some(right), .. } => {
+                    if let Some(send) = self.find_send_recursive(&**left, position) {
+                        return Some(send);
+                    }
+                    return self.find_send_recursive(&**right, position);
+                }
+                RholangNode::New { proc, .. } => {
+                    return self.find_send_recursive(&**proc, position);
+                }
+                RholangNode::Block { proc, .. } => {
+                    return self.find_send_recursive(&**proc, position);
                 }
                 _ => {}
             }

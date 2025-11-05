@@ -11,8 +11,14 @@ use crate::lsp::features::traits::{
     HoverContext, CompletionContext, DocumentationContext,
 };
 use crate::ir::semantic_node::SemanticNode;
-use crate::ir::symbol_resolution::{SymbolResolver, lexical_scope::LexicalScopeResolver};
+use crate::ir::symbol_resolution::{
+    SymbolResolver,
+    ComposableSymbolResolver,
+    PatternAwareContractResolver,
+    lexical_scope::LexicalScopeResolver,
+};
 use crate::ir::symbol_table::SymbolTable;
+use crate::ir::global_index::GlobalSymbolIndex;
 
 /// Rholang-specific hover provider
 pub struct RholangHoverProvider;
@@ -222,12 +228,32 @@ impl SymbolResolver for RholangSymbolResolver {
 /// Configured LanguageAdapter for Rholang with working symbol resolution
 ///
 /// # Implementation
-/// Uses RholangSymbolResolver which performs hierarchical symbol table lookup,
-/// automatically walking the parent scope chain to find symbol definitions.
-pub fn create_rholang_adapter(symbol_table: Arc<SymbolTable>) -> LanguageAdapter {
-    // Create Rholang-specific resolver with real symbol table lookup
+/// Uses ComposableSymbolResolver with pattern-aware contract matching as primary
+/// resolver and lexical scope lookup as fallback. This enables overload resolution
+/// and parameter-aware goto-definition for contracts.
+pub fn create_rholang_adapter(
+    symbol_table: Arc<SymbolTable>,
+    global_index: Arc<std::sync::RwLock<GlobalSymbolIndex>>,
+) -> LanguageAdapter {
+    // Create pattern-aware resolver (primary: contract pattern matching)
+    let pattern_resolver = Box::new(PatternAwareContractResolver::new(
+        global_index.clone()
+    )) as Box<dyn SymbolResolver>;
+
+    // Create lexical scope resolver (fallback: standard symbol table lookup)
+    let lexical_resolver = Box::new(RholangSymbolResolver {
+        symbol_table: symbol_table.clone()
+    }) as Box<dyn SymbolResolver>;
+
+    // Chain resolvers: pattern matching first, then lexical scope
+    // This allows pattern matching to override for contracts while
+    // falling back to normal symbol table for variables/channels
     let resolver: Arc<dyn SymbolResolver> = Arc::new(
-        RholangSymbolResolver { symbol_table }
+        ComposableSymbolResolver::new(
+            pattern_resolver,
+            vec![], // No filters needed (pattern matching is in base)
+            Some(lexical_resolver), // Fallback to lexical scope
+        )
     );
 
     // Create providers
@@ -253,7 +279,8 @@ mod tests {
     #[test]
     fn test_create_rholang_adapter() {
         let symbol_table = Arc::new(SymbolTable::new(None));
-        let adapter = create_rholang_adapter(symbol_table);
+        let global_index = Arc::new(std::sync::RwLock::new(GlobalSymbolIndex::new()));
+        let adapter = create_rholang_adapter(symbol_table, global_index);
 
         assert_eq!(adapter.language_name(), "rholang");
     }
