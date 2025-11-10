@@ -41,6 +41,30 @@ pub enum CompletionContextType {
     /// Inside a string literal (suggest rho:io:* URIs or nothing)
     StringLiteral,
 
+    /// Inside a quoted map pattern (e.g., @{key: value})
+    QuotedMapPattern {
+        /// Keys already present in the partial map
+        keys_so_far: Vec<String>,
+    },
+
+    /// Inside a quoted list pattern (e.g., @[element1, element2])
+    QuotedListPattern {
+        /// Number of elements already present
+        elements_so_far: usize,
+    },
+
+    /// Inside a quoted tuple pattern (e.g., @(a, b, c))
+    QuotedTuplePattern {
+        /// Number of elements already present
+        elements_so_far: usize,
+    },
+
+    /// Inside a quoted set pattern (e.g., @Set(a, b))
+    QuotedSetPattern {
+        /// Number of elements already present
+        elements_so_far: usize,
+    },
+
     /// Inside a virtual document (embedded language like MeTTa)
     VirtualDocument {
         /// Language name
@@ -157,11 +181,20 @@ pub fn determine_context(
     // Get scope ID from metadata
     let scope_id = extract_scope_id(node);
 
-    // Check if this is a Method node (for method completion after dot operator)
+    // Check if we're inside a quoted pattern (e.g., @{key: value}, @[...], @"string")
     use crate::ir::semantic_node::SemanticNodeExt;
     if let Some(rholang_node) = node.as_rholang() {
         use crate::ir::rholang_node::RholangNode;
 
+        // Check for Quote node first (pattern-aware completion)
+        if let RholangNode::Quote { quotable, .. } = rholang_node {
+            if let Some(context) = extract_quoted_pattern_context(quotable.as_ref()) {
+                debug!("Quoted pattern context detected: {:?}", context.context_type);
+                return context;
+            }
+        }
+
+        // Check if this is a Method node (for method completion after dot operator)
         if let RholangNode::Method { receiver, .. } = rholang_node {
             // We're in a method call - infer the receiver type
             if let Some(type_name) = infer_simple_type(receiver.as_ref()) {
@@ -245,6 +278,52 @@ fn extract_scope_id(node: &dyn SemanticNode) -> Option<usize> {
     scope_id_any.downcast_ref::<usize>().copied()
 }
 
+/// Extract quoted pattern context from a Quote node
+///
+/// This function determines if we're inside a quoted pattern (like @{key: value})
+/// and returns the appropriate context type with metadata about the pattern.
+///
+/// # Arguments
+/// * `quoted_node` - The process being quoted (inside the @ operator)
+///
+/// # Returns
+/// CompletionContext for the quoted pattern, or None if not a recognized pattern
+fn extract_quoted_pattern_context(quoted_node: &RholangNode) -> Option<CompletionContext> {
+    match quoted_node {
+        RholangNode::StringLiteral { .. } => {
+            // @"string" - already handled by string_literal context
+            Some(CompletionContext::string_literal(None))
+        }
+        RholangNode::Map { pairs, .. } => {
+            // @{key: value, ...} - extract existing keys
+            let keys: Vec<String> = pairs
+                .iter()
+                .filter_map(|(k, _)| {
+                    if let RholangNode::StringLiteral { value, .. } = k.as_ref() {
+                        Some(value.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            Some(CompletionContext::quoted_map_pattern(keys, None))
+        }
+        RholangNode::List { elements, .. } => {
+            // @[element1, element2, ...]
+            Some(CompletionContext::quoted_list_pattern(elements.len(), None))
+        }
+        RholangNode::Tuple { elements, .. } => {
+            // @(element1, element2, ...)
+            Some(CompletionContext::quoted_tuple_pattern(elements.len(), None))
+        }
+        RholangNode::Set { elements, .. } => {
+            // @Set(element1, element2, ...)
+            Some(CompletionContext::quoted_set_pattern(elements.len(), None))
+        }
+        _ => None,
+    }
+}
+
 /// Extract partial identifier at cursor position from document text
 ///
 /// This function walks backward and forward from the cursor position to extract
@@ -318,6 +397,50 @@ impl CompletionContext {
     pub fn string_literal(current_node: Option<Arc<RholangNode>>) -> Self {
         Self {
             context_type: CompletionContextType::StringLiteral,
+            current_node,
+            parent_node: None,
+            partial_identifier: None,
+            after_trigger: false,
+        }
+    }
+
+    /// Create a quoted map pattern context
+    pub fn quoted_map_pattern(keys_so_far: Vec<String>, current_node: Option<Arc<RholangNode>>) -> Self {
+        Self {
+            context_type: CompletionContextType::QuotedMapPattern { keys_so_far },
+            current_node,
+            parent_node: None,
+            partial_identifier: None,
+            after_trigger: false,
+        }
+    }
+
+    /// Create a quoted list pattern context
+    pub fn quoted_list_pattern(elements_so_far: usize, current_node: Option<Arc<RholangNode>>) -> Self {
+        Self {
+            context_type: CompletionContextType::QuotedListPattern { elements_so_far },
+            current_node,
+            parent_node: None,
+            partial_identifier: None,
+            after_trigger: false,
+        }
+    }
+
+    /// Create a quoted tuple pattern context
+    pub fn quoted_tuple_pattern(elements_so_far: usize, current_node: Option<Arc<RholangNode>>) -> Self {
+        Self {
+            context_type: CompletionContextType::QuotedTuplePattern { elements_so_far },
+            current_node,
+            parent_node: None,
+            partial_identifier: None,
+            after_trigger: false,
+        }
+    }
+
+    /// Create a quoted set pattern context
+    pub fn quoted_set_pattern(elements_so_far: usize, current_node: Option<Arc<RholangNode>>) -> Self {
+        Self {
+            context_type: CompletionContextType::QuotedSetPattern { elements_so_far },
             current_node,
             parent_node: None,
             partial_identifier: None,

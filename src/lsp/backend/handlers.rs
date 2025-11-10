@@ -1057,40 +1057,73 @@ impl LanguageServer for RholangBackend {
         // Filter by context (keywords, type methods, etc.)
         use crate::lsp::features::completion::{filter_keywords_by_context, get_type_methods, CompletionSymbol};
 
-        // Check if we're in a type method context (after dot operator)
-        if let crate::lsp::features::completion::CompletionContextType::TypeMethod { type_name } = &context.context_type {
-            debug!("Providing method completions for type: {}", type_name);
+        // Check for special completion contexts
+        match &context.context_type {
+            // Type method context (after dot operator)
+            crate::lsp::features::completion::CompletionContextType::TypeMethod { type_name } => {
+                debug!("Providing method completions for type: {}", type_name);
 
-            // Get methods for this type
-            let methods = get_type_methods(type_name);
+                // Get methods for this type
+                let methods = get_type_methods(type_name);
 
-            // Convert to CompletionSymbols
-            completion_symbols = methods
-                .into_iter()
-                .map(|metadata| CompletionSymbol {
-                    metadata,
-                    distance: 0,
-                    scope_depth: usize::MAX  // Default to global scope
-                })
-                .collect();
+                // Convert to CompletionSymbols
+                completion_symbols = methods
+                    .into_iter()
+                    .map(|metadata| CompletionSymbol {
+                        metadata,
+                        distance: 0,
+                        scope_depth: usize::MAX  // Default to global scope
+                    })
+                    .collect();
 
-            debug!("Found {} methods for type {}", completion_symbols.len(), type_name);
-        } else {
+                debug!("Found {} methods for type {}", completion_symbols.len(), type_name);
+            }
+            // Pattern-aware completion for quoted processes (Phase 3)
+            crate::lsp::features::completion::CompletionContextType::QuotedMapPattern { .. }
+            | crate::lsp::features::completion::CompletionContextType::QuotedListPattern { .. }
+            | crate::lsp::features::completion::CompletionContextType::QuotedTuplePattern { .. }
+            | crate::lsp::features::completion::CompletionContextType::QuotedSetPattern { .. }
+            | crate::lsp::features::completion::CompletionContextType::StringLiteral => {
+                debug!("Pattern-aware completion context detected");
+
+                // Extract pattern context
+                use crate::lsp::features::completion::extract_pattern_at_position;
+                if let Some(pattern_ctx) = extract_pattern_at_position(&doc.ir, &position, &context) {
+                    debug!("Extracted pattern context: {:?}", pattern_ctx.pattern_type);
+
+                    // Query contracts matching the pattern
+                    use crate::lsp::features::completion::query_contracts_by_pattern;
+                    let pattern_results = query_contracts_by_pattern(
+                        &self.workspace.global_index,
+                        &pattern_ctx,
+                    );
+
+                    debug!("Found {} contracts matching pattern", pattern_results.len());
+
+                    // Replace completion symbols with pattern-aware results
+                    if !pattern_results.is_empty() {
+                        completion_symbols = pattern_results;
+                    }
+                    // If no pattern matches, fall through to normal completion
+                }
+            }
             // Normal completion: filter keywords by context
-            // Separate keywords from other symbols
-            let (keywords, other_symbols): (Vec<_>, Vec<_>) = completion_symbols
-                .into_iter()
-                .partition(|sym| sym.metadata.kind == tower_lsp::lsp_types::CompletionItemKind::KEYWORD);
+            _ => {
+                // Separate keywords from other symbols
+                let (keywords, other_symbols): (Vec<_>, Vec<_>) = completion_symbols
+                    .into_iter()
+                    .partition(|sym| sym.metadata.kind == tower_lsp::lsp_types::CompletionItemKind::KEYWORD);
 
-            // Filter keywords by context
-            let filtered_keywords = filter_keywords_by_context(keywords, &context.context_type);
+                // Filter keywords by context
+                let filtered_keywords = filter_keywords_by_context(keywords, &context.context_type);
 
-            // Recombine
-            completion_symbols = filtered_keywords;
-            completion_symbols.extend(other_symbols);
+                // Recombine
+                completion_symbols = filtered_keywords;
+                completion_symbols.extend(other_symbols);
 
-            // TODO: Filter symbols by parameter type if in parameter context
-            // For Phase 3.4.3, this would filter symbols based on param_ctx.expected_pattern
+                // TODO: Filter symbols by parameter type if in parameter context
+                // For Phase 3.4.3, this would filter symbols based on param_ctx.expected_pattern
+            }
         }
 
         // Rank and deduplicate results

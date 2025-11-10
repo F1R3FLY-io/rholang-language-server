@@ -204,6 +204,26 @@ pub fn filter_keywords_by_context(
             // Don't show Rholang keywords
             vec![]
         }
+        CompletionContextType::QuotedMapPattern { .. } => {
+            // Inside quoted map pattern: pattern-aware completion (Phase 3)
+            // No keywords needed
+            vec![]
+        }
+        CompletionContextType::QuotedListPattern { .. } => {
+            // Inside quoted list pattern: pattern-aware completion (Phase 3)
+            // No keywords needed
+            vec![]
+        }
+        CompletionContextType::QuotedTuplePattern { .. } => {
+            // Inside quoted tuple pattern: pattern-aware completion (Phase 3)
+            // No keywords needed
+            vec![]
+        }
+        CompletionContextType::QuotedSetPattern { .. } => {
+            // Inside quoted set pattern: pattern-aware completion (Phase 3)
+            // No keywords needed
+            vec![]
+        }
         CompletionContextType::Unknown => {
             // Unknown context: show all keywords as safe fallback
             keywords
