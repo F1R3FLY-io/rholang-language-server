@@ -153,8 +153,14 @@ impl RholangBackend {
         let symbol_index = Arc::new(crate::lsp::symbol_index::SymbolIndex::new(workspace_symbols));
         debug!("Built suffix array index for {} symbols in {}", symbol_index.len(), uri);
 
+        // Build position index for O(log n) node lookups (Phase 6)
+        let position_index = Arc::new(crate::lsp::position_index::PositionIndex::build(&transformed_ir));
+        debug!("Built position index for {} nodes ({} unique positions) in {}",
+            position_index.node_count(), position_index.position_count(), uri);
+
         Ok(CachedDocument {
             ir: transformed_ir,
+            position_index,
             document_ir: Some(document_ir),  // Phase 1: Populated with comment channel
             metta_ir: None,
             unified_ir,
@@ -167,6 +173,7 @@ impl RholangBackend {
             positions,
             symbol_index,
             content_hash,
+            completion_state: None,  // Phase 9: Initialized lazily on first completion request
         })
     }
 
@@ -288,8 +295,14 @@ impl RholangBackend {
         let symbol_index = Arc::new(crate::lsp::symbol_index::SymbolIndex::new(workspace_symbols));
         debug!("Built suffix array index for {} symbols in {}", symbol_index.len(), uri);
 
+        // Build position index for O(log n) node lookups (Phase 6)
+        let position_index = Arc::new(crate::lsp::position_index::PositionIndex::build(&transformed_ir));
+        debug!("Built position index for {} nodes ({} unique positions) in {}",
+            position_index.node_count(), position_index.position_count(), uri);
+
         Ok(CachedDocument {
             ir: transformed_ir,
+            position_index,
             document_ir: None, // TODO: Populate in Phase 1 implementation
             metta_ir: None, // Will be populated for MeTTa files
             unified_ir,
@@ -302,6 +315,7 @@ impl RholangBackend {
             positions,
             symbol_index,
             content_hash,
+            completion_state: None,  // Phase 9: Initialized lazily on first completion request
         })
     }
 
@@ -462,11 +476,15 @@ impl RholangBackend {
         let inverted_index = HashMap::new();
         let symbol_index = Arc::new(crate::lsp::symbol_index::SymbolIndex::new(Vec::new()));
 
+        // Create empty position index for MeTTa placeholder
+        let position_index = Arc::new(crate::lsp::position_index::PositionIndex::new());
+
         let rope = Rope::from_str(text);
         let positions = Arc::new(HashMap::new());
 
         let cached_doc = CachedDocument {
             ir: placeholder_ir,
+            position_index,
             document_ir: None, // TODO: Populate in Phase 1 implementation
             metta_ir: Some(metta_nodes),
             unified_ir,
@@ -479,6 +497,7 @@ impl RholangBackend {
             positions,
             symbol_index,
             content_hash,
+            completion_state: None,  // Phase 9: Initialized lazily on first completion request
         };
 
         // Broadcast workspace change event (ReactiveX Phase 2)
@@ -547,6 +566,25 @@ impl RholangBackend {
             }
         }
         self.link_symbols().await;
+
+        // Populate completion index eagerly (Phase 4 optimization)
+        debug!("Populating completion index after directory indexing");
+        crate::lsp::features::completion::add_keywords(&self.workspace.completion_index);
+        let global_table = self.workspace.global_table.read().await;
+        crate::lsp::features::completion::populate_from_symbol_table(
+            &self.workspace.completion_index,
+            &*global_table,
+        );
+        drop(global_table);
+        for doc_entry in self.workspace.documents.iter() {
+            let (doc_uri, doc) = (doc_entry.key(), doc_entry.value());
+            crate::lsp::features::completion::populate_from_symbol_table_with_tracking(
+                &self.workspace.completion_index,
+                &doc.symbol_table,
+                doc_uri,
+            );
+        }
+        info!("Completion index populated with {} symbols", self.workspace.completion_index.len());
     }
 
     /// Indexes all .rho files in the given directory using parallel processing (Rayon).
@@ -690,7 +728,36 @@ impl RholangBackend {
         // Phase 5: Link symbols across all virtual documents
         self.link_virtual_symbols().await;
 
-        info!("Total indexing time (including symbol linking): {:?}", start.elapsed());
+        // Phase 6: Populate completion index eagerly (Phase 4 optimization)
+        // This eliminates the 10-50ms first-completion penalty
+        let completion_start = Instant::now();
+        debug!("Populating completion index during workspace initialization");
+
+        // Add keywords (always available)
+        crate::lsp::features::completion::add_keywords(&self.workspace.completion_index);
+
+        // Add symbols from global table
+        let global_table = self.workspace.global_table.read().await;
+        crate::lsp::features::completion::populate_from_symbol_table(
+            &self.workspace.completion_index,
+            &*global_table,
+        );
+        drop(global_table);
+
+        // Add symbols from all indexed documents
+        for doc_entry in self.workspace.documents.iter() {
+            let (doc_uri, doc) = (doc_entry.key(), doc_entry.value());
+            crate::lsp::features::completion::populate_from_symbol_table_with_tracking(
+                &self.workspace.completion_index,
+                &doc.symbol_table,
+                doc_uri,
+            );
+        }
+
+        info!("Completion index populated with {} symbols in {:?}",
+            self.workspace.completion_index.len(), completion_start.elapsed());
+
+        info!("Total indexing time (including symbol linking and completion): {:?}", start.elapsed());
     }
 
     /// Generates the next unique document ID.
@@ -760,5 +827,106 @@ impl RholangBackend {
             symbol_count,
             change_type: WorkspaceChangeType::FileIndexed,
         });
+    }
+
+    /// Phase 9.3: Update incremental completion state based on document changes
+    ///
+    /// Processes content changes incrementally to update the completion draft buffer
+    /// without full re-indexing. Handles single-character edits optimally.
+    ///
+    /// # Arguments
+    /// * `uri` - Document URI
+    /// * `changes` - List of content changes from LSP client
+    /// * `cached_doc` - Updated cached document with new symbol table
+    pub(super) async fn update_completion_state_incremental(
+        &self,
+        _uri: &tower_lsp::lsp_types::Url,
+        changes: &[tower_lsp::lsp_types::TextDocumentContentChangeEvent],
+        mut cached_doc_arc: std::sync::Arc<crate::lsp::models::CachedDocument>,
+    ) {
+        use crate::lsp::features::completion::incremental::get_or_init_completion_state;
+
+        // Get or initialize completion state (requires mut access to cached_doc)
+        // SAFETY: We need mutable access briefly to initialize if needed
+        let cached_doc_mut = std::sync::Arc::get_mut(&mut cached_doc_arc);
+        if cached_doc_mut.is_none() {
+            // Doc is shared elsewhere, skip incremental update for now
+            // This is rare - only happens if another request is accessing doc simultaneously
+            tracing::warn!("Skipping incremental completion update - document is shared");
+            return;
+        }
+        let cached_doc_mut = cached_doc_mut.unwrap();
+        let state_arc = get_or_init_completion_state(cached_doc_mut);
+        let mut state = state_arc.write();
+
+        // Process each content change
+        for change in changes {
+            if let Some(range) = &change.range {
+                // Incremental change with range
+                let start = &range.start;
+                let end = &range.end;
+
+                // Check if this is on a single line (incremental edit)
+                if start.line == end.line {
+                    let char_delta = end.character as i32 - start.character as i32;
+
+                    if char_delta == 0 && !change.text.is_empty() {
+                        // Character insertion (single or multiple)
+                        if let Err(e) = state.insert_str(&change.text, *start) {
+                            tracing::warn!("Failed to insert text into completion state: {}", e);
+                        }
+                    } else if char_delta > 0 && change.text.is_empty() {
+                        // Character deletion (single or multiple)
+                        for _ in 0..char_delta {
+                            if let Err(e) = state.handle_char_delete(*start) {
+                                tracing::warn!("Failed to delete character from completion state: {}", e);
+                                break;
+                            }
+                        }
+                    } else if char_delta > 0 && !change.text.is_empty() {
+                        // Replacement - delete then insert
+                        for _ in 0..char_delta {
+                            if let Err(e) = state.handle_char_delete(*start) {
+                                tracing::warn!("Failed to delete during replacement: {}", e);
+                                break;
+                            }
+                        }
+                        if let Err(e) = state.insert_str(&change.text, *start) {
+                            tracing::warn!("Failed to insert during replacement: {}", e);
+                        }
+                    } else {
+                        // Complex edit - clear draft and rebuild context tree
+                        if let Err(e) = state.clear_draft() {
+                            tracing::warn!("Failed to clear draft buffer: {}", e);
+                        }
+                        if let Err(e) = state.rebuild_context_tree(&cached_doc_mut.symbol_table) {
+                            tracing::warn!("Failed to rebuild context tree: {}", e);
+                        }
+                        // Phase 9.5: Invalidate scope cache after structural change
+                        state.invalidate_scope_cache();
+                    }
+                } else {
+                    // Multi-line edit - clear draft and rebuild context tree
+                    if let Err(e) = state.clear_draft() {
+                        tracing::warn!("Failed to clear draft buffer: {}", e);
+                    }
+                    if let Err(e) = state.rebuild_context_tree(&cached_doc_mut.symbol_table) {
+                        tracing::warn!("Failed to rebuild context tree: {}", e);
+                    }
+                    // Phase 9.5: Invalidate scope cache after structural change
+                    state.invalidate_scope_cache();
+                }
+            } else {
+                // Full document replacement - clear draft and rebuild context tree
+                if let Err(e) = state.clear_draft() {
+                    tracing::warn!("Failed to clear draft buffer: {}", e);
+                }
+                if let Err(e) = state.rebuild_context_tree(&cached_doc_mut.symbol_table) {
+                    tracing::warn!("Failed to rebuild context tree: {}", e);
+                }
+                // Phase 9.5: Invalidate scope cache after structural change
+                state.invalidate_scope_cache();
+            }
+        }
     }
 }

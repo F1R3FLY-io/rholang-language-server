@@ -1394,6 +1394,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gxhash"
+version = "3.5.0"
+source = "git+https://github.com/luketpeterson/gxhash/#55bde471dc2e395dd17eb4e7055f323c0c29c19d"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1892,6 +1900,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1171693293099992e19cddea4e8b849964e9846f4acee11b3948bcc337be8776"
 
 [[package]]
+name = "liblevenshtein"
+version = "0.6.0"
+dependencies = [
+ "parking_lot",
+ "pathmap",
+ "rustc-hash 1.1.0",
+ "smallvec",
+ "thiserror 2.0.12",
+]
+
+[[package]]
 name = "libredox"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2160,6 +2179,7 @@ name = "mork-expr"
 version = "0.1.0"
 dependencies = [
  "fast-slice-utils",
+ "gxhash 3.5.0 (git+https://github.com/luketpeterson/gxhash/)",
  "smallvec",
  "xxhash-rust",
 ]
@@ -2481,12 +2501,12 @@ dependencies = [
 
 [[package]]
 name = "pathmap"
-version = "0.1.0"
+version = "0.2.0-alpha0"
 dependencies = [
  "arrayvec",
  "dyn-clone",
  "fast-slice-utils",
- "gxhash",
+ "gxhash 3.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "libz-ng-sys",
  "local-or-heap",
  "maybe-dangling",
@@ -2501,7 +2521,9 @@ dependencies = [
 
 [[package]]
 name = "pathmap-derive"
-version = "0.1.0"
+version = "0.2.0-alpha0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "460d44db81eda6fa6b83f99c69fb93263b3cf17a36346b7c65d03a72241698b2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3193,11 +3215,13 @@ dependencies = [
  "dirs",
  "futures",
  "indoc",
+ "liblevenshtein",
  "lsp-types 0.97.0",
  "mettatron",
  "mork",
  "mork-expr",
  "mork-frontend",
+ "mork-interning",
  "nix 0.27.1",
  "notify",
  "once_cell",
@@ -3212,7 +3236,7 @@ dependencies = [
  "rholang-tree-sitter",
  "ropey",
  "rpds",
- "rustc-hash",
+ "rustc-hash 2.1.1",
  "scopeguard",
  "serde",
  "serde_json",
@@ -3375,6 +3399,12 @@ name = "rustc-demangle"
 version = "0.1.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "989e6739f80c4ad5b13e0fd7fe89531180375b18520cc8c82080e4dc4035b84f"
+
+[[package]]
+name = "rustc-hash"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
 
 [[package]]
 name = "rustc-hash"
@@ -3733,6 +3763,9 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "socket2"

@@ -394,6 +394,7 @@ mod tests {
             global_virtual_symbols: Arc::new(DashMap::new()),
             rholang_symbols: Arc::new(crate::lsp::rholang_contracts::RholangContracts::new()),
             indexing_state: Arc::new(tokio::sync::RwLock::new(crate::lsp::models::IndexingState::Idle)),
+            completion_index: Arc::new(crate::lsp::features::completion::WorkspaceCompletionIndex::new()),
         });
         let parent_uri = Url::parse("file:///test.rho").unwrap();
 

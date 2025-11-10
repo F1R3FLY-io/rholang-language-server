@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use tower_lsp::lsp_types::{Location, Url, Range, Position};
 use mork::space::Space;
+use mork_interning::SharedMappingHandle;
 
 use crate::ir::metta_node::MettaNode;
 
@@ -41,14 +42,15 @@ pub struct MettaDefinition {
 
 /// Pattern matcher for MeTTa function definitions
 ///
-/// Uses MORK's Space for efficient O(k) pattern matching where k is the number
-/// of matching patterns (vs O(n) for iteration over all patterns).
+/// Uses MORK's SharedMappingHandle for thread-safe symbol interning.
+/// Each thread creates its own Space instance when needed for pattern operations.
 ///
 /// This enables pattern-aware go-to-definition: given a call like `(is_connected room_a room_b)`,
 /// find all definitions with matching patterns like `(is_connected $from $to)`.
 pub struct MettaPatternMatcher {
-    /// MORK Space for pattern storage
-    space: Space,
+    /// MORK SharedMappingHandle for thread-safe symbol interning
+    /// Each thread creates its own Space using this handle when needed
+    shared_mapping: SharedMappingHandle,
     /// Map from pattern Expr to definition info (legacy, may be deprecated)
     pattern_to_def: HashMap<String, Vec<MettaDefinition>>,
     /// Index by function name for quick initial filtering
@@ -61,17 +63,18 @@ pub struct MettaPatternMatcher {
 impl std::fmt::Debug for MettaPatternMatcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MettaPatternMatcher")
-            .field("space", &"<MORK Space>")
+            .field("shared_mapping", &"<SharedMappingHandle>")
             .field("definitions", &self.name_index.len())
             .finish()
     }
 }
 
 impl MettaPatternMatcher {
-    /// Create a new pattern matcher with an empty MORK Space
+    /// Create a new pattern matcher with a shared MORK mapping handle
     pub fn new() -> Self {
+        use mork_interning::SharedMapping;
         MettaPatternMatcher {
-            space: Space::new(),
+            shared_mapping: SharedMapping::new(),
             pattern_to_def: HashMap::new(),
             name_index: HashMap::new(),
             pattern_locations: HashMap::new(),
@@ -121,9 +124,16 @@ impl MettaPatternMatcher {
             // Convert pattern to MORK bytes
             let pattern_bytes = self.pattern_to_mork_bytes(&pattern)?;
 
+            // Create a thread-local Space for this operation (MORK pattern: each thread gets its own Space)
+            let mut space = Space {
+                btm: pathmap::PathMap::new(),
+                sm: self.shared_mapping.clone(),
+                mmaps: HashMap::new(),
+            };
+
             // Add to MORK Space using the same approach as MeTTaTron
             let mork_str = Self::node_to_mork_string(&pattern);
-            if let Ok(_count) = self.space.load_all_sexpr_impl(mork_str.as_bytes(), true) {
+            if let Ok(_count) = space.load_all_sexpr_impl(mork_str.as_bytes(), true) {
                 // Successfully added to MORK Space
                 // Now map the pattern bytes to the location
                 self.pattern_locations
@@ -369,8 +379,10 @@ impl MettaPatternMatcher {
     }
 
     /// Clear all indexed patterns
+    /// Note: The shared_mapping is preserved and reused across clears
     pub fn clear(&mut self) {
-        self.space = Space::new();
+        // No need to recreate Space - it's created per-operation
+        // Just clear the indices
         self.pattern_to_def.clear();
         self.name_index.clear();
         self.pattern_locations.clear();

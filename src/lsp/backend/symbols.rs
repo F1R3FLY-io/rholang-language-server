@@ -173,6 +173,48 @@ impl RholangBackend {
               file_count, symbol_count, references_added);
     }
 
+    /// Populates the workspace completion index with all symbols from the workspace.
+    ///
+    /// This method is called during workspace initialization (after indexing completes)
+    /// to eagerly populate the completion index, eliminating the lazy initialization penalty.
+    ///
+    /// Populates from:
+    /// - Keywords (always available)
+    /// - Global symbol table
+    /// - All document symbol tables
+    pub(crate) async fn populate_completion_index(&self) {
+        let start_time = std::time::Instant::now();
+        debug!("populate_completion_index: Starting eager population");
+
+        // Add keywords (always available)
+        crate::lsp::features::completion::add_keywords(&self.workspace.completion_index);
+
+        // Add symbols from global table
+        let global_table = self.workspace.global_table.read().await;
+        crate::lsp::features::completion::populate_from_symbol_table(
+            &self.workspace.completion_index,
+            &*global_table,
+        );
+        drop(global_table);
+
+        // Add symbols from all document scopes with document tracking
+        for entry in self.workspace.documents.iter() {
+            let uri = entry.key();
+            let doc = entry.value();
+            crate::lsp::features::completion::populate_from_symbol_table_with_tracking(
+                &self.workspace.completion_index,
+                &doc.symbol_table,
+                uri,
+            );
+        }
+
+        let symbol_count = self.workspace.completion_index.len();
+        let elapsed = start_time.elapsed();
+
+        info!("populate_completion_index: Completed with {} symbols in {}ms",
+              symbol_count, elapsed.as_millis());
+    }
+
     /// Links symbols across all virtual documents in the workspace.
     ///
     /// This function:

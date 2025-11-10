@@ -375,4 +375,66 @@ impl SymbolTable {
 
         candidates
     }
+
+    /// Gets the scope depth of this symbol table.
+    ///
+    /// Scope depth is the distance from the root scope:
+    /// - Root scope (no parent): depth = 0
+    /// - Direct child of root: depth = 1
+    /// - Grandchild of root: depth = 2
+    /// etc.
+    ///
+    /// Used for hierarchical scope filtering to prioritize local symbols.
+    pub fn get_scope_depth(&self) -> usize {
+        match &self.parent {
+            None => 0,  // Root scope
+            Some(parent) => 1 + parent.get_scope_depth(),
+        }
+    }
+
+    /// Collects all symbols matching the given prefix from all scopes,
+    /// annotated with their scope depth relative to this table.
+    ///
+    /// # Arguments
+    /// * `prefix` - The prefix to match against symbol names
+    ///
+    /// # Returns
+    /// Vector of (symbol, scope_depth) tuples where:
+    /// - scope_depth = 0 means the symbol is in the current scope
+    /// - scope_depth = 1 means the symbol is in the parent scope
+    /// - scope_depth = 2 means the symbol is in the grandparent scope
+    /// etc.
+    ///
+    /// Symbols from closer scopes appear with lower depth values, making them
+    /// rank higher in completion results.
+    pub fn collect_symbols_with_depth(&self, prefix: &str) -> Vec<(Arc<Symbol>, usize)> {
+        let mut results = Vec::new();
+        self.collect_symbols_with_depth_helper(prefix, 0, &mut results);
+        results
+    }
+
+    /// Helper method for recursive symbol collection with depth tracking.
+    ///
+    /// # Arguments
+    /// * `prefix` - The prefix to match against symbol names
+    /// * `current_depth` - The depth of this scope relative to the starting scope
+    /// * `results` - Accumulator for collected (symbol, depth) tuples
+    fn collect_symbols_with_depth_helper(
+        &self,
+        prefix: &str,
+        current_depth: usize,
+        results: &mut Vec<(Arc<Symbol>, usize)>
+    ) {
+        // Collect symbols from current scope
+        for entry in self.symbols.iter() {
+            if entry.key().starts_with(prefix) {
+                results.push((entry.value().clone(), current_depth));
+            }
+        }
+
+        // Recursively collect from parent scopes
+        if let Some(parent) = &self.parent {
+            parent.collect_symbols_with_depth_helper(prefix, current_depth + 1, results);
+        }
+    }
 }

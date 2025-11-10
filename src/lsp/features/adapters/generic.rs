@@ -161,6 +161,7 @@ mod tests {
             indexing_state: Arc::new(tokio::sync::RwLock::new(
                 crate::lsp::models::IndexingState::Idle,
             )),
+            completion_index: Arc::new(crate::lsp::features::completion::WorkspaceCompletionIndex::new()),
         });
 
         let adapter = create_generic_adapter(workspace, "python".to_string());

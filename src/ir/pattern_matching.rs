@@ -8,6 +8,7 @@
 use std::sync::Arc;
 use std::collections::HashMap;
 use mork::space::Space;
+use mork_interning::SharedMappingHandle;
 use mork_expr::{Expr, ExprZipper};
 use mork_frontend::bytestring_parser::{Parser, Context};
 use pathmap::zipper::*;  // Import zipper traits for to_next_val() and other methods
@@ -29,23 +30,31 @@ pub type MatchResult = Vec<(Arc<RholangNode>, HashMap<String, Arc<RholangNode>>)
 /// let matches = matcher.match_query(&query)?;
 /// ```
 pub struct RholangPatternMatcher {
-    /// MORK Space for pattern storage
-    space: Space,
+    /// MORK SharedMappingHandle for thread-safe symbol interning
+    /// Each thread creates its own Space using this handle when needed
+    shared_mapping: SharedMappingHandle,
+    /// PathMap for pattern storage (shared across Space instances)
+    btm: pathmap::PathMap<()>,
 }
 
 impl std::fmt::Debug for RholangPatternMatcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RholangPatternMatcher")
-            .field("space", &"<MORK Space>")
+            .field("shared_mapping", &"<SharedMappingHandle>")
+            .field("btm", &"<PathMap>")
             .finish()
     }
 }
 
 impl RholangPatternMatcher {
-    /// Create a new pattern matcher with an empty MORK Space
+    /// Create a new pattern matcher
+    ///
+    /// Following MORK's threading pattern: Store SharedMappingHandle, create Space per-operation
     pub fn new() -> Self {
+        use mork_interning::SharedMapping;
         RholangPatternMatcher {
-            space: Space::new(),
+            shared_mapping: SharedMapping::new(),
+            btm: pathmap::PathMap::new(),
         }
     }
 
@@ -266,6 +275,13 @@ impl RholangPatternMatcher {
         pattern: &Arc<RholangNode>,
         value: &Arc<RholangNode>,
     ) -> Result<(), String> {
+        // Create a thread-local Space for this operation (MORK pattern)
+        let mut space = Space {
+            btm: self.btm.clone(),
+            sm: self.shared_mapping.clone(),
+            mmaps: HashMap::new(),
+        };
+
         // Convert to text s-expression: (pattern-key <pattern> <value>)
         // Following MeTTaTron's approach with to_mork_string()
         let pattern_str = rholang_to_mork_string(pattern);
@@ -273,8 +289,11 @@ impl RholangPatternMatcher {
         let entry = format!("(pattern-key {} {})", pattern_str, value_str);
 
         // Use load_all_sexpr_impl to parse and insert (like MeTTaTron)
-        self.space.load_all_sexpr_impl(entry.as_bytes(), true)
+        space.load_all_sexpr_impl(entry.as_bytes(), true)
             .map_err(|e| format!("Failed to load pattern: {}", e))?;
+
+        // Update our shared btm with the modified one
+        self.btm = space.btm;
 
         Ok(())
     }
@@ -292,6 +311,13 @@ impl RholangPatternMatcher {
     /// let matches = matcher.match_query(&send_node)?;
     /// ```
     pub fn match_query(&self, query: &Arc<RholangNode>) -> Result<MatchResult, String> {
+        // Create a thread-local Space for this operation (MORK pattern)
+        let space = Space {
+            btm: self.btm.clone(),
+            sm: self.shared_mapping.clone(),
+            mmaps: HashMap::new(),
+        };
+
         // Convert query to text s-expression
         let query_str = rholang_to_mork_string(query);
 
@@ -302,7 +328,7 @@ impl RholangPatternMatcher {
 
         // Parse the pattern using MORK's parser
         let mut parse_buffer = vec![0u8; 4096];
-        let mut pdp = mork::space::ParDataParser::new(&self.space.sm);
+        let mut pdp = mork::space::ParDataParser::new(&space.sm);
         let mut ez = ExprZipper::new(Expr {
             ptr: parse_buffer.as_mut_ptr(),
         });
@@ -325,7 +351,7 @@ impl RholangPatternMatcher {
 
         // Navigate to the prefix in the trie
         // This positions us at the subtree containing all potential matches
-        let mut rz = self.space.btm.read_zipper();
+        let mut rz = space.btm.read_zipper();
         let prefix_matched = rz.descend_to_existing(&prefix_bytes);
 
         if prefix_matched != prefix_bytes.len() {
@@ -375,7 +401,7 @@ impl RholangPatternMatcher {
                         };
 
                         // Parse MORK binary to RholangNode
-                        match Self::mork_expr_to_rholang(bound_expr, &self.space) {
+                        match Self::mork_expr_to_rholang(bound_expr, &space) {
                             Ok(node) => node,
                             Err(e) => {
                                 eprintln!("Warning: Failed to parse MORK value: {}", e);
@@ -482,6 +508,13 @@ impl RholangPatternMatcher {
             metadata: None,
         });
 
+        // Create a thread-local Space for this operation (MORK pattern)
+        let space = Space {
+            btm: self.btm.clone(),
+            sm: self.shared_mapping.clone(),
+            mmaps: HashMap::new(),
+        };
+
         // Step 2: Convert to MORK string and create pattern-key
         let send_str = rholang_to_mork_string(&send_pattern);
         let pattern_str = format!("(pattern-key {} $invocation)", send_str);
@@ -489,7 +522,7 @@ impl RholangPatternMatcher {
 
         // Step 3: Parse the pattern using MORK's parser
         let mut parse_buffer = vec![0u8; 4096];
-        let mut pdp = mork::space::ParDataParser::new(&self.space.sm);
+        let mut pdp = mork::space::ParDataParser::new(&space.sm);
         let mut ez = ExprZipper::new(Expr {
             ptr: parse_buffer.as_mut_ptr(),
         });
@@ -509,7 +542,7 @@ impl RholangPatternMatcher {
         let (prefix_bytes, _has_variables) = Self::extract_concrete_prefix(pattern_expr)?;
 
         // Navigate to the prefix in the trie
-        let mut rz = self.space.btm.read_zipper();
+        let mut rz = space.btm.read_zipper();
         let prefix_matched = rz.descend_to_existing(&prefix_bytes);
 
         if prefix_matched != prefix_bytes.len() {
@@ -555,7 +588,7 @@ impl RholangPatternMatcher {
                         };
 
                         // Parse MORK binary to RholangNode
-                        match Self::mork_expr_to_rholang(bound_expr, &self.space) {
+                        match Self::mork_expr_to_rholang(bound_expr, &space) {
                             Ok(node) => {
                                 // TODO: Extract actual bindings from the unify result
                                 // For now, return empty HashMap for bindings

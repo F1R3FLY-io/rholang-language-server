@@ -127,6 +127,9 @@ pub struct RholangBackend {
     pub(super) detection_worker: DetectionWorkerHandle,
     /// Detector registry for virtual document detection
     pub(super) detector_registry: Arc<DetectorRegistry>,
+    /// Context cache for completion requests (Phase 5 optimization)
+    /// Caches the last completion context to avoid re-traversing AST when cursor hasn't moved
+    pub(super) completion_context_cache: Arc<parking_lot::RwLock<Option<(Url, tower_lsp::lsp_types::Position, crate::lsp::features::completion::CompletionContext)>>>,
 }
 
 // Manual Debug implementation since DiagnosticProvider doesn't implement Debug

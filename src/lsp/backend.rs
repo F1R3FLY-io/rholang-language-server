@@ -170,6 +170,7 @@ impl RholangBackend {
             diagnostics_tx: diagnostics_tx.clone(),
             detection_worker,
             detector_registry,
+            completion_context_cache: Arc::new(parking_lot::RwLock::new(None)),
         };
 
         // Spawn reactive document change debouncer

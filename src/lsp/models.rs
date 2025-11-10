@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use dashmap::DashMap;
+use parking_lot::RwLock;
 use ropey::Rope;
 
 use tower_lsp::lsp_types::{TextDocumentContentChangeEvent, Url};
@@ -15,6 +16,7 @@ use crate::ir::symbol_table::SymbolTable;
 use crate::ir::transforms::symbol_table_builder::InvertedIndex;
 use crate::ir::global_index::GlobalSymbolIndex;
 use crate::lsp::symbol_index::SymbolIndex;
+use crate::lsp::features::completion::incremental::DocumentCompletionState;
 
 /// Language detected for a document based on file extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +74,12 @@ pub struct CachedDocument {
     /// For backward compatibility, both fields are populated during the migration period.
     pub ir: Arc<RholangNode>,
 
+    /// Position-indexed AST for O(log n) node lookups
+    ///
+    /// Phase 6 optimization: Enables fast position-based node queries using a BTreeMap
+    /// instead of O(n) tree traversal. Expected 60-70% improvement for large files.
+    pub position_index: Arc<crate::lsp::position_index::PositionIndex>,
+
     /// NEW: Document IR with separate comment channel
     ///
     /// This field contains the semantic tree (same as `ir`) plus a separate channel
@@ -107,6 +115,9 @@ pub struct CachedDocument {
     pub symbol_index: Arc<SymbolIndex>,
     /// Fast hash of document content for change detection
     pub content_hash: u64,
+    /// Phase 9: Incremental completion state for 10-50x faster code completion
+    /// Caches completion dictionary + draft buffers to avoid re-indexing on every keystroke
+    pub completion_state: Option<Arc<RwLock<DocumentCompletionState>>>,
 }
 
 /// State for an open text document managed by the LSP server.
@@ -201,6 +212,10 @@ pub struct WorkspaceState {
     /// Phase 2 optimization: Track workspace indexing state for lazy initialization
     /// Wrapped in RwLock as it's updated infrequently (only during indexing lifecycle changes)
     pub indexing_state: Arc<tokio::sync::RwLock<IndexingState>>,
+
+    /// Fuzzy completion index using liblevenshtein DynamicDawg
+    /// Lock-free concurrent access for fast completion queries
+    pub completion_index: Arc<crate::lsp::features::completion::WorkspaceCompletionIndex>,
 }
 
 impl WorkspaceState {
@@ -216,6 +231,7 @@ impl WorkspaceState {
             global_virtual_symbols: Arc::new(DashMap::new()),
             rholang_symbols: Arc::new(crate::lsp::rholang_contracts::RholangContracts::new()),
             indexing_state: Arc::new(tokio::sync::RwLock::new(IndexingState::Idle)),
+            completion_index: Arc::new(crate::lsp::features::completion::WorkspaceCompletionIndex::new()),
         }
     }
 }

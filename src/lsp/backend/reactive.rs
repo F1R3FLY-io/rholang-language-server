@@ -327,6 +327,9 @@ impl RholangBackend {
                         *state = crate::lsp::models::IndexingState::Complete;
                     }
 
+                    // Eagerly populate completion index after indexing completes
+                    backend.populate_completion_index().await;
+
                     // Send completion notification
                     backend.client.send_notification::<tower_lsp::lsp_types::notification::Progress>(
                         tower_lsp::lsp_types::ProgressParams {

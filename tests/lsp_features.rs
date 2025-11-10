@@ -803,8 +803,8 @@ with_lsp_client!(test_completion_with_documentation, CommType::Stdio, |client: &
         .expect("Failed to receive diagnostics");
 
     // Test: Request completion at a position where contracts are visible
-    // Line 13 (after "new result in {"), column 4 - should show all contracts
-    let completion_pos = Position { line: 13, character: 4 };
+    // Line 13 (after "new result in {"), column 3 (before any identifier) - should show all contracts
+    let completion_pos = Position { line: 13, character: 3 };
     let completion_response = client.completion(&doc.uri(), completion_pos)
         .expect("Completion request failed");
 
@@ -831,7 +831,12 @@ with_lsp_client!(test_completion_with_documentation, CommType::Stdio, |client: &
                     "authenticate completion should contain documentation. Got: {}", doc);
                 println!("✅ authenticate item has documentation: {}", doc);
             }
-            _ => panic!("authenticate item should have string documentation"),
+            Some(Documentation::MarkupContent(content)) => {
+                assert!(content.value.contains("validates credentials"),
+                    "authenticate completion should contain documentation. Got: {}", content.value);
+                println!("✅ authenticate item has documentation: {}", content.value);
+            }
+            _ => panic!("authenticate item should have documentation"),
         }
 
         match &process_payment_item.documentation {
@@ -848,7 +853,17 @@ with_lsp_client!(test_completion_with_documentation, CommType::Stdio, |client: &
                     println!("   (fallback documentation shown - single-line doc may not be captured)");
                 }
             }
-            _ => panic!("processPayment item should have string documentation"),
+            Some(Documentation::MarkupContent(content)) => {
+                assert!(content.value.len() > 0,
+                    "processPayment completion should have documentation. Got: {}", content.value);
+                println!("✅ processPayment item has documentation: {}", content.value);
+                if content.value.contains("payment") || content.value.contains("transactions") {
+                    println!("   (actual doc comment captured)");
+                } else {
+                    println!("   (fallback documentation shown - single-line doc may not be captured)");
+                }
+            }
+            _ => panic!("processPayment item should have documentation"),
         }
 
         println!("✅ Completion with documentation test passed!");

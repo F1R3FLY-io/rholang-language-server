@@ -151,6 +151,7 @@ mod tests {
             indexing_state: Arc::new(tokio::sync::RwLock::new(
                 crate::lsp::models::IndexingState::Idle,
             )),
+            completion_index: Arc::new(crate::lsp::features::completion::WorkspaceCompletionIndex::new()),
         });
 
         // Add test symbol
@@ -213,6 +214,7 @@ mod tests {
             indexing_state: Arc::new(tokio::sync::RwLock::new(
                 crate::lsp::models::IndexingState::Idle,
             )),
+            completion_index: Arc::new(crate::lsp::features::completion::WorkspaceCompletionIndex::new()),
         });
 
         // Add multiple locations for same symbol
@@ -289,6 +291,7 @@ mod tests {
             indexing_state: Arc::new(tokio::sync::RwLock::new(
                 crate::lsp::models::IndexingState::Idle,
             )),
+            completion_index: Arc::new(crate::lsp::features::completion::WorkspaceCompletionIndex::new()),
         });
 
         let resolver = GenericSymbolResolver::new(workspace, "ruby".to_string());

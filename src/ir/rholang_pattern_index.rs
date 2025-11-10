@@ -30,6 +30,7 @@ use std::sync::Arc;
 use pathmap::PathMap;
 use pathmap::zipper::{ZipperMoving, ZipperValues, ZipperWriting};
 use mork::space::Space;
+use mork_interning::SharedMappingHandle;
 use serde::{Serialize, Deserialize};
 
 use crate::ir::rholang_node::RholangNode;
@@ -78,17 +79,17 @@ pub struct RholangPatternIndex {
     /// Keys are byte paths, values are PatternMetadata
     patterns: PathMap<PatternMetadata>,
 
-    /// MORK Space for symbol interning
-    /// Shared across all pattern serialization
-    space: Arc<Space>,
+    /// MORK SharedMappingHandle for thread-safe symbol interning
+    /// Each thread creates its own Space when needed for serialization
+    shared_mapping: SharedMappingHandle,
 }
 
-// Manual Debug implementation since mork::space::Space doesn't implement Debug
+// Manual Debug implementation for cleaner output
 impl std::fmt::Debug for RholangPatternIndex {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RholangPatternIndex")
             .field("patterns", &self.patterns)
-            .field("space", &"<Space>")
+            .field("shared_mapping", &"<SharedMappingHandle>")
             .finish()
     }
 }
@@ -96,15 +97,11 @@ impl std::fmt::Debug for RholangPatternIndex {
 impl RholangPatternIndex {
     /// Create a new empty pattern index
     pub fn new() -> Self {
+        use mork_interning::SharedMapping;
         Self {
             patterns: PathMap::new(),
-            space: Arc::new(Space::new()),
+            shared_mapping: SharedMapping::new(),
         }
-    }
-
-    /// Get reference to the MORK space for external use
-    pub fn space(&self) -> &Arc<Space> {
-        &self.space
     }
 
     /// Index a contract definition from the IR
@@ -128,10 +125,17 @@ impl RholangPatternIndex {
         // Extract contract name and parameters
         let (name, params) = Self::extract_contract_signature(contract_node)?;
 
+        // Create thread-local Space for this operation (MORK pattern)
+        let space = Space {
+            btm: PathMap::new(),
+            sm: self.shared_mapping.clone(),
+            mmaps: std::collections::HashMap::new(),
+        };
+
         // Convert parameters to MORK bytes
         let param_patterns: Vec<Vec<u8>> = params
             .iter()
-            .map(|p| Self::pattern_to_mork_bytes(p, &self.space))
+            .map(|p| Self::pattern_to_mork_bytes(p, &space))
             .collect::<Result<_, _>>()?;
 
         // Extract parameter names if available
@@ -182,10 +186,17 @@ impl RholangPatternIndex {
         contract_name: &str,
         arguments: &[&RholangNode],
     ) -> Result<Vec<PatternMetadata>, String> {
+        // Create thread-local Space for this operation (MORK pattern)
+        let space = Space {
+            btm: PathMap::new(),
+            sm: self.shared_mapping.clone(),
+            mmaps: std::collections::HashMap::new(),
+        };
+
         // Convert arguments to MORK bytes
         let arg_patterns: Vec<Vec<u8>> = arguments
             .iter()
-            .map(|a| Self::node_to_mork_bytes(a, &self.space))
+            .map(|a| Self::node_to_mork_bytes(a, &space))
             .collect::<Result<_, _>>()?;
 
         // Build query path

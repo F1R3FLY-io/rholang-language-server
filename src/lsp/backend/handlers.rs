@@ -320,13 +320,29 @@ impl LanguageServer for RholangBackend {
         let version = params.text_document.version;
         info!("textDocument/didChange: uri={}, version={}", uri, version);
         debug!("didChange params: {:?}", params);
+
+        // Clone content changes before they're consumed (for incremental completion updates)
+        let content_changes = params.content_changes.clone();
+
         // DashMap::get returns a guard that dereferences to the value
         if let Some(document) = self.documents_by_uri.get(&uri).map(|r| r.value().clone()) {
             if let Some((text, tree)) = document.apply(params.content_changes, version).await {
                 match self.index_file(&uri, &text, version, Some(tree)).await {
                     Ok(cached_doc) => {
-                        self.update_workspace_document(&uri, std::sync::Arc::new(cached_doc)).await;
+                        // Update completion index incrementally
+                        self.workspace.completion_index.remove_document_symbols(&uri);
+                        crate::lsp::features::completion::populate_from_symbol_table_with_tracking(
+                            &self.workspace.completion_index,
+                            &cached_doc.symbol_table,
+                            &uri,
+                        );
+
+                        let cached_doc_arc = std::sync::Arc::new(cached_doc);
+                        self.update_workspace_document(&uri, cached_doc_arc.clone()).await;
                         self.link_symbols().await;
+
+                        // Phase 9.3: Update incremental completion state
+                        self.update_completion_state_incremental(&uri, &content_changes, cached_doc_arc).await;
                     }
                     Err(e) => warn!("Failed to update {}: {}", uri, e),
                 }
@@ -367,6 +383,9 @@ impl LanguageServer for RholangBackend {
         if let Some((_key, document)) = self.documents_by_uri.remove(&uri) {
             self.documents_by_id.remove(&document.id);
             info!("Closed document: {}, id: {}", uri, document.id);
+
+            // Remove symbols from completion index
+            self.workspace.completion_index.remove_document_symbols(&uri);
 
             // Unregister any virtual documents associated with this parent
             let mut virtual_docs = self.virtual_docs.write().await;
@@ -786,6 +805,7 @@ impl LanguageServer for RholangBackend {
 
     /// Provides code completion suggestions
     async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
+        let start_time = std::time::Instant::now();
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
 
@@ -800,122 +820,306 @@ impl LanguageServer for RholangBackend {
             }
         };
 
-        let mut completions = Vec::new();
+        // Phase 4: Index is now populated eagerly during workspace initialization
+        // Fallback for tests only: If index is empty, populate it with a warning
+        let index_start = std::time::Instant::now();
+        if self.workspace.completion_index.is_empty() {
+            #[cfg(test)]
+            {
+                debug!("Completion index empty, populating (test mode fallback)");
+                crate::lsp::features::completion::add_keywords(&self.workspace.completion_index);
+                let global_table = self.workspace.global_table.read().await;
+                crate::lsp::features::completion::populate_from_symbol_table(
+                    &self.workspace.completion_index,
+                    &*global_table,
+                );
+                drop(global_table);
+                crate::lsp::features::completion::populate_from_symbol_table_with_tracking(
+                    &self.workspace.completion_index,
+                    &doc.symbol_table,
+                    &uri,
+                );
+                debug!("Completion index populated with {} symbols (test fallback)",
+                    self.workspace.completion_index.len());
+            }
+            #[cfg(not(test))]
+            {
+                warn!("Completion index empty - this indicates workspace was not properly initialized. Completion may be slow or incomplete.");
+            }
+        }
+        let index_elapsed = index_start.elapsed();
 
-        // Get all contract symbols from global table using pattern-based lookup
-        // This is O(1) for accessing the entire contract index
-        let global_table = self.workspace.global_table.read().await;
+        // Extract partial identifier at cursor position
+        let query = crate::lsp::features::completion::extract_partial_identifier(
+            &doc.text,
+            &position,
+        );
 
-        // Collect all unique contract names from the pattern index
-        // This gives us O(1) access to all contracts
-        let all_symbols = global_table.collect_all_symbols();
+        debug!("Extracted query: '{}'", query);
 
-        let mut contract_names_seen = std::collections::HashSet::new();
+        // Determine completion context (expression, pattern, type method, etc.)
+        // Check cache first to avoid re-traversing AST (Phase 5 optimization)
+        use crate::lsp::features::completion::determine_context;
+        let context_start = std::time::Instant::now();
 
-        for symbol in all_symbols {
-            if matches!(symbol.symbol_type, SymbolType::Contract) {
-                // Only add each contract name once, even if it has multiple overloads
-                if contract_names_seen.insert(symbol.name.clone()) {
-                    // Get all overloads for this contract name
-                    let overloads = global_table.lookup_all_contract_overloads(&symbol.name);
+        let context = {
+            let cache = self.completion_context_cache.read();
+            if let Some((cached_uri, cached_pos, cached_context)) = cache.as_ref() {
+                if cached_uri == &uri && cached_pos == &position {
+                    debug!("Using cached completion context (cache hit)");
+                    cached_context.clone()
+                } else {
+                    drop(cache);  // Release read lock before acquiring write lock
+                    let new_context = determine_context(&doc.ir, &position);
+                    let mut cache_write = self.completion_context_cache.write();
+                    *cache_write = Some((uri.clone(), position.clone(), new_context.clone()));
+                    new_context
+                }
+            } else {
+                drop(cache);  // Release read lock before acquiring write lock
+                let new_context = determine_context(&doc.ir, &position);
+                let mut cache_write = self.completion_context_cache.write();
+                *cache_write = Some((uri.clone(), position.clone(), new_context.clone()));
+                new_context
+            }
+        };
 
-                    // Create detail string showing all arities
-                    let arities: Vec<String> = overloads.iter()
-                        .map(|s| {
-                            let arity = s.arity().unwrap_or(0);
-                            let variadic = if s.is_variadic() { "..." } else { "" };
-                            format!("({}){}", arity, variadic)
-                        })
-                        .collect();
+        let context_elapsed = context_start.elapsed();
 
-                    let detail = if arities.len() > 1 {
-                        format!("contract - overloads: {}", arities.join(", "))
-                    } else {
-                        format!("contract {}", arities.first().unwrap_or(&"".to_string()))
-                    };
+        debug!("Completion context: {:?} (took {}ms)", context.context_type, context_elapsed.as_millis());
 
-                    // Phase 5: Use symbol documentation if available
-                    let documentation = if let Some(ref doc) = symbol.documentation {
-                        Some(tower_lsp::lsp_types::Documentation::String(doc.clone()))
-                    } else {
-                        // Fallback to showing overload count if no documentation
-                        Some(tower_lsp::lsp_types::Documentation::String(
-                            format!("Contract with {} overload{}",
-                                overloads.len(),
-                                if overloads.len() == 1 { "" } else { "s" }
-                            )
-                        ))
-                    };
+        // Check if we're in a parameter context and get parameter hints
+        use crate::lsp::features::completion::get_parameter_context;
+        use crate::ir::semantic_node::Position as IrPosition;
 
-                    completions.push(CompletionItem {
-                        label: symbol.name.clone(),
-                        kind: Some(CompletionItemKind::FUNCTION),
-                        detail: Some(detail),
-                        documentation,
-                        ..Default::default()
-                    });
+        let param_start = std::time::Instant::now();
+        let parameter_context = if let Some(node) = &context.current_node {
+            let ir_position = IrPosition {
+                row: position.line as usize,
+                column: position.character as usize,
+                byte: 0,
+            };
+            get_parameter_context(node.as_ref(), &ir_position, &doc.symbol_table)
+        } else {
+            None
+        };
+        let param_elapsed = param_start.elapsed();
+
+        if let Some(ref param_ctx) = parameter_context {
+            debug!(
+                "Parameter context detected: contract='{}', position={}, expected_type={:?}",
+                param_ctx.contract_name,
+                param_ctx.parameter_position,
+                param_ctx.expected_pattern
+            );
+        }
+
+        // Phase 9.4: Try incremental completion state first (10-50x faster)
+        // Falls back to PathMap-based completion if state not available
+        use crate::lsp::features::completion::{RankingCriteria, rank_completions};
+        use liblevenshtein::prelude::Algorithm;
+
+        let query_start = std::time::Instant::now();
+
+        // Phase 9.6: Track cursor movement for finalization logic
+        let cursor_moved = if let Some(ref completion_state) = doc.completion_state {
+            let state = completion_state.read();
+            let moved = state.has_cursor_moved(&position);
+            drop(state);
+
+            if moved {
+                // Finalize current draft (if any) before switching context
+                let mut state_write = completion_state.write();
+                if let Ok(Some(finalized_term)) = state_write.finalize() {
+                    tracing::debug!(
+                        "Finalized draft identifier '{}' on cursor movement (Phase 9.6)",
+                        finalized_term
+                    );
+                }
+                // Update position tracker
+                state_write.update_position(position);
+            }
+            moved
+        } else {
+            false
+        };
+
+        let mut completion_symbols = if let Some(ref completion_state) = doc.completion_state {
+
+            // Phase 9.5: Hybrid scope detection and caching
+            // Check if we need to update the current scope
+            {
+                let state = completion_state.read();
+                if !state.is_scope_cache_valid() {
+                    drop(state); // Release read lock before acquiring write lock
+
+                    // Detect scope at cursor position
+                    let scope_id = crate::lsp::features::completion::incremental::detect_scope_at_position(
+                        &doc.symbol_table,
+                        &position,
+                    );
+
+                    // Switch to detected scope
+                    let mut state_write = completion_state.write();
+                    if let Err(e) = state_write.switch_context(scope_id) {
+                        tracing::warn!("Failed to switch to scope {}: {}", scope_id, e);
+                    }
                 }
             }
-        }
 
-        // Also add symbols from local scope (variables, parameters)
-        let symbol_table = doc.symbol_table.clone();
-        let local_symbols = symbol_table.current_symbols();
+            // Use incremental completion state (Phase 9 optimization)
+            let state = completion_state.read();
+            let max_distance = if query.len() <= 2 { 0 } else { 1 }; // Allow 1 typo for longer queries
 
-        for symbol in local_symbols {
-            let kind = match symbol.symbol_type {
-                SymbolType::Variable => CompletionItemKind::VARIABLE,
-                SymbolType::Contract => CompletionItemKind::FUNCTION,
-                SymbolType::Parameter => CompletionItemKind::VARIABLE,
-            };
+            let liblevenshtein_completions = state.query_completions(&query, max_distance);
+            drop(state); // Release lock early
 
-            let type_str = match symbol.symbol_type {
-                SymbolType::Variable => "variable",
-                SymbolType::Contract => "contract",
-                SymbolType::Parameter => "parameter",
-            };
+            // Convert liblevenshtein Completion to CompletionSymbol
+            use crate::lsp::features::completion::CompletionSymbol;
+            use tower_lsp::lsp_types::CompletionItemKind;
 
-            // Skip contracts we've already added from global scope
-            if matches!(symbol.symbol_type, SymbolType::Contract) && contract_names_seen.contains(&symbol.name) {
-                continue;
+            let liblevenshtein_results = liblevenshtein_completions
+                .into_iter()
+                .map(|completion| {
+                    let kind = if crate::lsp::features::completion::dictionary::RHOLANG_KEYWORDS
+                        .contains(&completion.term.as_str())
+                    {
+                        CompletionItemKind::KEYWORD
+                    } else {
+                        CompletionItemKind::VARIABLE
+                    };
+
+                    CompletionSymbol {
+                        metadata: crate::lsp::features::completion::dictionary::SymbolMetadata {
+                            name: completion.term,
+                            kind,
+                            documentation: if completion.is_draft {
+                                Some("(draft)".to_string())
+                            } else {
+                                None
+                            },
+                            signature: None,
+                            reference_count: 0,
+                        },
+                        distance: completion.distance,
+                        scope_depth: usize::MAX,  // Default to global scope
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            // Phase 9.6: Update position tracker after each query (for continuous typing)
+            if !cursor_moved {
+                let mut state_write = completion_state.write();
+                state_write.update_position(position);
             }
 
-            // Phase 5: Include symbol documentation if available
-            let documentation = symbol.documentation.as_ref()
-                .map(|doc| tower_lsp::lsp_types::Documentation::String(doc.clone()));
+            liblevenshtein_results
+        } else {
+            // No incremental state available - fall through to PathMap
+            vec![]
+        };
 
-            completions.push(CompletionItem {
-                label: symbol.name.clone(),
-                kind: Some(kind),
-                detail: Some(type_str.to_string()),
-                documentation,
-                ..Default::default()
-            });
+        // Fallback to PathMap-based completion if incremental state unavailable or query failed
+        if completion_symbols.is_empty() && doc.completion_state.is_none() {
+            // Query strategy:
+            // 1. If query is empty, use prefix matching with empty prefix (returns all, sorted by length)
+            // 2. If query is short (1-2 chars), use prefix matching only (fast, no typos expected)
+            // 3. If query is longer, try prefix first, then add fuzzy matches for typo correction
+            completion_symbols = if query.is_empty() {
+                // Return all symbols, sorted by length (shorter names first)
+                self.workspace.completion_index.query_prefix("")
+            } else if query.len() <= 2 {
+                // Short query: prefix matching only (fast, accurate)
+                self.workspace.completion_index.query_prefix(&query)
+            } else {
+                // Longer query: try prefix first
+                let mut results = self.workspace.completion_index.query_prefix(&query);
+
+                // If we have few results, add fuzzy matches (typo correction)
+                if results.len() < 5 {
+                    let fuzzy_results = self.workspace.completion_index.query_fuzzy(
+                        &query,
+                        1,  // Allow 1 edit distance (1 typo)
+                        Algorithm::Transposition,  // Catches common typos like "teh" -> "the"
+                    );
+                    results.extend(fuzzy_results);
+                }
+
+                results
+            };
+        }
+        let query_elapsed = query_start.elapsed();
+
+        // Hierarchical scope filtering: Enrich completion symbols with scope depth
+        // This ensures local symbols rank higher than global symbols in completion results
+        completion_symbols = enrich_with_scope_depth(completion_symbols, &doc.symbol_table, &query);
+
+        // Filter by context (keywords, type methods, etc.)
+        use crate::lsp::features::completion::{filter_keywords_by_context, get_type_methods, CompletionSymbol};
+
+        // Check if we're in a type method context (after dot operator)
+        if let crate::lsp::features::completion::CompletionContextType::TypeMethod { type_name } = &context.context_type {
+            debug!("Providing method completions for type: {}", type_name);
+
+            // Get methods for this type
+            let methods = get_type_methods(type_name);
+
+            // Convert to CompletionSymbols
+            completion_symbols = methods
+                .into_iter()
+                .map(|metadata| CompletionSymbol {
+                    metadata,
+                    distance: 0,
+                    scope_depth: usize::MAX  // Default to global scope
+                })
+                .collect();
+
+            debug!("Found {} methods for type {}", completion_symbols.len(), type_name);
+        } else {
+            // Normal completion: filter keywords by context
+            // Separate keywords from other symbols
+            let (keywords, other_symbols): (Vec<_>, Vec<_>) = completion_symbols
+                .into_iter()
+                .partition(|sym| sym.metadata.kind == tower_lsp::lsp_types::CompletionItemKind::KEYWORD);
+
+            // Filter keywords by context
+            let filtered_keywords = filter_keywords_by_context(keywords, &context.context_type);
+
+            // Recombine
+            completion_symbols = filtered_keywords;
+            completion_symbols.extend(other_symbols);
+
+            // TODO: Filter symbols by parameter type if in parameter context
+            // For Phase 3.4.3, this would filter symbols based on param_ctx.expected_pattern
         }
 
-        // Add Rholang keywords
-        let keywords = vec![
-            ("new", "Declare new channels"),
-            ("contract", "Define a contract"),
-            ("for", "Input guarded process"),
-            ("match", "Pattern matching"),
-            ("Nil", "Empty process"),
-            ("bundle", "Bundle channels"),
-            ("true", "Boolean true"),
-            ("false", "Boolean false"),
-        ];
+        // Rank and deduplicate results
+        let criteria = if query.is_empty() {
+            RankingCriteria::exact_prefix()  // Prioritize frequently-used symbols
+        } else {
+            RankingCriteria::fuzzy()  // Prioritize closest matches
+        };
 
-        for (keyword, doc) in keywords {
-            completions.push(CompletionItem {
-                label: keyword.to_string(),
-                kind: Some(CompletionItemKind::KEYWORD),
-                detail: Some("keyword".to_string()),
-                documentation: Some(tower_lsp::lsp_types::Documentation::String(doc.to_string())),
-                ..Default::default()
-            });
-        }
+        completion_symbols = rank_completions(completion_symbols, &criteria);
 
-        debug!("Returning {} completion items", completions.len());
+        // Convert to LSP CompletionItems
+        let completions: Vec<CompletionItem> = completion_symbols
+            .into_iter()
+            .enumerate()
+            .map(|(i, sym)| sym.to_completion_item(i))
+            .collect();
+
+        let total_elapsed = start_time.elapsed();
+
+        info!(
+            "Completion completed in {}ms (index: {}ms, context: {}ms, param: {}ms, query: {}ms) - {} items returned",
+            total_elapsed.as_millis(),
+            index_elapsed.as_millis(),
+            context_elapsed.as_millis(),
+            param_elapsed.as_millis(),
+            query_elapsed.as_millis(),
+            completions.len()
+        );
 
         if completions.is_empty() {
             Ok(None)
@@ -1094,4 +1298,55 @@ impl RholangBackend {
             })
             .collect()
     }
+}
+
+/// Enrich completion symbols with scope depth information for hierarchical filtering
+///
+/// This function updates the scope_depth field of each CompletionSymbol based on its
+/// position in the symbol table's scope hierarchy. Symbols from the current scope get
+/// depth 0, parent scope gets 1, etc. Symbols not found in the symbol table (like keywords)
+/// retain their default value (usize::MAX for global scope).
+///
+/// # Arguments
+/// * `symbols` - Completion symbols from dictionary query (all have scope_depth = usize::MAX)
+/// * `symbol_table` - The document's symbol table with scope hierarchy
+/// * `prefix` - The query prefix to match against symbol names
+///
+/// # Returns
+/// Updated vector of completion symbols with accurate scope depth values
+fn enrich_with_scope_depth(
+    mut symbols: Vec<crate::lsp::features::completion::CompletionSymbol>,
+    symbol_table: &crate::ir::symbol_table::SymbolTable,
+    prefix: &str,
+) -> Vec<crate::lsp::features::completion::CompletionSymbol> {
+    use std::collections::HashMap;
+
+    // Build a map of symbol name -> scope depth by querying the symbol table
+    let mut depth_map: HashMap<String, usize> = HashMap::new();
+
+    // Get all symbols with their scope depths from the symbol table
+    let symbols_with_depth = symbol_table.collect_symbols_with_depth(prefix);
+
+    for (symbol, depth) in symbols_with_depth {
+        // Use the minimum depth if a symbol appears in multiple scopes
+        // (e.g., shadowing - prioritize the innermost scope)
+        depth_map
+            .entry(symbol.name.clone())
+            .and_modify(|existing_depth| {
+                if depth < *existing_depth {
+                    *existing_depth = depth;
+                }
+            })
+            .or_insert(depth);
+    }
+
+    // Update scope_depth for each completion symbol
+    for symbol in &mut symbols {
+        if let Some(&depth) = depth_map.get(&symbol.metadata.name) {
+            symbol.scope_depth = depth;
+        }
+        // Otherwise, keep the default value (usize::MAX for global/workspace symbols)
+    }
+
+    symbols
 }
