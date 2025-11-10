@@ -293,21 +293,119 @@ pub fn build_partial_mork_pattern(pattern_ctx: &QuotedPatternContext) -> Option<
 /// # Returns
 /// Vector of completion symbols matching the pattern
 ///
-/// # TODO (Phase 3)
-/// This function needs to be fully implemented in Phase 3.
-/// For now, it's a placeholder that returns empty results.
-/// The full implementation will:
-/// 1. Build MORK pattern from context
-/// 2. Query RholangPatternIndex with the pattern
-/// 3. Convert PatternMetadata results to CompletionSymbols
-/// 4. Apply prefix matching for string patterns
+/// # Implementation Notes
+/// - String patterns: Use prefix matching on contract names via GlobalSymbolIndex.definitions
+/// - Complex patterns (Map/List/Tuple/Set): Deferred to Phase 2 (requires full MORK unification)
+///
+/// # Performance
+/// Current implementation uses O(n) HashMap iteration where n = total symbols.
+/// Future optimization: Use PrefixZipper trait from liblevenshtein for O(k+m) complexity.
+/// See docs/completion/prefix_zipper_integration.md for details.
 pub fn query_contracts_by_pattern(
-    _global_index: &Arc<RwLock<GlobalSymbolIndex>>,
-    _pattern_ctx: &QuotedPatternContext,
+    global_index: &Arc<RwLock<GlobalSymbolIndex>>,
+    pattern_ctx: &QuotedPatternContext,
 ) -> Vec<CompletionSymbol> {
-    // TODO: Implement in Phase 3
-    debug!("query_contracts_by_pattern called - implementation pending (Phase 3)");
-    vec![]
+    match pattern_ctx.pattern_type {
+        QuotedPatternType::String => {
+            // String literal pattern: @"prefix|"
+            // Use prefix matching on contract names
+            debug!(
+                "Querying contracts by string prefix: '{}'",
+                pattern_ctx.partial_text
+            );
+            query_contracts_by_name_prefix(global_index, &pattern_ctx.partial_text)
+        }
+
+        // Complex patterns deferred to Phase 2 (require full MORK unification)
+        QuotedPatternType::Map => {
+            debug!("Map pattern completion deferred to Phase 2 (requires MORK unification)");
+            vec![]
+        }
+        QuotedPatternType::List => {
+            debug!("List pattern completion deferred to Phase 2 (requires MORK unification)");
+            vec![]
+        }
+        QuotedPatternType::Tuple => {
+            debug!("Tuple pattern completion deferred to Phase 2 (requires MORK unification)");
+            vec![]
+        }
+        QuotedPatternType::Set => {
+            debug!("Set pattern completion deferred to Phase 2 (requires MORK unification)");
+            vec![]
+        }
+    }
+}
+
+/// Query contracts by name prefix using GlobalSymbolIndex
+///
+/// This helper function iterates the global definitions HashMap
+/// and filters for contracts whose names start with the given prefix.
+///
+/// # Arguments
+/// * `global_index` - Global symbol index containing all workspace contracts
+/// * `prefix` - String prefix to match against contract names
+///
+/// # Returns
+/// Vector of matching contracts as CompletionSymbols, sorted by name length
+///
+/// # Performance
+/// O(n) where n = total symbols in workspace (typically 500-1000).
+/// Acceptable for LSP response times (<100ms).
+///
+/// Future optimization: Will be replaced with PrefixZipper-based O(k+m) query
+/// when liblevenshtein PrefixZipper trait is available.
+fn query_contracts_by_name_prefix(
+    global_index: &Arc<RwLock<GlobalSymbolIndex>>,
+    prefix: &str,
+) -> Vec<CompletionSymbol> {
+    use crate::ir::global_index::SymbolKind;
+
+    let index = match global_index.read() {
+        Ok(guard) => guard,
+        Err(e) => {
+            debug!("Failed to acquire read lock on global index: {}", e);
+            return vec![];
+        }
+    };
+
+    let mut results = Vec::new();
+
+    // Iterate all definitions, filter for contracts with matching prefix
+    for (symbol_id, location) in index.definitions.iter() {
+        // Filter for contracts only
+        if location.kind != SymbolKind::Contract {
+            continue;
+        }
+
+        // Filter by name prefix
+        if !symbol_id.name.starts_with(prefix) {
+            continue;
+        }
+
+        // Convert to CompletionSymbol
+        results.push(CompletionSymbol {
+            metadata: SymbolMetadata {
+                name: symbol_id.name.clone(),
+                kind: CompletionItemKind::FUNCTION, // Contracts complete as functions
+                documentation: location.documentation.clone(),
+                signature: location.signature.clone(),
+                reference_count: 0, // Could be enriched from references index in future
+            },
+            distance: 0,            // Exact prefix match
+            scope_depth: usize::MAX, // Global scope
+        });
+    }
+
+    // Sort by name length (shorter names more likely to be relevant)
+    results.sort_by_key(|s| s.metadata.name.len());
+
+    debug!(
+        "Found {} contracts matching prefix '{}'",
+        results.len(),
+        prefix
+    );
+
+    results
 }
 
 #[cfg(test)]
