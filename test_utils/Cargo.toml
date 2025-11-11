@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0"
+fastrand = "2.0"  # Lightweight RNG for exponential backoff jitter
 futures = "0.3"
 quickcheck = "1.0"
 ropey = "1.6"

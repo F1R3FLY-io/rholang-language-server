@@ -46,6 +46,50 @@ use crate::lsp::document::LspDocument;
 use crate::lsp::events::LspEvent;
 use crate::lsp::message_stream::LspMessageStream;
 
+/// Applies full jitter to exponential backoff per AWS recommendations.
+///
+/// Formula: `sleep = random_between(0, min(cap, base * 2^attempt))`
+///
+/// This prevents "thundering herd" when multiple tests retry simultaneously
+/// in parallel test execution (nextest). Without jitter, all tests would retry
+/// at the exact same intervals, causing port collisions and connection failures.
+///
+/// # Arguments
+///
+/// * `base_ms` - Base delay in milliseconds (e.g., 10ms)
+/// * `attempt` - Current retry attempt number (0-indexed)
+/// * `cap_ms` - Maximum delay cap in milliseconds (e.g., 100ms)
+///
+/// # Returns
+///
+/// Random duration between 0 and min(cap, base * 2^attempt)
+///
+/// # Example
+///
+/// ```ignore
+/// // TCP retry: 10ms base, 100ms cap
+/// let wait = exponential_backoff_with_full_jitter(10, attempt, 100);
+/// // Attempt 0: 0-10ms random
+/// // Attempt 1: 0-20ms random
+/// // Attempt 2: 0-40ms random
+/// // Attempt 3: 0-80ms random
+/// // Attempt 4+: 0-100ms random (capped)
+/// ```
+///
+/// # Reference
+///
+/// AWS Architecture Blog: <https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/>
+fn exponential_backoff_with_full_jitter(
+    base_ms: u64,
+    attempt: u32,
+    cap_ms: u64,
+) -> Duration {
+    let exponential_ms = base_ms.saturating_mul(2u64.saturating_pow(attempt));
+    let max_jitter_ms = exponential_ms.min(cap_ms);
+    let jittered_ms = fastrand::u64(0..=max_jitter_ms);
+    Duration::from_millis(jittered_ms)
+}
+
 /// Enum representing different communication types with the LSP server.
 #[derive(Clone)]
 pub enum CommType {
@@ -229,9 +273,9 @@ impl LspClient {
                     let mut server = spawn_server_with_retry_null(&server_path, server_args).await?;
                     let logger = Box::new(server.stderr.take().expect("Failed to open server stderr")) as Box<dyn LspStream>;
 
-                    // Retry connection with exponential backoff (necessary - waiting for server to bind port)
+                    // Retry connection with exponential backoff + full jitter (AWS pattern)
+                    // Prevents thundering herd when nextest runs tests in parallel
                     let stream = {
-                        let mut wait_time = Duration::from_millis(10);
                         let max_attempts = 10;
                         let mut result = None;
 
@@ -244,8 +288,12 @@ impl LspClient {
                                 Err(e) => {
                                     result = Some(Err(e));
                                     if attempt < max_attempts - 1 {
+                                        let wait_time = exponential_backoff_with_full_jitter(
+                                            10,   // base_ms
+                                            attempt as u32,
+                                            100,  // cap_ms
+                                        );
                                         tokio::time::sleep(wait_time).await;
-                                        wait_time = (wait_time * 2).min(Duration::from_millis(100));
                                     }
                                 }
                             }
@@ -299,10 +347,10 @@ impl LspClient {
                     let mut server = spawn_server_with_retry_null(&server_path, server_args).await?;
                     let logger = Box::new(server.stderr.take().expect("Failed to open server stderr")) as Box<dyn LspStream>;
 
-                    // Retry connection with exponential backoff (server needs time to create socket)
+                    // Retry connection with exponential backoff + full jitter (AWS pattern)
+                    // Prevents thundering herd when nextest runs tests in parallel
                     #[cfg(windows)]
                     let (read_half, write_half) = {
-                        let mut wait_time = Duration::from_millis(10);
                         let max_attempts = 10;
                         let mut last_error = None;
                         let mut client = None;
@@ -316,8 +364,12 @@ impl LspClient {
                                 Err(e) => {
                                     last_error = Some(e);
                                     if attempt < max_attempts - 1 {
+                                        let wait_time = exponential_backoff_with_full_jitter(
+                                            10,   // base_ms
+                                            attempt as u32,
+                                            200,  // cap_ms
+                                        );
                                         tokio::time::sleep(wait_time).await;
-                                        wait_time = (wait_time * 2).min(Duration::from_millis(200));
                                     }
                                 }
                             }
@@ -327,7 +379,6 @@ impl LspClient {
                     };
                     #[cfg(unix)]
                     let (read_half, write_half) = {
-                        let mut wait_time = Duration::from_millis(10);
                         let max_attempts = 10;
                         let mut last_error = None;
                         let mut stream = None;
@@ -341,8 +392,12 @@ impl LspClient {
                                 Err(e) => {
                                     last_error = Some(e);
                                     if attempt < max_attempts - 1 {
+                                        let wait_time = exponential_backoff_with_full_jitter(
+                                            10,   // base_ms
+                                            attempt as u32,
+                                            200,  // cap_ms
+                                        );
                                         tokio::time::sleep(wait_time).await;
-                                        wait_time = (wait_time * 2).min(Duration::from_millis(200));
                                     }
                                 }
                             }
@@ -387,10 +442,10 @@ impl LspClient {
                         })?;
                     let logger = Box::new(server.stderr.take().expect("Failed to open server stderr")) as Box<dyn LspStream>;
 
-                    // Retry connection with exponential backoff (similar to TCP pattern)
+                    // Retry connection with exponential backoff + full jitter (AWS pattern)
+                    // Prevents thundering herd when nextest runs tests in parallel
                     // WebSocket needs more attempts than TCP due to handshake overhead
                     let ws_stream = {
-                        let mut wait_time = Duration::from_millis(50);  // Start at 50ms for WebSocket overhead
                         let max_attempts = 15;  // Increased from TCP's 10 due to WebSocket complexity
                         let mut result = None;
 
@@ -408,10 +463,13 @@ impl LspClient {
                                         format!("WebSocket connection failed: {}", e),
                                     )));
                                     if attempt < max_attempts - 1 {
+                                        let wait_time = exponential_backoff_with_full_jitter(
+                                            50,    // base_ms - higher than TCP due to WebSocket overhead
+                                            attempt as u32,
+                                            1000,  // cap_ms
+                                        );
                                         debug!("Connection failed (attempt {}/{}), retrying in {:?}", attempt + 1, max_attempts, wait_time);
                                         tokio::time::sleep(wait_time).await;
-                                        // Exponential backoff: 50ms, 100ms, 200ms, 400ms, 800ms (capped at 1000ms)
-                                        wait_time = (wait_time * 2).min(Duration::from_millis(1000));
                                     } else {
                                         error!("Failed to connect to WebSocket server after {} attempts", max_attempts);
                                     }

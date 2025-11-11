@@ -3901,6 +3901,7 @@ name = "test_utils"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "fastrand",
  "futures",
  "nix 0.27.1",
  "quickcheck",
