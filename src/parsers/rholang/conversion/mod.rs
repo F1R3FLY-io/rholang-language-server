@@ -450,10 +450,22 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             let inputs_ts = ts_node.child_by_field_name("inputs").expect("Send node must have inputs");
             let mut current_prev_end = send_type_abs_end;
             let inputs = inputs_ts.named_children(&mut inputs_ts.walk())
-                .map(|child| {
+                .filter_map(|child| {
+                    // Skip comments - they don't belong in the IR
+                    let kind_id = child.kind_id();
+                    if is_comment(kind_id) {
+                        // Update position tracking to skip over comment's bytes
+                        let comment_end_pos = child.end_position();
+                        current_prev_end = Position {
+                            row: comment_end_pos.row,
+                            column: comment_end_pos.column,
+                            byte: child.end_byte(),
+                        };
+                        return None;
+                    }
                     let (node, end) = convert_ts_node_to_ir(child, rope, current_prev_end);
                     current_prev_end = end;
-                    node
+                    Some(node)
                 })
                 .collect::<Vector<_, ArcK>>();
             let send_type = match send_type_ts.kind() {
@@ -1171,11 +1183,55 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
     }
 }
 
+/// Filters comments from a node's children, returning only semantic children
+/// and updating the position tracker to skip over comments.
+///
+/// Comments can appear as "extras" in the Tree-Sitter grammar anywhere between
+/// semantic nodes, so this helper ensures they don't interfere with positional
+/// child access patterns.
+///
+/// # Returns
+/// A tuple of (semantic_children, updated_prev_end) where:
+/// - semantic_children: Vec of TSNode children without comments
+/// - updated_prev_end: Position after last comment (for correct position tracking)
+#[inline]
+fn filter_comments_from_children(ts_node: TSNode, prev_end: Position) -> (Vec<TSNode>, Position) {
+    let mut current_prev_end = prev_end;
+    let mut semantic_children = Vec::new();
+
+    for child in ts_node.named_children(&mut ts_node.walk()) {
+        let kind_id = child.kind_id();
+        if is_comment(kind_id) {
+            // Skip comment but update position tracking
+            let comment_end_pos = child.end_position();
+            current_prev_end = Position {
+                row: comment_end_pos.row,
+                column: comment_end_pos.column,
+                byte: child.end_byte(),
+            };
+            continue;
+        }
+        semantic_children.push(child);
+    }
+
+    (semantic_children, current_prev_end)
+}
+
 fn binary_op(ts_node: TSNode, rope: &Rope, base: NodeBase, op: BinOperator, prev_end: Position) -> (Arc<RholangNode>, Position) {
-    let left_ts = ts_node.child(0).expect("BinaryOp node must have a left operand");
-    let (left, left_end) = convert_ts_node_to_ir(left_ts, rope, prev_end);
-    let right_ts = ts_node.child(2).expect("BinaryOp node must have a right operand");
+    // Filter comments from children (they can appear as extras between operands)
+    let (semantic_children, current_prev_end) = filter_comments_from_children(ts_node, prev_end);
+
+    // Expect exactly 2 operands (left and right)
+    if semantic_children.len() < 2 {
+        panic!("BinaryOp node must have left and right operands, found {} semantic children", semantic_children.len());
+    }
+
+    let left_ts = semantic_children[0];
+    let (left, left_end) = convert_ts_node_to_ir(left_ts, rope, current_prev_end);
+
+    let right_ts = semantic_children[1];
     let (right, right_end) = convert_ts_node_to_ir(right_ts, rope, left_end);
+
     let mut data = HashMap::new();
     data.insert("version".to_string(), Arc::new(0usize) as Arc<dyn Any + Send + Sync>);
     let metadata = Some(Arc::new(data));
@@ -1184,8 +1240,17 @@ fn binary_op(ts_node: TSNode, rope: &Rope, base: NodeBase, op: BinOperator, prev
 }
 
 fn unary_op(ts_node: TSNode, rope: &Rope, base: NodeBase, op: UnaryOperator, prev_end: Position) -> (Arc<RholangNode>, Position) {
-    let operand_ts = ts_node.child(1).expect("UnaryOp node must have an operand");
-    let (operand, operand_end) = convert_ts_node_to_ir(operand_ts, rope, prev_end);
+    // Filter comments from children (they can appear as extras between operator and operand)
+    let (semantic_children, current_prev_end) = filter_comments_from_children(ts_node, prev_end);
+
+    // Expect exactly 1 operand
+    if semantic_children.is_empty() {
+        panic!("UnaryOp node must have an operand, found 0 semantic children");
+    }
+
+    let operand_ts = semantic_children[0];
+    let (operand, operand_end) = convert_ts_node_to_ir(operand_ts, rope, current_prev_end);
+
     let mut data = HashMap::new();
     data.insert("version".to_string(), Arc::new(0usize) as Arc<dyn Any + Send + Sync>);
     let metadata = Some(Arc::new(data));

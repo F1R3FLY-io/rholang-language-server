@@ -62,6 +62,13 @@ pub(crate) fn collect_named_descendants(
     for child in node.named_children(&mut cursor) {
         // Skip comments - they don't belong in the IR
         if is_comment(child.kind_id()) {
+            // Update position tracking to skip over comment's bytes
+            let comment_end_pos = child.end_position();
+            current_prev_end = Position {
+                row: comment_end_pos.row,
+                column: comment_end_pos.column,
+                byte: child.end_byte(),
+            };
             continue;
         }
         let (child_node, child_end) = convert_ts_node_to_ir(child, rope, current_prev_end);
