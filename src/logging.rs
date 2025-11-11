@@ -44,8 +44,9 @@ fn cleanup_old_logs(log_dir: &PathBuf) -> io::Result<()> {
             if let Ok(metadata) = entry.metadata() {
                 if metadata.is_file() {
                     if let Some(name) = entry.file_name().to_str() {
-                        // Clean up both session and wire logs
-                        if (name.starts_with("session-") || name.starts_with("wire-")) && name.ends_with(".log") {
+                        // Clean up session, wire, and panic logs
+                        if (name.starts_with("session-") || name.starts_with("wire-") || name.starts_with("panic-"))
+                            && name.ends_with(".log") {
                             if let Ok(modified) = metadata.modified() {
                                 if let Ok(age) = now.duration_since(modified) {
                                     if age > retention {

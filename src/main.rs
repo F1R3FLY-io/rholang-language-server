@@ -1,6 +1,6 @@
 #![recursion_limit = "1024"]
 use std::io;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -926,9 +926,20 @@ async fn run_server(config: ServerConfig, conn_manager: ConnectionManager) -> io
 }
 
 fn main() -> io::Result<()> {
+    // Create session identifier early (shared between logs and panic hooks)
+    // Format: YYYYMMDD-HHMMSS-PID (e.g., "20251111-115829-649418")
+    let timestamp = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::parse(
+            "[year][month][day]-[hour][minute][second]"
+        ).unwrap())
+        .unwrap();
+    let pid = std::process::id();
+    let session_id = Arc::new(RwLock::new(Some(format!("{}-{}", timestamp, pid))));
+
     // Install a custom panic hook to capture stack overflow information
     // This must be done BEFORE any logging is initialized
-    std::panic::set_hook(Box::new(|panic_info| {
+    let panic_session_id = Arc::clone(&session_id);
+    std::panic::set_hook(Box::new(move |panic_info| {
         let thread = std::thread::current();
         let thread_name = thread.name().unwrap_or("<unnamed>");
         let thread_id = format!("{:?}", thread.id());
@@ -973,7 +984,17 @@ fn main() -> io::Result<()> {
             // Ensure directory exists
             let _ = std::fs::create_dir_all(&panic_log_path);
 
-            panic_log_path.push("panic.log");
+            // Use session-specific panic log filename if available, fallback to panic.log
+            let panic_filename = if let Ok(guard) = panic_session_id.read() {
+                if let Some(ref sid) = *guard {
+                    format!("panic-{}.log", sid)
+                } else {
+                    "panic.log".to_string()
+                }
+            } else {
+                "panic.log".to_string()
+            };
+            panic_log_path.push(panic_filename);
 
             if let Ok(mut file) = std::fs::OpenOptions::new()
                 .create(true)
@@ -1027,12 +1048,13 @@ fn main() -> io::Result<()> {
     //
     // The panic handler ensures that if any Rayon worker thread panics:
     // 1. The panic is logged with full context (thread name, location, message)
-    // 2. The panic is written to the panic.log file
+    // 2. The panic is written to the session-specific panic log file
     // 3. The panic is propagated so the operation fails gracefully
+    let rayon_session_id = Arc::clone(&session_id);
     rayon::ThreadPoolBuilder::new()
         .stack_size(STACK_SIZE)
         .thread_name(|i| format!("rholang-rayon-worker-{}", i))
-        .panic_handler(|err| {
+        .panic_handler(move |err| {
             let thread = std::thread::current();
             let thread_name = thread.name().unwrap_or("<unnamed-rayon-worker>");
             let thread_id = format!("{:?}", thread.id());
@@ -1071,7 +1093,17 @@ fn main() -> io::Result<()> {
                 // Ensure directory exists
                 let _ = std::fs::create_dir_all(&panic_log_path);
 
-                panic_log_path.push("panic.log");
+                // Use session-specific panic log filename if available, fallback to panic.log
+                let panic_filename = if let Ok(guard) = rayon_session_id.read() {
+                    if let Some(ref sid) = *guard {
+                        format!("panic-{}.log", sid)
+                    } else {
+                        "panic.log".to_string()
+                    }
+                } else {
+                    "panic.log".to_string()
+                };
+                panic_log_path.push(panic_filename);
 
                 if let Ok(mut file) = std::fs::OpenOptions::new()
                     .create(true)
