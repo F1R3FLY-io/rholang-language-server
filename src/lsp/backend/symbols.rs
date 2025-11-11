@@ -173,6 +173,166 @@ impl RholangBackend {
               file_count, symbol_count, references_added);
     }
 
+    /// Links symbols incrementally for only the specified dirty files (Phase 11.2).
+    ///
+    /// This is the O(k) incremental version of `link_symbols()` where k = number of dirty files.
+    /// Instead of iterating ALL workspace files (O(n)), we only process the dirty files (O(k)).
+    ///
+    /// # Algorithm
+    /// 1. Remove old symbols from dirty files
+    /// 2. Re-index dirty files (symbols already added during process_document_blocking)
+    /// 3. Rebuild cross-file references for dirty files only
+    /// 4. Broadcast workspace change event
+    ///
+    /// # Performance
+    /// - Current `link_symbols()`: O(n × m) where n = total files, m = symbols per file
+    /// - This function: O(k × m) where k = dirty files (typically k=1 for single file edits)
+    /// - Expected speedup: 100-1000x for single-file changes in large workspaces
+    ///
+    /// # Arguments
+    /// * `dirty_uris` - URIs of files that changed since last indexing cycle
+    pub(crate) async fn link_symbols_incremental(&self, dirty_uris: &[Url]) {
+        if dirty_uris.is_empty() {
+            debug!("link_symbols_incremental: No dirty files, skipping");
+            return;
+        }
+
+        debug!("link_symbols_incremental: Processing {} dirty files", dirty_uris.len());
+
+        // Phase 1: Remove old symbols from dirty files
+        // NOTE: This is already done in process_document_blocking() via:
+        // - rholang_symbols.remove_contracts_from_uri()
+        // - rholang_symbols.remove_references_from_uri()
+        // - global_table.symbols.retain(|_, s| &s.declaration_uri != uri)
+        //
+        // So we don't need to do it again here.
+
+        // Phase 2: Re-index dirty files
+        // NOTE: Symbols are already added during process_document_blocking() via:
+        // - SymbolTableBuilder.new() (populates global_table)
+        // - rholang_symbols direct indexing
+        //
+        // We only need to update the global_index pattern index here
+        for uri in dirty_uris {
+            if let Some(doc) = self.workspace.documents.get(uri) {
+                use crate::ir::transforms::symbol_index_builder::SymbolIndexBuilder;
+
+                let mut index_builder = SymbolIndexBuilder::new(
+                    self.workspace.global_index.clone(),
+                    uri.clone(),
+                    doc.positions.clone(),
+                );
+                index_builder.index_tree(&doc.ir);
+
+                debug!("link_symbols_incremental: Re-indexed pattern index for {}", uri);
+            }
+        }
+
+        // Phase 3: Rebuild cross-file references for dirty files ONLY
+        // This is the key optimization: instead of scanning ALL files,
+        // we only scan dirty files for contract references
+
+        let contract_names = self.workspace.rholang_symbols.contract_names();
+        debug!("link_symbols_incremental: Found {} contracts to link", contract_names.len());
+
+        use crate::lsp::rholang_contracts::SymbolLocation;
+        let mut references_added = 0;
+
+        for uri in dirty_uris {
+            let doc_opt = self.workspace.documents.get(uri).map(|entry| entry.value().clone());
+            if doc_opt.is_none() {
+                continue;
+            }
+            let doc = doc_opt.unwrap();
+
+            // Reuse the existing helper function from link_symbols()
+            fn collect_contract_references(
+                node: &RholangNode,
+                contract_names: &[String],
+                uri: &Url,
+                positions: &HashMap<usize, (IrPosition, IrPosition)>,
+            ) -> Vec<(String, SymbolLocation)> {
+                let mut refs = Vec::new();
+
+                match node {
+                    // Handle Send/SendSync - these are contract calls
+                    RholangNode::Send { channel, inputs, .. } | RholangNode::SendSync { channel, inputs, .. } => {
+                        // Check if channel is a Var that references a contract
+                        if let RholangNode::Var { name, .. } = channel.as_ref() {
+                            if contract_names.contains(name) {
+                                // Get position of the Send node itself (the call site)
+                                let node_key = node as *const RholangNode as usize;
+                                if let Some((start, _)) = positions.get(&node_key) {
+                                    refs.push((
+                                        name.clone(),
+                                        SymbolLocation::new(uri.clone(), *start)
+                                    ));
+                                }
+                            }
+                        }
+                        // Also process arguments recursively
+                        for arg in inputs.iter() {
+                            refs.extend(collect_contract_references(arg, contract_names, uri, positions));
+                        }
+                    }
+                    // Recursively process children in other node types
+                    RholangNode::Par { processes, .. } => {
+                        if let Some(procs) = processes {
+                            for proc in procs.iter() {
+                                refs.extend(collect_contract_references(proc, contract_names, uri, positions));
+                            }
+                        }
+                    }
+                    RholangNode::New { proc, .. } => {
+                        refs.extend(collect_contract_references(proc, contract_names, uri, positions));
+                    }
+                    RholangNode::Contract { proc, .. } => {
+                        refs.extend(collect_contract_references(proc, contract_names, uri, positions));
+                    }
+                    RholangNode::Block { proc, .. } => {
+                        refs.extend(collect_contract_references(proc, contract_names, uri, positions));
+                    }
+                    RholangNode::Input { proc, .. } => {
+                        refs.extend(collect_contract_references(proc, contract_names, uri, positions));
+                    }
+                    RholangNode::Match { cases, .. } => {
+                        for (pattern, body) in cases.iter() {
+                            refs.extend(collect_contract_references(pattern, contract_names, uri, positions));
+                            refs.extend(collect_contract_references(body, contract_names, uri, positions));
+                        }
+                    }
+                    _ => {}
+                }
+
+                refs
+            }
+
+            let contract_refs = collect_contract_references(&doc.ir, &contract_names, uri, &*doc.positions);
+
+            // Add these references to rholang_symbols
+            for (contract_name, ref_location) in contract_refs {
+                if self.workspace.rholang_symbols.add_reference(&contract_name, ref_location).is_ok() {
+                    references_added += 1;
+                }
+            }
+        }
+
+        debug!("link_symbols_incremental: Added {} forward references", references_added);
+
+        let file_count = self.workspace.documents.len();
+        let symbol_count = self.workspace.rholang_symbols.len();
+
+        // Broadcast workspace change event
+        let _ = self.workspace_changes.send(WorkspaceChangeEvent {
+            file_count,
+            symbol_count,
+            change_type: WorkspaceChangeType::SymbolsLinked,
+        });
+
+        info!("link_symbols_incremental: Completed for {} dirty files, {} total files, {} symbols, {} forward references resolved",
+              dirty_uris.len(), file_count, symbol_count, references_added);
+    }
+
     /// Populates the workspace completion index with all symbols from the workspace.
     ///
     /// This method is called during workspace initialization (after indexing completes)

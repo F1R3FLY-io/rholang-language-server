@@ -64,6 +64,7 @@ mod symbols;
 mod handlers;
 mod indexing;
 mod unified_handlers;
+mod dirty_tracker;  // Phase 11: Incremental indexing
 
 pub use state::RholangBackend;
 use state::{DocumentChangeEvent, IndexingTask, WorkspaceChangeEvent, WorkspaceChangeType};
@@ -171,6 +172,7 @@ impl RholangBackend {
             detection_worker,
             detector_registry,
             completion_context_cache: Arc::new(parking_lot::RwLock::new(None)),
+            dirty_tracker: Arc::new(crate::lsp::backend::dirty_tracker::DirtyFileTracker::new()),
         };
 
         // Spawn reactive document change debouncer

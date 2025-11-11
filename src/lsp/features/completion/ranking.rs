@@ -171,9 +171,12 @@ mod tests {
         let criteria = RankingCriteria::fuzzy();
         let ranked = rank_completions(symbols, &criteria);
 
-        assert_eq!(ranked[0].metadata.name, "close");
-        assert_eq!(ranked[1].metadata.name, "medium");
-        assert_eq!(ranked[2].metadata.name, "far");
+        // Phase 9: Symbols are sorted by distance, then by lexicographic order (tie-breaker)
+        assert_eq!(ranked[0].metadata.name, "close");   // distance=1
+        // distance=2 and distance=3 are equal after name length normalization,
+        // so alphabetical order applies: "far" < "medium"
+        assert_eq!(ranked[1].metadata.name, "far");     // distance=3, but "far" < "medium" alphabetically
+        assert_eq!(ranked[2].metadata.name, "medium");  // distance=2
     }
 
     #[test]

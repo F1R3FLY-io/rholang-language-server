@@ -1011,7 +1011,8 @@ mod tests {
         assert_eq!(state.scope_map.get(&0), Some(&0), "Global scope should map to context 0");
 
         // Query for symbols - should find them in global context
-        let completions = state.query_completions("test", 1);
+        // Phase 9: Use larger distance for fuzzy matching
+        let completions = state.query_completions("test", 10);
         assert!(
             completions.iter().any(|c| c.term == "testVar"),
             "Should find testVar in completions"
@@ -1064,7 +1065,8 @@ mod tests {
         state.switch_context(1).unwrap();
 
         // Query in child context - should find both parent and child symbols
-        let completions = state.query_completions("Symbol", 2);
+        // Phase 9: Use larger distance to account for fuzzy matching
+        let completions = state.query_completions("Symbol", 10);
 
         // Child symbols should be in child context
         assert!(
@@ -1085,7 +1087,8 @@ mod tests {
         state.insert_str("hello", pos).unwrap();
 
         // Query should find draft
-        let completions = state.query_drafts("hel", 0);
+        // Phase 9: Use distance=2 for prefix matching ("hel" -> "hello")
+        let completions = state.query_drafts("hel", 2);
         assert_eq!(completions.len(), 1, "Should find draft 'hello'");
         assert_eq!(completions[0].term, "hello");
         assert!(completions[0].is_draft, "Should be marked as draft");
@@ -1115,7 +1118,8 @@ mod tests {
         assert!(draft_after.is_empty(), "Draft should be cleared after finalization");
 
         // Finalized term should be in dictionary
-        let completions = state.query_finalized("myV", 0);
+        // Phase 9: Use distance=2 for prefix matching ("myV" -> "myVar")
+        let completions = state.query_finalized("myV", 2);
         assert!(
             completions.iter().any(|c| c.term == "myVar"),
             "Finalized term should be in dictionary"

@@ -470,7 +470,8 @@ mod tests {
 
         // Test exact match
         assert!(index.contains("myContract"));
-        assert_eq!(index.len(), 1);
+        // Phase 9: len() includes 16 static keywords + 1 dynamic symbol
+        assert_eq!(index.len(), 17);
 
         let result = index.get_metadata("myContract");
         assert!(result.is_some());
@@ -509,16 +510,18 @@ mod tests {
     fn test_query_prefix() {
         let index = WorkspaceCompletionIndex::new();
 
-        index.insert("stdout".to_string(), SymbolMetadata {
-            name: "stdout".to_string(),
+        // Note: Phase 9 introduced static keywords including "stdout", "stderr", "stdoutAck", "stderrAck"
+        // Use different symbols to avoid conflicts with static keywords
+        index.insert("string_concat".to_string(), SymbolMetadata {
+            name: "string_concat".to_string(),
             kind: CompletionItemKind::VARIABLE,
             documentation: None,
             signature: None,
             reference_count: 0,
         });
 
-        index.insert("stderr".to_string(), SymbolMetadata {
-            name: "stderr".to_string(),
+        index.insert("string_length".to_string(), SymbolMetadata {
+            name: "string_length".to_string(),
             kind: CompletionItemKind::VARIABLE,
             documentation: None,
             signature: None,
@@ -533,13 +536,13 @@ mod tests {
             reference_count: 0,
         });
 
-        // Query prefix "std"
-        let results = index.query_prefix("std");
+        // Query prefix "string_"
+        let results = index.query_prefix("string_");
 
-        // Should find "stdout" and "stderr" (both start with "std")
+        // Should find "string_concat" and "string_length" (both start with "string_")
         assert_eq!(results.len(), 2);
-        assert!(results.iter().any(|s| s.metadata.name == "stdout"));
-        assert!(results.iter().any(|s| s.metadata.name == "stderr"));
+        assert!(results.iter().any(|s| s.metadata.name == "string_concat"));
+        assert!(results.iter().any(|s| s.metadata.name == "string_length"));
         assert!(!results.iter().any(|s| s.metadata.name == "input"));
     }
 
@@ -560,7 +563,8 @@ mod tests {
         index.remove("temp");
 
         assert!(!index.contains("temp"));
-        assert_eq!(index.len(), 0);
+        // Phase 9: After removing the dynamic symbol, static keywords (16) remain
+        assert_eq!(index.len(), 16);
     }
 
     /// Test that parallel and sequential fuzzy matching produce identical results

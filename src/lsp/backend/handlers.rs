@@ -291,6 +291,14 @@ impl LanguageServer for RholangBackend {
         // Index file and update workspace in a single batched write lock
         match self.index_file(&uri, &text, version, None).await {
             Ok(cached_doc) => {
+                // Update completion index with document symbols (Phase 11.3)
+                self.workspace.completion_index.remove_document_symbols(&uri);
+                crate::lsp::features::completion::populate_from_symbol_table_with_tracking(
+                    &self.workspace.completion_index,
+                    &cached_doc.symbol_table,
+                    &uri,
+                );
+
                 self.update_workspace_document(&uri, std::sync::Arc::new(cached_doc)).await;
                 self.link_symbols().await;
             }

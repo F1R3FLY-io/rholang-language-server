@@ -19,6 +19,7 @@ use crate::language_regions::{VirtualDocumentRegistry, DetectionWorkerHandle, De
 use crate::lsp::models::{LspDocument, WorkspaceState};
 use crate::lsp::semantic_validator::SemanticValidator;
 use crate::lsp::diagnostic_provider::DiagnosticProvider;
+use crate::lsp::backend::dirty_tracker::DirtyFileTracker;
 
 /// Document change event for debouncing
 #[derive(Debug, Clone)]
@@ -130,6 +131,9 @@ pub struct RholangBackend {
     /// Context cache for completion requests (Phase 5 optimization)
     /// Caches the last completion context to avoid re-traversing AST when cursor hasn't moved
     pub(super) completion_context_cache: Arc<parking_lot::RwLock<Option<(Url, tower_lsp::lsp_types::Position, crate::lsp::features::completion::CompletionContext)>>>,
+    /// Dirty file tracker for incremental indexing (Phase 11.1)
+    /// Tracks files that have changed since last indexing cycle
+    pub(super) dirty_tracker: Arc<DirtyFileTracker>,
 }
 
 // Manual Debug implementation since DiagnosticProvider doesn't implement Debug
