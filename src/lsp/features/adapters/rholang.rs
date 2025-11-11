@@ -143,27 +143,12 @@ impl SymbolResolver for RholangSymbolResolver {
             context.uri
         );
 
-        // Try to get symbol table from the IR node's metadata (for nested scopes)
-        // Otherwise fall back to the root symbol table
-        let symbol_table = if let Some(ir_node) = &context.ir_node {
-            if let Some(node) = ir_node.downcast_ref::<Arc<crate::ir::rholang_node::RholangNode>>() {
-                if let Some(metadata) = node.metadata() {
-                    if let Some(table) = metadata.get("symbol_table") {
-                        table.downcast_ref::<Arc<crate::ir::symbol_table::SymbolTable>>()
-                            .map(|t| t.clone())
-                            .unwrap_or_else(|| self.symbol_table.clone())
-                    } else {
-                        self.symbol_table.clone()
-                    }
-                } else {
-                    self.symbol_table.clone()
-                }
-            } else {
-                self.symbol_table.clone()
-            }
-        } else {
-            self.symbol_table.clone()
-        };
+        // Always use document root symbol table for lexical scope lookup.
+        // The symbol table's lookup() method automatically walks the parent chain,
+        // so we don't need to extract narrow-scoped tables from individual nodes.
+        // The ir_node context is only used for pattern matching (by PatternAwareContractResolver),
+        // not for determining which scope to search.
+        let symbol_table = self.symbol_table.clone();
 
         // Look up symbol in the symbol table (walks parent chain automatically)
         if let Some(symbol) = symbol_table.lookup(symbol_name) {
