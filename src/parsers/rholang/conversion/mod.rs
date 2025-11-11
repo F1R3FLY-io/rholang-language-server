@@ -963,7 +963,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             let mut current_prev_end = absolute_start;
             let mut cursor = ts_node.walk();
             let elements = ts_node.named_children(&mut cursor)
-                .filter(|n| n.kind() != "_proc_remainder" && n.is_named())
+                .filter(|n| n.kind() != "_proc_remainder" && n.is_named() && !is_comment(n.kind_id()))
                 .map(|child| {
                     let (node, end) = convert_ts_node_to_ir(child, rope, current_prev_end);
                     current_prev_end = end;
@@ -984,7 +984,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
         "set" => {
             let mut current_prev_end = absolute_start;
             let elements = ts_node.named_children(&mut ts_node.walk())
-                .filter(|n| n.kind() != "_proc_remainder")
+                .filter(|n| n.kind() != "_proc_remainder" && !is_comment(n.kind_id()))
                 .map(|child| {
                     let (node, end) = convert_ts_node_to_ir(child, rope, current_prev_end);
                     current_prev_end = end;
@@ -1029,7 +1029,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
         "pathmap" => {
             let mut current_prev_end = absolute_start;
             let elements = ts_node.named_children(&mut ts_node.walk())
-                .filter(|n| n.kind() != "_proc_remainder")
+                .filter(|n| n.kind() != "_proc_remainder" && !is_comment(n.kind_id()))
                 .map(|child| {
                     let (node, end) = convert_ts_node_to_ir(child, rope, current_prev_end);
                     current_prev_end = end;
