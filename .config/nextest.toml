@@ -8,5 +8,5 @@ threads-required = 'num-cpus'
 
 # LSP integration tests must run serially because each test starts its own LSP server
 [[profile.default.overrides]]
-filter = 'test(#test_document_highlight_state_variable|test_robotapi_pattern_matching|test_metta_goto_definition|test_metta_hover)'
+filter = 'test(#test_document_highlight_state_variable|test_robotapi_pattern_matching|test_metta_goto_definition|test_metta_hover|test_diagnostic_websocket|test_diagnostic_tcp|test_diagnostic_pipe)'
 threads-required = 1

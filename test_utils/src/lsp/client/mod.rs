@@ -386,19 +386,41 @@ impl LspClient {
                             io::Error::new(io::ErrorKind::Other, format!("Failed to spawn server: {}", e))
                         })?;
                     let logger = Box::new(server.stderr.take().expect("Failed to open server stderr")) as Box<dyn LspStream>;
-                    info!("Waiting 500ms for server to start");
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                    info!("Connecting to ws://127.0.0.1:{}", port);
-                    let ws_stream = connect_async(format!("ws://127.0.0.1:{}", port))
-                        .await
-                        .map_err(|e| {
-                            error!("Failed to connect to WebSocket server: {}", e);
-                            io::Error::new(
-                                io::ErrorKind::ConnectionRefused,
-                                format!("Failed to connect to WebSocket server: {}", e),
-                            )
-                        })?;
-                    info!("WebSocket connection established");
+
+                    // Retry connection with exponential backoff (similar to TCP pattern)
+                    // WebSocket needs more attempts than TCP due to handshake overhead
+                    let ws_stream = {
+                        let mut wait_time = Duration::from_millis(50);  // Start at 50ms for WebSocket overhead
+                        let max_attempts = 15;  // Increased from TCP's 10 due to WebSocket complexity
+                        let mut result = None;
+
+                        for attempt in 0..max_attempts {
+                            debug!("Attempting WebSocket connection to ws://127.0.0.1:{} (attempt {}/{})", port, attempt + 1, max_attempts);
+                            match connect_async(format!("ws://127.0.0.1:{}", port)).await {
+                                Ok(stream) => {
+                                    info!("WebSocket connection established on attempt {}/{}", attempt + 1, max_attempts);
+                                    result = Some(Ok(stream));
+                                    break;
+                                }
+                                Err(e) => {
+                                    result = Some(Err(io::Error::new(
+                                        io::ErrorKind::ConnectionRefused,
+                                        format!("WebSocket connection failed: {}", e),
+                                    )));
+                                    if attempt < max_attempts - 1 {
+                                        debug!("Connection failed (attempt {}/{}), retrying in {:?}", attempt + 1, max_attempts, wait_time);
+                                        tokio::time::sleep(wait_time).await;
+                                        // Exponential backoff: 50ms, 100ms, 200ms, 400ms, 800ms (capped at 1000ms)
+                                        wait_time = (wait_time * 2).min(Duration::from_millis(1000));
+                                    } else {
+                                        error!("Failed to connect to WebSocket server after {} attempts", max_attempts);
+                                    }
+                                }
+                            }
+                        }
+
+                        result.unwrap()?
+                    };
                     let (sink, stream) = ws_stream.0.split();
                     let ws_sink = Arc::new(Mutex::new(sink));
                     let ws_stream = Arc::new(Mutex::new(stream));
