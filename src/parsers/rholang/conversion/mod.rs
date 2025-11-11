@@ -24,6 +24,7 @@ use super::helpers::{
     collect_named_descendants, collect_patterns, collect_linear_binds,
     is_comment, safe_byte_slice,
 };
+use super::kind_ids::{is_proc_remainder, is_key_value_pair};
 
 // ==============================================================================
 // Optimization: Pre-allocated Default Metadata Singleton
@@ -963,7 +964,10 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             let mut current_prev_end = absolute_start;
             let mut cursor = ts_node.walk();
             let elements = ts_node.named_children(&mut cursor)
-                .filter(|n| n.kind() != "_proc_remainder" && n.is_named() && !is_comment(n.kind_id()))
+                .filter(|n| {
+                    let kind_id = n.kind_id();  // Cache FFI result
+                    !is_proc_remainder(kind_id) && !is_comment(kind_id)
+                })
                 .map(|child| {
                     let (node, end) = convert_ts_node_to_ir(child, rope, current_prev_end);
                     current_prev_end = end;
@@ -971,7 +975,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 })
                 .collect::<Vector<_, ArcK>>();
             let remainder = ts_node.children(&mut cursor)
-                .find(|n| n.kind() == "_proc_remainder")
+                .find(|n| is_proc_remainder(n.kind_id()))
                 .map(|rem| {
                     let rem_ts = rem.child_by_field_name("remainder").expect("ProcRemainder node must have a remainder");
                     let (rem_node, rem_end) = convert_ts_node_to_ir(rem_ts, rope, current_prev_end);
@@ -984,7 +988,10 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
         "set" => {
             let mut current_prev_end = absolute_start;
             let elements = ts_node.named_children(&mut ts_node.walk())
-                .filter(|n| n.kind() != "_proc_remainder" && !is_comment(n.kind_id()))
+                .filter(|n| {
+                    let kind_id = n.kind_id();  // Cache FFI result
+                    !is_proc_remainder(kind_id) && !is_comment(kind_id)
+                })
                 .map(|child| {
                     let (node, end) = convert_ts_node_to_ir(child, rope, current_prev_end);
                     current_prev_end = end;
@@ -992,7 +999,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 })
                 .collect::<Vector<_, ArcK>>();
             let remainder = ts_node.children(&mut ts_node.walk())
-                .find(|n| n.kind() == "_proc_remainder")
+                .find(|n| is_proc_remainder(n.kind_id()))
                 .map(|rem| {
                     let rem_ts = rem.child_by_field_name("remainder").expect("ProcRemainder node must have a remainder");
                     let (rem_node, rem_end) = convert_ts_node_to_ir(rem_ts, rope, current_prev_end);
@@ -1005,7 +1012,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
         "map" => {
             let mut current_prev_end = absolute_start;
             let pairs = ts_node.named_children(&mut ts_node.walk())
-                .filter(|n| n.kind() == "key_value_pair")
+                .filter(|n| is_key_value_pair(n.kind_id()))
                 .map(|pair| {
                     let key_ts = pair.child_by_field_name("key").expect("KeyValuePair node must have a key");
                     let (key, key_end) = convert_ts_node_to_ir(key_ts, rope, current_prev_end);
@@ -1016,7 +1023,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 })
                 .collect::<Vector<_, ArcK>>();
             let remainder = ts_node.children(&mut ts_node.walk())
-                .find(|n| n.kind() == "_proc_remainder")
+                .find(|n| is_proc_remainder(n.kind_id()))
                 .map(|rem| {
                     let rem_ts = rem.child_by_field_name("remainder").expect("ProcRemainder node must have a remainder");
                     let (rem_node, rem_end) = convert_ts_node_to_ir(rem_ts, rope, current_prev_end);
@@ -1029,7 +1036,10 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
         "pathmap" => {
             let mut current_prev_end = absolute_start;
             let elements = ts_node.named_children(&mut ts_node.walk())
-                .filter(|n| n.kind() != "_proc_remainder" && !is_comment(n.kind_id()))
+                .filter(|n| {
+                    let kind_id = n.kind_id();  // Cache FFI result
+                    !is_proc_remainder(kind_id) && !is_comment(kind_id)
+                })
                 .map(|child| {
                     let (node, end) = convert_ts_node_to_ir(child, rope, current_prev_end);
                     current_prev_end = end;
@@ -1037,7 +1047,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                 })
                 .collect::<Vector<_, ArcK>>();
             let remainder = ts_node.children(&mut ts_node.walk())
-                .find(|n| n.kind() == "_proc_remainder")
+                .find(|n| is_proc_remainder(n.kind_id()))
                 .map(|rem| {
                     let rem_ts = rem.child_by_field_name("remainder").expect("ProcRemainder node must have a remainder");
                     let (rem_node, rem_end) = convert_ts_node_to_ir(rem_ts, rope, current_prev_end);
