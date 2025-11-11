@@ -401,10 +401,22 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             let inputs_ts = ts_node.child_by_field_name("inputs").expect("SendSync node must have inputs");
             let mut current_prev_end = channel_end;
             let inputs = inputs_ts.named_children(&mut inputs_ts.walk())
-                .map(|child| {
+                .filter_map(|child| {
+                    // Skip comments - they don't belong in the IR
+                    let kind_id = child.kind_id();
+                    if is_comment(kind_id) {
+                        // Update position tracking to skip over comment's bytes
+                        let comment_end_pos = child.end_position();
+                        current_prev_end = Position {
+                            row: comment_end_pos.row,
+                            column: comment_end_pos.column,
+                            byte: child.end_byte(),
+                        };
+                        return None;
+                    }
                     let (node, end) = convert_ts_node_to_ir(child, rope, current_prev_end);
                     current_prev_end = end;
-                    node
+                    Some(node)
                 })
                 .collect::<Vector<_, ArcK>>();
             let cont_ts = ts_node.child_by_field_name("cont").expect("SendSync node must have a continuation");
@@ -638,7 +650,19 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
 
             let mut current_prev_end = absolute_start;
             let receipts = receipts_ts.named_children(&mut receipts_ts.walk())
-                .map(|receipt_node| {
+                .filter_map(|receipt_node| {
+                    // Skip comments - they don't belong in the IR
+                    let kind_id = receipt_node.kind_id();
+                    if is_comment(kind_id) {
+                        // Update position tracking to skip over comment's bytes
+                        let comment_end_pos = receipt_node.end_position();
+                        current_prev_end = Position {
+                            row: comment_end_pos.row,
+                            column: comment_end_pos.column,
+                            byte: receipt_node.end_byte(),
+                        };
+                        return None;
+                    }
                     if absolute_start.byte >= 14825 && absolute_start.byte <= 14840 {
                         debug!("Processing receipt: receipt_node.kind()={}, start={}, end={}, current_prev_end.byte={}",
                                receipt_node.kind(), receipt_node.start_byte(), receipt_node.end_byte(), current_prev_end.byte);
@@ -648,7 +672,7 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
                         debug!("Receipt ended at binds_end.byte={}", binds_end.byte);
                     }
                     current_prev_end = binds_end;
-                    binds
+                    Some(binds)
                 })
                 .collect::<Vector<_, ArcK>>();
 
@@ -801,10 +825,22 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             let args_ts = ts_node.child_by_field_name("args").expect("Method node must have args");
             let mut current_prev_end = name_end;
             let args = args_ts.named_children(&mut args_ts.walk())
-                .map(|child| {
+                .filter_map(|child| {
+                    // Skip comments - they don't belong in the IR
+                    let kind_id = child.kind_id();
+                    if is_comment(kind_id) {
+                        // Update position tracking to skip over comment's bytes
+                        let comment_end_pos = child.end_position();
+                        current_prev_end = Position {
+                            row: comment_end_pos.row,
+                            column: comment_end_pos.column,
+                            byte: child.end_byte(),
+                        };
+                        return None;
+                    }
                     let (node, end) = convert_ts_node_to_ir(child, rope, current_prev_end);
                     current_prev_end = end;
-                    node
+                    Some(node)
                 })
                 .collect::<Vector<_, ArcK>>();
             let node = Arc::new(RholangNode::Method { base, receiver, name, args, metadata });
@@ -1014,10 +1050,22 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
         "tuple" => {
             let mut current_prev_end = absolute_start;
             let elements = ts_node.named_children(&mut ts_node.walk())
-                .map(|child| {
+                .filter_map(|child| {
+                    // Skip comments - they don't belong in the IR
+                    let kind_id = child.kind_id();
+                    if is_comment(kind_id) {
+                        // Update position tracking to skip over comment's bytes
+                        let comment_end_pos = child.end_position();
+                        current_prev_end = Position {
+                            row: comment_end_pos.row,
+                            column: comment_end_pos.column,
+                            byte: child.end_byte(),
+                        };
+                        return None;
+                    }
                     let (node, end) = convert_ts_node_to_ir(child, rope, current_prev_end);
                     current_prev_end = end;
-                    node
+                    Some(node)
                 })
                 .collect::<Vector<_, ArcK>>();
             let node = Arc::new(RholangNode::Tuple { base, elements, metadata });
@@ -1133,10 +1181,22 @@ pub(crate) fn convert_ts_node_to_ir(ts_node: TSNode, rope: &Rope, prev_end: Posi
             let inputs_ts = ts_node.child_by_field_name("inputs").expect("SendReceiveSource node must have inputs");
             let mut current_prev_end = name_end;
             let inputs = inputs_ts.named_children(&mut inputs_ts.walk())
-                .map(|child| {
+                .filter_map(|child| {
+                    // Skip comments - they don't belong in the IR
+                    let kind_id = child.kind_id();
+                    if is_comment(kind_id) {
+                        // Update position tracking to skip over comment's bytes
+                        let comment_end_pos = child.end_position();
+                        current_prev_end = Position {
+                            row: comment_end_pos.row,
+                            column: comment_end_pos.column,
+                            byte: child.end_byte(),
+                        };
+                        return None;
+                    }
                     let (node, end) = convert_ts_node_to_ir(child, rope, current_prev_end);
                     current_prev_end = end;
-                    node
+                    Some(node)
                 })
                 .collect::<Vector<_, ArcK>>();
             let node = Arc::new(RholangNode::SendReceiveSource { base, name, inputs, metadata });
