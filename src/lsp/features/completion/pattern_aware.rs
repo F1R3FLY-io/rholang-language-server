@@ -350,10 +350,32 @@ pub fn query_contracts_by_pattern(
 ///
 /// # Performance
 /// O(n) where n = total symbols in workspace (typically 500-1000).
-/// Acceptable for LSP response times (<100ms).
+/// Acceptable for LSP response times (<100ms for <1000 symbols).
 ///
-/// Future optimization: Will be replaced with PrefixZipper-based O(k+m) query
-/// when liblevenshtein PrefixZipper trait is available.
+/// # Design Decision: Why Not PrefixZipper? (Phase 9)
+///
+/// Although PrefixZipper is now available in liblevenshtein (see Phase 9 in
+/// `dictionary.rs` for O(k+m) implementation), this function intentionally
+/// keeps the O(n) HashMap iteration for the following reasons:
+///
+/// 1. **Architectural Constraint**: `GlobalSymbolIndex.definitions` is a
+///    `HashMap<SymbolId, SymbolLocation>`, not a trie-based structure.
+///    Using PrefixZipper would require converting the entire global index
+///    to PathMap or DoubleArrayTrie.
+///
+/// 2. **Performance Trade-offs**:
+///    - O(n) with n=1000 symbols: ~20-50µs (acceptable)
+///    - Rebuilding trie on every workspace change: ~1-5ms (unacceptable)
+///    - PathMap is optimized for pattern matching (MORK bytes), not
+///      simple string prefix queries
+///
+/// 3. **Scope of Impact**: Contract-specific completion is a narrow use case
+///    compared to general symbol completion (which now uses PrefixZipper).
+///
+/// **Future Optimization** (Phase 11+): If workspace grows to >5000 symbols,
+/// consider maintaining a separate `contract_name_index: DoubleArrayTrie`
+/// that's rebuilt incrementally. This would enable O(k+m) PrefixZipper
+/// queries without full architectural refactor.
 fn query_contracts_by_name_prefix(
     global_index: &Arc<RwLock<GlobalSymbolIndex>>,
     prefix: &str,
