@@ -265,6 +265,18 @@ impl RholangPatternIndex {
         Ok(matches)
     }
 
+    /// Get a reference to the internal PathMap for advanced operations
+    ///
+    /// This allows external code to perform operations like `.restrict()` for
+    /// lazy subtrie extraction without exposing mutable access.
+    ///
+    /// # Returns
+    ///
+    /// Reference to the PathMap<PatternMetadata>
+    pub fn patterns(&self) -> &PathMap<PatternMetadata> {
+        &self.patterns
+    }
+
     // ========== Helper Functions ==========
 
     /// Extract contract signature from IR node
