@@ -72,8 +72,9 @@ ledger/
 | Optimization | Phase | Status | Speedup | Commit |
 |-------------|-------|--------|---------|--------|
 | Lazy Subtrie Extraction | A-1 | ✅ **ACCEPTED** | **O(1)** constant time (~41ns) | 0858b0f, 505a557, 16eeaaf |
-| LRU Pattern Cache | A-2 | Planned | TBD | - |
-| Scientific Methodology | A-3 | Ongoing | N/A | - |
+| LRU Pattern Cache | A-2 | ❌ **REJECTED** | <2x (wrong bottleneck) | - |
+| Space Object Pooling | A-3 | Candidate | **10x** (projected) | - |
+| Scientific Methodology | Ongoing | Active | N/A | All phases |
 
 ## Hardware Specifications
 

@@ -111,6 +111,10 @@ harness = false
 name = "lazy_subtrie_benchmark"
 harness = false
 
+[[bench]]
+name = "mork_serialization_baseline"
+harness = false
+
 # Debian package metadata
 [package.metadata.deb]
 maintainer = "F1R3FLY.io <noreply@f1r3fly.io>"
