@@ -687,15 +687,27 @@ impl GlobalSymbolIndex {
         let contract_bytes = b"contract";
 
         // Insert a single path with just "contract" to match all contract definitions
+        // IMPORTANT: Must use descend_to() not descend_to_byte() to match pattern_index insertion
         {
-            use pathmap::zipper::{ZipperWriting, ZipperMoving};
+            use pathmap::zipper::{ZipperMoving, ZipperWriting};
+            use crate::ir::rholang_pattern_index::PatternMetadata;
+
             let mut wz = contract_prefix_map.write_zipper();
-            for &byte in contract_bytes {
-                wz.descend_to_byte(byte);
-            }
-            // We don't actually need a value here - the path itself is enough for restrict()
-            // But PathMap restrict() requires matching types, so we use a dummy metadata
-            // In future, PathMap could be enhanced to support prefix-only queries
+            wz.descend_to(contract_bytes);
+
+            // CRITICAL: Must set a value for restrict() to work!
+            //
+            // PathMap::restrict() only matches paths that LEAD TO VALUES in the prefix map.
+            // Without this set_val() call, restrict() returns empty because the prefix path
+            // has no value in PathMap's internal structure.
+            //
+            // The actual metadata value doesn't matter - only the path prefix matters for
+            // prefix matching. We use a dummy PatternMetadata since restrict() just needs
+            // the path to have *some* value.
+            //
+            // See: PathMap documentation on restrict() - "paths leading to values"
+            // Reference: MeTTaTron's type_index uses the same pattern (environment.rs:388-395)
+            wz.set_val(PatternMetadata::dummy());
         }
 
         // Extract the subtrie - this is O(prefix_length) not O(total_patterns)!
@@ -752,20 +764,18 @@ impl GlobalSymbolIndex {
     /// Note: This is a simplified implementation that navigates the PathMap structure.
     /// A more efficient implementation would use PathMap's iterator API when available.
     fn collect_all_metadata_from_zipper(
-        rz: pathmap::zipper::ReadZipperUntracked<PatternMetadata>,
+        mut rz: pathmap::zipper::ReadZipperUntracked<PatternMetadata>,
         locations: &mut Vec<SymbolLocation>,
     ) -> Result<(), String> {
-        use pathmap::zipper::{ZipperValues, ZipperMoving};
+        use pathmap::zipper::{ZipperValues, ZipperIteration};
 
-        // Implementation strategy: Since PathMap doesn't expose a full traversal API
-        // in the current version, and contracts are stored at specific paths (not arbitrary depths),
-        // we use a depth-first approach by checking the current node's value.
+        // Phase A+: Full subtrie traversal using PathMap's depth-first iteration API
         //
-        // For the Phase A implementation, this is sufficient since each contract
-        // definition has a unique path. A more complete traversal would require
-        // PathMap to expose a children iterator.
+        // Strategy: Use to_next_val() to systematically traverse all values in the subtrie
+        // in depth-first order. This is O(n) where n = number of contracts, which is
+        // optimal since we must visit every contract to collect all locations.
 
-        // Check if current node has a value
+        // Process current node if it has a value
         if let Some(metadata) = rz.val() {
             let uri = Url::parse(&metadata.location.uri)
                 .map_err(|e| format!("Invalid URI in pattern metadata: {}", e))?;
@@ -790,9 +800,32 @@ impl GlobalSymbolIndex {
             locations.push(location);
         }
 
-        // TODO Phase A+: Full subtrie traversal
-        // Current limitation: This collects only values at the current zipper position
-        // Future: Implement recursive descent through all children for complete collection
+        // Traverse all remaining values in depth-first order
+        while rz.to_next_val() {
+            if let Some(metadata) = rz.val() {
+                let uri = Url::parse(&metadata.location.uri)
+                    .map_err(|e| format!("Invalid URI in pattern metadata: {}", e))?;
+
+                let location = SymbolLocation {
+                    uri,
+                    range: Range {
+                        start: Position {
+                            line: metadata.location.start.row as u32,
+                            character: metadata.location.start.column as u32,
+                        },
+                        end: Position {
+                            line: metadata.location.end.row as u32,
+                            character: metadata.location.end.column as u32,
+                        },
+                    },
+                    kind: SymbolKind::Contract,
+                    documentation: None,
+                    signature: Some(Self::format_contract_signature(&metadata)),
+                };
+
+                locations.push(location);
+            }
+        }
 
         Ok(())
     }

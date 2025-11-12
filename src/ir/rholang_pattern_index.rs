@@ -69,6 +69,32 @@ pub struct PatternMetadata {
     pub param_names: Option<Vec<String>>,
 }
 
+impl PatternMetadata {
+    /// Create a dummy metadata for prefix-only PathMap operations
+    ///
+    /// PathMap's `restrict()` operation requires paths to lead to values.
+    /// This helper creates a minimal dummy metadata when we only care about
+    /// the path prefix (e.g., matching all contracts via "contract" prefix).
+    ///
+    /// # Note
+    ///
+    /// The actual metadata values don't matter for restrict() - only the
+    /// path structure matters. The dummy values are never returned to users.
+    pub fn dummy() -> Self {
+        PatternMetadata {
+            location: SymbolLocation {
+                uri: "file:///dummy".to_string(),
+                start: Position { row: 0, column: 0, byte: 0 },
+                end: Position { row: 0, column: 0, byte: 0 },
+            },
+            name: String::new(),
+            arity: 0,
+            param_patterns: vec![],
+            param_names: None,
+        }
+    }
+}
+
 /// Pattern matching index for Rholang contracts using PathMap
 ///
 /// Stores contract patterns in a trie structure for efficient lookup:
@@ -310,7 +336,7 @@ impl RholangPatternIndex {
     }
 
     /// Convert a pattern node to MORK bytes
-    fn pattern_to_mork_bytes(
+    pub fn pattern_to_mork_bytes(
         pattern_node: &RholangNode,
         space: &Space,
     ) -> Result<Vec<u8>, String> {
