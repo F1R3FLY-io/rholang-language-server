@@ -22,23 +22,23 @@ use std::time::Duration;
 use tower_lsp::lsp_types::{Position, Range, Url};
 
 use rholang_language_server::ir::global_index::{GlobalSymbolIndex, SymbolKind, SymbolLocation};
-use rholang_language_server::ir::rholang_node::{NodeBase, RholangNode, Position as IrPosition};
+use rholang_language_server::ir::rholang_node::{NodeBase, RholangNode, RholangNodeVector, Position as IrPosition};
 
 /// Generate a test contract node with given name
 fn create_test_contract(name: &str, param_count: usize) -> RholangNode {
-    // Create contract formals (parameters)
-    let formals: Vec<Arc<RholangNode>> = (0..param_count)
-        .map(|i| {
-            Arc::new(RholangNode::Var {
-                name: format!("param{}", i),
-                base: NodeBase::new_simple(
-                    IrPosition { row: 0, column: 0, byte: 0 },
-                    0, 0, 10
-                ),
-                metadata: None,
-            })
-        })
-        .collect();
+    // Create contract formals (parameters) using RholangNodeVector
+    let mut formals: RholangNodeVector = RholangNodeVector::new_with_ptr_kind();
+    for i in 0..param_count {
+        let param = Arc::new(RholangNode::Var {
+            name: format!("param{}", i),
+            base: NodeBase::new_simple(
+                IrPosition { row: 0, column: 0, byte: 0 },
+                0, 0, 10
+            ),
+            metadata: None,
+        });
+        formals = formals.push_back(param);
+    }
 
     // Create contract name node
     let name_node = Arc::new(RholangNode::Var {
@@ -50,8 +50,8 @@ fn create_test_contract(name: &str, param_count: usize) -> RholangNode {
         metadata: None,
     });
 
-    // Create contract body (Nil for simplicity)
-    let body = Arc::new(RholangNode::Nil {
+    // Create contract proc (Nil for simplicity)
+    let proc = Arc::new(RholangNode::Nil {
         base: NodeBase::new_simple(
             IrPosition { row: 0, column: 0, byte: 0 },
             0, 0, 3
@@ -60,13 +60,14 @@ fn create_test_contract(name: &str, param_count: usize) -> RholangNode {
     });
 
     RholangNode::Contract {
-        name: name_node,
-        formals,
-        body,
         base: NodeBase::new_simple(
             IrPosition { row: 0, column: 0, byte: 0 },
             0, 0, 100
         ),
+        name: name_node,
+        formals,
+        formals_remainder: None,
+        proc,
         metadata: None,
     }
 }

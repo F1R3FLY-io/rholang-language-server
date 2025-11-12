@@ -107,6 +107,10 @@ harness = false
 name = "completion_performance"
 harness = false
 
+[[bench]]
+name = "lazy_subtrie_benchmark"
+harness = false
+
 # Debian package metadata
 [package.metadata.deb]
 maintainer = "F1R3FLY.io <noreply@f1r3fly.io>"
