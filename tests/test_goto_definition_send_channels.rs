@@ -56,11 +56,9 @@ new myChannel in {
     let expected_char = 4u32;
 
     // Test cases: (line, character, description)
-    // Note: Skipping "Peek send in LinearBind" test because find_node_at_position
-    // returns the LinearBind node instead of drilling down to the Send node inside it.
-    // This is a node finder issue, not a Send handling issue.
     let test_cases = vec![
         (3u32, 2u32, "Regular send (!)"),
+        (6u32, 25u32, "Peek send (!?) in LinearBind"),
         (11u32, 2u32, "Persistent send (!!)"),
     ];
 

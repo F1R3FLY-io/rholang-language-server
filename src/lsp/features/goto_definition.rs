@@ -284,8 +284,12 @@ impl GenericGotoDefinition {
                 }
                 RholangNode::LinearBind { source, .. } => {
                     // For LinearBind nodes (e.g., @result <- queryResult), extract from the source
-                    debug!("Found LinearBind node, recursively extracting from source");
-                    return self.extract_symbol_name(&**source, position);
+                    debug!("Found LinearBind node, recursively extracting from source (type={})", source.type_name());
+                    let result = self.extract_symbol_name(&**source, position);
+                    if result.is_none() {
+                        debug!("LinearBind source extraction failed for type={}", source.type_name());
+                    }
+                    return result;
                 }
                 RholangNode::RepeatedBind { source, .. } => {
                     // For RepeatedBind nodes (e.g., x <= ch), extract from the source
@@ -303,6 +307,12 @@ impl GenericGotoDefinition {
                     // recursively extract from the channel
                     debug!("Found SendSync node, recursively extracting from channel");
                     return self.extract_symbol_name(&**channel, position);
+                }
+                RholangNode::SendReceiveSource { name, .. } => {
+                    // For SendReceiveSource nodes (peek send, e.g., channel!?(args)),
+                    // recursively extract from the name
+                    debug!("Found SendReceiveSource node, recursively extracting from name");
+                    return self.extract_symbol_name(&**name, position);
                 }
                 RholangNode::Block { proc, .. } => {
                     // For Block nodes (e.g., { x!() }), recursively extract from the inner proc
@@ -578,6 +588,18 @@ impl GenericGotoDefinition {
                 }
                 RholangNode::Block { proc, .. } => {
                     return self.find_var_node_in_tree(&**proc);
+                }
+                RholangNode::Send { channel, .. } => {
+                    debug!("find_var_node_in_tree: Recursing into Send channel");
+                    return self.find_var_node_in_tree(&**channel);
+                }
+                RholangNode::SendSync { channel, .. } => {
+                    debug!("find_var_node_in_tree: Recursing into SendSync channel");
+                    return self.find_var_node_in_tree(&**channel);
+                }
+                RholangNode::SendReceiveSource { name, .. } => {
+                    debug!("find_var_node_in_tree: Recursing into SendReceiveSource name");
+                    return self.find_var_node_in_tree(&**name);
                 }
                 _ => {}
             }
