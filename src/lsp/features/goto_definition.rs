@@ -98,7 +98,7 @@ impl GenericGotoDefinition {
         };
 
         // Try to get the actual Var node from wrapped structures like LinearBind
-        let var_node = self.find_var_node_in_tree(node).unwrap_or(node);
+        let var_node = self.find_var_node_in_tree(node, position).unwrap_or(node);
 
         // Check if node has referenced_symbol metadata (set by SymbolTableBuilder)
         // If so, use it directly to get the definition location, bypassing resolver
@@ -282,18 +282,44 @@ impl GenericGotoDefinition {
                         return Some(value.as_str());
                     }
                 }
-                RholangNode::LinearBind { source, .. } => {
-                    // For LinearBind nodes (e.g., @result <- queryResult), extract from the source
-                    debug!("Found LinearBind node, recursively extracting from source (type={})", source.type_name());
+                RholangNode::LinearBind { names, source, .. } => {
+                    // For LinearBind nodes (e.g., @result <- queryResult),
+                    // determine if position is in pattern (left) or source (right)
+
+                    // Check if position is within any of the names (patterns on left side)
+                    for name in names.iter() {
+                        let name_start = name.base().start();
+                        let name_end = name.base().end();
+                        if Self::position_in_range(position, &name_start, &name_end) {
+                            debug!("Position is in LinearBind pattern (left side), extracting from name");
+                            return self.extract_symbol_name(&**name, position);
+                        }
+                    }
+
+                    // Otherwise, position must be in the source (right side)
+                    debug!("Position is in LinearBind source (right side), extracting from source (type={})", source.type_name());
                     let result = self.extract_symbol_name(&**source, position);
                     if result.is_none() {
                         debug!("LinearBind source extraction failed for type={}", source.type_name());
                     }
                     return result;
                 }
-                RholangNode::RepeatedBind { source, .. } => {
-                    // For RepeatedBind nodes (e.g., x <= ch), extract from the source
-                    debug!("Found RepeatedBind node, recursively extracting from source");
+                RholangNode::RepeatedBind { names, source, .. } => {
+                    // For RepeatedBind nodes (e.g., x <= ch),
+                    // determine if position is in pattern (left) or source (right)
+
+                    // Check if position is within any of the names (patterns on left side)
+                    for name in names.iter() {
+                        let name_start = name.base().start();
+                        let name_end = name.base().end();
+                        if Self::position_in_range(position, &name_start, &name_end) {
+                            debug!("Position is in RepeatedBind pattern (left side), extracting from name");
+                            return self.extract_symbol_name(&**name, position);
+                        }
+                    }
+
+                    // Otherwise, position must be in the source (right side)
+                    debug!("Position is in RepeatedBind source (right side), extracting from source");
                     return self.extract_symbol_name(&**source, position);
                 }
                 RholangNode::Send { channel, .. } => {
@@ -566,7 +592,9 @@ impl GenericGotoDefinition {
 
     /// Recursively search for a Var node within the given node tree.
     /// This is useful for finding the actual Var node when the cursor is on a LinearBind or other wrapper.
-    fn find_var_node_in_tree<'a>(&self, node: &'a dyn SemanticNode) -> Option<&'a dyn SemanticNode> {
+    ///
+    /// For LinearBind and RepeatedBind, uses position to determine whether to search in the pattern or source.
+    fn find_var_node_in_tree<'a>(&self, node: &'a dyn SemanticNode, position: &Position) -> Option<&'a dyn SemanticNode> {
         use crate::ir::rholang_node::RholangNode;
 
         // If this is already a Var node with referenced_symbol, return it
@@ -580,26 +608,48 @@ impl GenericGotoDefinition {
         // Otherwise, recursively search children
         if let Some(rholang_node) = node.as_any().downcast_ref::<RholangNode>() {
             match rholang_node {
-                RholangNode::LinearBind { source, .. } => {
-                    return self.find_var_node_in_tree(&**source);
+                RholangNode::LinearBind { names, source, .. } => {
+                    // Position-aware: check if position is in pattern or source
+                    for name in names.iter() {
+                        let name_start = name.base().start();
+                        let name_end = name.base().end();
+                        if Self::position_in_range(position, &name_start, &name_end) {
+                            debug!("find_var_node_in_tree: Position in LinearBind pattern, recursing into name");
+                            return self.find_var_node_in_tree(&**name, position);
+                        }
+                    }
+                    // Position is in source
+                    debug!("find_var_node_in_tree: Position in LinearBind source, recursing into source");
+                    return self.find_var_node_in_tree(&**source, position);
                 }
-                RholangNode::RepeatedBind { source, .. } => {
-                    return self.find_var_node_in_tree(&**source);
+                RholangNode::RepeatedBind { names, source, .. } => {
+                    // Position-aware: check if position is in pattern or source
+                    for name in names.iter() {
+                        let name_start = name.base().start();
+                        let name_end = name.base().end();
+                        if Self::position_in_range(position, &name_start, &name_end) {
+                            debug!("find_var_node_in_tree: Position in RepeatedBind pattern, recursing into name");
+                            return self.find_var_node_in_tree(&**name, position);
+                        }
+                    }
+                    // Position is in source
+                    debug!("find_var_node_in_tree: Position in RepeatedBind source, recursing into source");
+                    return self.find_var_node_in_tree(&**source, position);
                 }
                 RholangNode::Block { proc, .. } => {
-                    return self.find_var_node_in_tree(&**proc);
+                    return self.find_var_node_in_tree(&**proc, position);
                 }
                 RholangNode::Send { channel, .. } => {
                     debug!("find_var_node_in_tree: Recursing into Send channel");
-                    return self.find_var_node_in_tree(&**channel);
+                    return self.find_var_node_in_tree(&**channel, position);
                 }
                 RholangNode::SendSync { channel, .. } => {
                     debug!("find_var_node_in_tree: Recursing into SendSync channel");
-                    return self.find_var_node_in_tree(&**channel);
+                    return self.find_var_node_in_tree(&**channel, position);
                 }
                 RholangNode::SendReceiveSource { name, .. } => {
                     debug!("find_var_node_in_tree: Recursing into SendReceiveSource name");
-                    return self.find_var_node_in_tree(&**name);
+                    return self.find_var_node_in_tree(&**name, position);
                 }
                 _ => {}
             }

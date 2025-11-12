@@ -253,3 +253,98 @@ with_lsp_client!(test_metta_hover, CommType::Stdio, |client: &LspClient| {
     client.close_document(&doc).expect("Failed to close document");
     println!("✓ Test completed");
 });
+
+/// Test 5: Goto-definition on LinearBind pattern (definition) should not jump to source
+///
+/// Issue: Clicking on `@result` (pattern/definition) in `for (@result <- queryResult)`
+/// at line 288, column 21 incorrectly jumps to `queryResult` definition at line 283
+/// instead of recognizing this is a definition itself.
+///
+/// Expected: Either no result or returns the same location (the pattern is the definition)
+/// Should NOT jump to queryResult
+with_lsp_client!(test_goto_definition_on_linearbind_pattern, CommType::Stdio, |client: &LspClient| {
+    println!("\n=== Test 5: Goto-definition on LinearBind pattern (definition) ===");
+
+    let file_path = "tests/resources/robot_planning.rho";
+    let source = fs::read_to_string(file_path)
+        .expect("Failed to read robot_planning.rho");
+
+    let doc = client.open_document("/test/robot_planning.rho", &source)
+        .expect("Failed to open document");
+
+    let _diagnostics = client.await_diagnostics(&doc)
+        .expect("Failed to receive diagnostics");
+
+    // Line 288 (1-indexed) = line 287 (0-indexed)
+    // Column 21 (1-indexed) = column 20 (0-indexed)
+    // Code: `for (@result <- queryResult) {`
+    // Position is on `@result` (the pattern/definition on left side)
+    let pattern_position = Position {
+        line: 287,       // Line 288 in 1-indexed
+        character: 20,   // Column 21 in 1-indexed - on the '@' of '@result'
+    };
+
+    println!("Testing goto-definition on @result pattern at line 288, column 21");
+
+    match client.definition(&doc.uri(), pattern_position) {
+        Ok(Some(location)) => {
+            let def_line = location.range.start.line;
+            let def_char = location.range.start.character;
+
+            // Check if we stayed at the same location (definition itself)
+            if def_line == 287 && def_char >= 20 && def_char <= 27 {
+                println!("✓ Goto-definition correctly stayed at pattern definition (line {}, char {})",
+                         def_line + 1, def_char + 1);
+            } else if def_line == 282 && def_char == 23 {
+                // This is the bug: jumped to queryResult at line 283, col 24 (0-indexed: 282, 23)
+                panic!("✗ BUG: Goto-definition incorrectly jumped to queryResult at line {}, char {} \
+                        instead of staying at @result pattern definition at line 288, col 21",
+                       def_line + 1, def_char + 1);
+            } else {
+                panic!("✗ Goto-definition jumped to unexpected location: line {}, char {}",
+                       def_line + 1, def_char + 1);
+            }
+        }
+        Ok(None) => {
+            // This is acceptable - no result for clicking on a definition
+            println!("✓ Goto-definition returned no result (acceptable for definitions)");
+        }
+        Err(e) => {
+            panic!("✗ Goto-definition failed with error: {}", e);
+        }
+    }
+
+    // Also test that goto-definition on the source (queryResult) still works correctly
+    let source_position = Position {
+        line: 287,       // Line 288 in 1-indexed
+        character: 31,   // Column 32 in 1-indexed - on 'queryResult' (right side)
+    };
+
+    println!("Testing goto-definition on queryResult source at line 288, column 32");
+
+    match client.definition(&doc.uri(), source_position) {
+        Ok(Some(location)) => {
+            let def_line = location.range.start.line;
+            let def_char = location.range.start.character;
+
+            // Should jump to queryResult definition at line 283, col 24 (0-indexed: 282, 23)
+            if def_line == 282 && def_char == 23 {
+                println!("✓ Goto-definition correctly jumped to queryResult definition at line {}, char {}",
+                         def_line + 1, def_char + 1);
+            } else {
+                panic!("✗ Goto-definition on queryResult source went to wrong location: line {}, char {} \
+                        (expected line 283, col 24)",
+                       def_line + 1, def_char + 1);
+            }
+        }
+        Ok(None) => {
+            panic!("✗ Goto-definition on queryResult source returned no result (should find definition at line 283)");
+        }
+        Err(e) => {
+            panic!("✗ Goto-definition on queryResult source failed: {}", e);
+        }
+    }
+
+    client.close_document(&doc).expect("Failed to close document");
+    println!("✓ Test completed - LinearBind position-aware goto-definition working correctly");
+});
