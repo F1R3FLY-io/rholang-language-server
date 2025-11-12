@@ -71,7 +71,7 @@ ledger/
 
 | Optimization | Phase | Status | Speedup | Commit |
 |-------------|-------|--------|---------|--------|
-| Lazy Subtrie Extraction | A-1 | In Progress | TBD | 0858b0f, 505a557 |
+| Lazy Subtrie Extraction | A-1 | ✅ **ACCEPTED** | **O(1)** constant time (~41ns) | 0858b0f, 505a557, 16eeaaf |
 | LRU Pattern Cache | A-2 | Planned | TBD | - |
 | Scientific Methodology | A-3 | Ongoing | N/A | - |
 
