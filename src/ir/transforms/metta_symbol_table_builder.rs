@@ -263,6 +263,15 @@ impl MettaSymbolTableBuilder {
         self.all_occurrences.push(occurrence);
     }
 
+    /// Check if a symbol is already defined in the given scope
+    fn symbol_is_defined_in_scope(&self, name: &str, scope_id: usize) -> bool {
+        if let Some(symbols) = self.scopes[scope_id].symbols.get(name) {
+            symbols.iter().any(|s| s.is_definition)
+        } else {
+            false
+        }
+    }
+
     /// Index a function definition for pattern-based lookup
     ///
     /// Extracts the function name from the pattern and adds it to the pattern matcher.
@@ -377,14 +386,21 @@ impl MettaSymbolTableBuilder {
                 };
 
                 if is_grounded_query {
-                    // Grounded query: process pattern and body in the current scope
-                    // Variables in the pattern are references, not definitions
+                    // Grounded query: process patterns in parent scope, checking for existing definitions
+                    // If a variable is already defined (e.g., function parameter), mark as reference
+                    // If a variable is new, mark as definition
+                    // Example 1: (match & self (robot_carrying $item) $item)
+                    //   - First $item: NEW variable → definition
+                    //   - Second $item: reference to first
+                    // Example 2: (= (is_connected $from $to) (match & self (connected $from $to) true))
+                    //   - $from in match pattern: already defined by function param → reference
+                    //   - $to in match pattern: already defined by function param → reference
                     for (pattern, case_body) in cases {
-                        self.process_node(pattern, scope_id);  // Process as references
-                        self.process_node(case_body, scope_id);
+                        self.process_pattern(pattern, scope_id, true);  // Check if vars exist, mark accordingly
+                        self.process_node(case_body, scope_id);  // Body in same scope
                     }
                 } else {
-                    // Regular match: create new scope for each case
+                    // Regular match: create new scope for each case, patterns define variables
                     for (pattern, case_body) in cases {
                         let case_scope = self.create_scope(scope_id);
                         self.process_pattern(pattern, case_scope, true);
@@ -453,10 +469,18 @@ impl MettaSymbolTableBuilder {
         }
     }
 
-    fn process_pattern(&mut self, pattern: &Arc<MettaNode>, scope_id: usize, is_definition: bool) {
+    fn process_pattern(&mut self, pattern: &Arc<MettaNode>, scope_id: usize, force_definition: bool) {
         match &**pattern {
             MettaNode::Variable { name, .. } => {
                 if let Some(range) = self.get_node_range(pattern) {
+                    // If force_definition is true, check if symbol already exists in scope
+                    // If it does, mark as reference; otherwise mark as definition
+                    let is_definition = if force_definition {
+                        !self.symbol_is_defined_in_scope(name, scope_id)
+                    } else {
+                        false
+                    };
+
                     let occurrence = SymbolOccurrence {
                         name: name.clone(),
                         kind: MettaSymbolKind::Variable,
@@ -470,6 +494,13 @@ impl MettaSymbolTableBuilder {
 
             MettaNode::Atom { name, .. } => {
                 if let Some(range) = self.get_node_range(pattern) {
+                    // For atoms, use the same logic as variables
+                    let is_definition = if force_definition {
+                        !self.symbol_is_defined_in_scope(name, scope_id)
+                    } else {
+                        false
+                    };
+
                     let occurrence = SymbolOccurrence {
                         name: name.clone(),
                         kind: MettaSymbolKind::Definition,
@@ -483,7 +514,7 @@ impl MettaSymbolTableBuilder {
 
             MettaNode::SExpr { elements, .. } => {
                 for elem in elements {
-                    self.process_pattern(elem, scope_id, is_definition);
+                    self.process_pattern(elem, scope_id, force_definition);
                 }
             }
 

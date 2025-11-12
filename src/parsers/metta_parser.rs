@@ -170,8 +170,8 @@ impl MettaParser {
                 "match" if items.len() >= 2 => {
                     return self.convert_match(&items[1..], span, prev_end);
                 }
-                "let" if items.len() == 3 => {
-                    return self.convert_let(&items[1], &items[2], span, prev_end);
+                "let" if items.len() == 3 || items.len() == 4 => {
+                    return self.convert_let(&items[1..], span, prev_end);
                 }
                 "lambda" | "λ" if items.len() == 3 => {
                     return self.convert_lambda(&items[1], &items[2], span, prev_end);
@@ -371,8 +371,11 @@ impl MettaParser {
         }
     }
 
-    /// Convert (let ((var1 val1) (var2 val2)) body) to Let
-    fn convert_let(&self, bindings_expr: &SExpr, body: &SExpr, span: &Option<MettaSpan>, prev_end: &mut Position) -> Result<Arc<MettaNode>, String> {
+    /// Convert let expression to Let node
+    /// Supports two syntaxes:
+    /// 1. Lisp-style: (let ((var1 val1) (var2 val2)) body)
+    /// 2. MeTTa-style: (let var value body)
+    fn convert_let(&self, items: &[SExpr], span: &Option<MettaSpan>, prev_end: &mut Position) -> Result<Arc<MettaNode>, String> {
         let child_start = if let Some(s) = span.as_ref() {
             Position { row: s.start.row, column: s.start.column, byte: s.start_byte }
         } else {
@@ -383,32 +386,56 @@ impl MettaParser {
 
         let mut child_prev_end = child_start;
         let mut bindings = Vec::new();
-        if let SExpr::List(binding_list, _) = bindings_expr {
-            for binding in binding_list {
-                if let SExpr::List(pair, _) = binding {
-                    if pair.len() == 2 {
-                        let var = self.convert_sexpr_to_node(&pair[0], &mut child_prev_end)?;
-                        let val = self.convert_sexpr_to_node(&pair[1], &mut child_prev_end)?;
-                        bindings.push((var, val));
+
+        // Determine which syntax is being used
+        if items.len() == 2 {
+            // Lisp-style: (let ((var1 val1) ...) body)
+            let bindings_expr = &items[0];
+            let body = &items[1];
+
+            if let SExpr::List(binding_list, _) = bindings_expr {
+                for binding in binding_list {
+                    if let SExpr::List(pair, _) = binding {
+                        if pair.len() == 2 {
+                            let var = self.convert_sexpr_to_node(&pair[0], &mut child_prev_end)?;
+                            let val = self.convert_sexpr_to_node(&pair[1], &mut child_prev_end)?;
+                            bindings.push((var, val));
+                        } else {
+                            return Err(format!("let binding must have 2 elements, got {}", pair.len()));
+                        }
                     } else {
-                        return Err(format!("let binding must have 2 elements, got {}", pair.len()));
+                        return Err("let binding must be a list".to_string());
                     }
-                } else {
-                    return Err("let binding must be a list".to_string());
                 }
+            } else {
+                return Err("let bindings must be a list".to_string());
             }
+
+            let body_node = self.convert_sexpr_to_node(body, &mut child_prev_end)?;
+
+            Ok(Arc::new(MettaNode::Let {
+                base,
+                bindings,
+                body: body_node,
+                metadata: None,
+            }))
+        } else if items.len() == 3 {
+            // MeTTa-style: (let var value body)
+            let var = self.convert_sexpr_to_node(&items[0], &mut child_prev_end)?;
+            let val = self.convert_sexpr_to_node(&items[1], &mut child_prev_end)?;
+            let body = self.convert_sexpr_to_node(&items[2], &mut child_prev_end)?;
+
+            bindings.push((var, val));
+
+            Ok(Arc::new(MettaNode::Let {
+                base,
+                bindings,
+                body,
+                metadata: None,
+            }))
         } else {
-            return Err("let bindings must be a list".to_string());
+            Err(format!("let expression must have 2 or 3 arguments, got {}", items.len()))
         }
-
-        let body_node = self.convert_sexpr_to_node(body, &mut child_prev_end)?;
-
-        Ok(Arc::new(MettaNode::Let {
-            base,
-            bindings,
-            body: body_node,
-            metadata: None,
-        }))
     }
 
     /// Convert (lambda (params) body) to Lambda

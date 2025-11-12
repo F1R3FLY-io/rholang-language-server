@@ -110,6 +110,19 @@ impl GenericGotoDefinition {
                     // Use definition location if available, otherwise declaration
                     let target_location = symbol.definition_location.as_ref().unwrap_or(&symbol.declaration_location);
 
+                    // Check if we're already at the declaration/definition location
+                    // If so, return None (clicking on a definition shouldn't navigate anywhere)
+                    let current_uri = uri.clone();
+                    let current_pos = position;
+
+                    if current_uri == symbol.declaration_uri &&
+                       current_pos.row == symbol.declaration_location.row &&
+                       current_pos.column >= symbol.declaration_location.column &&
+                       current_pos.column < symbol.declaration_location.column + symbol.name.len() {
+                        debug!("Position is at declaration/definition of '{}' - returning None", symbol.name);
+                        return None;
+                    }
+
                     use tower_lsp::lsp_types::{Position as LspPosition, Range};
                     let lsp_pos = LspPosition {
                         line: target_location.row as u32,
@@ -258,6 +271,7 @@ impl GenericGotoDefinition {
         // Try to downcast to RholangNode
         if let Some(rho_node) = node.as_any().downcast_ref::<crate::ir::rholang_node::RholangNode>() {
             use crate::ir::rholang_node::RholangNode;
+            debug!("Successfully downcast to RholangNode, matching variant...");
             match rho_node {
                 RholangNode::Var { name, .. } => {
                     debug!("Extracted symbol name from RholangNode::Var: {}", name);
@@ -610,6 +624,29 @@ impl GenericGotoDefinition {
             match rholang_node {
                 RholangNode::LinearBind { names, source, .. } => {
                     // Position-aware: check if position is in pattern or source
+                    debug!("find_var_node_in_tree: LinearBind position check - target=({}, {})", position.row, position.column);
+
+                    // Debug: print all pattern positions
+                    for (i, name) in names.iter().enumerate() {
+                        let name_start = name.base().start();
+                        let name_end = name.base().end();
+                        debug!("  Pattern[{}]: start=({}, {}), end=({}, {}), type={}",
+                            i, name_start.row, name_start.column, name_end.row, name_end.column, name.type_name());
+                    }
+
+                    // Debug: print source position
+                    let source_start = source.base().start();
+                    let source_end = source.base().end();
+                    debug!("  Source: start=({}, {}), end=({}, {}), type={}",
+                        source_start.row, source_start.column, source_end.row, source_end.column, source.type_name());
+
+                    // Check if position is explicitly in source range
+                    if Self::position_in_range(position, &source_start, &source_end) {
+                        debug!("find_var_node_in_tree: Position IS in source range, recursing into source");
+                        return self.find_var_node_in_tree(&**source, position);
+                    }
+
+                    // Otherwise, check pattern names
                     for name in names.iter() {
                         let name_start = name.base().start();
                         let name_end = name.base().end();
@@ -618,9 +655,13 @@ impl GenericGotoDefinition {
                             return self.find_var_node_in_tree(&**name, position);
                         }
                     }
-                    // Position is in source
-                    debug!("find_var_node_in_tree: Position in LinearBind source, recursing into source");
-                    return self.find_var_node_in_tree(&**source, position);
+
+                    // Position not in either - default to first pattern
+                    debug!("find_var_node_in_tree: Position not in source or pattern ranges, defaulting to first pattern");
+                    if let Some(first_name) = names.first() {
+                        return self.find_var_node_in_tree(&**first_name, position);
+                    }
+                    return None;
                 }
                 RholangNode::RepeatedBind { names, source, .. } => {
                     // Position-aware: check if position is in pattern or source
