@@ -292,6 +292,18 @@ impl GenericGotoDefinition {
                     debug!("Found RepeatedBind node, recursively extracting from source");
                     return self.extract_symbol_name(&**source, position);
                 }
+                RholangNode::Send { channel, .. } => {
+                    // For Send nodes (e.g., contract!(...), name!?(msg), channel!!(data)),
+                    // recursively extract from the channel
+                    debug!("Found Send node, recursively extracting from channel");
+                    return self.extract_symbol_name(&**channel, position);
+                }
+                RholangNode::SendSync { channel, .. } => {
+                    // For SendSync nodes (e.g., contract!(args); continuation),
+                    // recursively extract from the channel
+                    debug!("Found SendSync node, recursively extracting from channel");
+                    return self.extract_symbol_name(&**channel, position);
+                }
                 RholangNode::Block { proc, .. } => {
                     // For Block nodes (e.g., { x!() }), recursively extract from the inner proc
                     debug!("Found Block node, recursively extracting from inner proc");

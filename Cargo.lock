@@ -2082,6 +2082,7 @@ dependencies = [
  "mork",
  "mork-expr",
  "mork-frontend",
+ "mork-interning",
  "pathmap",
  "regex",
  "rustyline",
