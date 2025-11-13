@@ -293,6 +293,9 @@ pub struct IncrementalSymbolIndex {
 
     /// Completion index (supports incremental updates)
     completion_index: WorkspaceCompletionIndex,
+
+    /// Cache directory for serialized dictionaries (new for Phase B-1)
+    cache_dir: PathBuf,
 }
 
 impl IncrementalSymbolIndex {
@@ -333,14 +336,72 @@ impl IncrementalSymbolIndex {
         self.remove_file_symbols(uri);
         self.add_file_symbols(uri, new_symbols);
     }
+
+    /// Serialize completion dictionaries to disk for fast reload (Phase B-1 optimization)
+    pub fn serialize_dictionaries(&self) -> Result<(), io::Error> {
+        // Serialize DoubleArrayTrie (static keywords) and DynamicDawg (user symbols)
+        // liblevenshtein dictionaries support serialization/deserialization
+        let cache_path = self.cache_dir.join("completion_dictionaries.bin");
+        self.completion_index.serialize_to_file(&cache_path)?;
+        Ok(())
+    }
+
+    /// Deserialize completion dictionaries from disk (avoids reconstruction)
+    pub fn deserialize_dictionaries(&mut self) -> Result<bool, io::Error> {
+        let cache_path = self.cache_dir.join("completion_dictionaries.bin");
+        if cache_path.exists() {
+            self.completion_index = WorkspaceCompletionIndex::deserialize_from_file(&cache_path)?;
+            Ok(true)  // Successfully loaded from cache
+        } else {
+            Ok(false)  // No cache available, will rebuild
+        }
+    }
 }
 ```
+
+**Optimization Note**: liblevenshtein's `DoubleArrayTrie` and `DynamicDawg` support serialization/deserialization, avoiding the need to reconstruct completion indices from scratch on workspace initialization. This can save 10-100ms for large workspaces (1000+ symbols).
 
 ### Integration Points
 
 **Workspace Initialization** (`src/lsp/backend/indexing.rs`):
-- Build initial dependency graph while indexing files
-- Populate `FileModificationTracker` with initial timestamps
+```rust
+async fn initialize_workspace(&mut self, root_uri: &Url) -> Result<()> {
+    // 1. Try to deserialize completion dictionaries from cache (fast path)
+    if self.incremental_index.deserialize_dictionaries()? {
+        tracing::info!("Loaded completion dictionaries from cache");
+    } else {
+        tracing::info!("No cache found, will rebuild completion index");
+    }
+
+    // 2. Build initial dependency graph while indexing files
+    for file in discover_rholang_files(root_uri) {
+        let ir = parse_file(&file).await?;
+
+        // Build dependency graph
+        let dependencies = extract_dependencies(&ir, &self.global_index);
+        for dep in dependencies {
+            self.dependency_graph.add_dependency(file.clone(), dep);
+        }
+
+        // Populate file modification tracker
+        self.modification_tracker.mark_indexed(&file)?;
+    }
+
+    // 3. Serialize dictionaries for next startup (background task)
+    tokio::spawn({
+        let index = self.incremental_index.clone();
+        async move {
+            if let Err(e) = index.serialize_dictionaries() {
+                tracing::warn!("Failed to serialize dictionaries: {}", e);
+            }
+        }
+    });
+
+    Ok(())
+}
+```
+
+**Performance Impact**: Dictionary deserialization can save 10-100ms on workspace initialization for large workspaces (avoids reconstructing DoubleArrayTrie + DynamicDawg from scratch)
 
 **File Change Handler** (`src/lsp/backend.rs::did_change`):
 ```rust
@@ -470,21 +531,31 @@ impl Visitor<RholangNode> for DependencyGraphBuilder {
 
 ### Phase B-1.3: Incremental Symbol Index (3-4 days)
 
-**Goal**: Support adding/removing symbols for individual files
+**Goal**: Support adding/removing symbols for individual files + dictionary caching
 
 **Tasks**:
 1. Create `IncrementalSymbolIndex` wrapper
 2. Implement `remove_file_symbols()` and `add_file_symbols()`
 3. Update `GlobalSymbolIndex` to support removal (if not already)
 4. Update `WorkspaceCompletionIndex` to support removal (Phase 10 added this)
-5. Add unit tests (20+ test cases)
-6. Integration test: Add file → Remove file → Re-add file
+5. **Implement dictionary serialization/deserialization** (new for Phase B-1):
+   - Add `serialize_to_file()` method to `WorkspaceCompletionIndex`
+   - Add `deserialize_from_file()` static method
+   - Leverage liblevenshtein's built-in serialization for DoubleArrayTrie + DynamicDawg
+   - Cache location: `~/.cache/rholang-language-server/completion_dictionaries.bin`
+6. Add unit tests (20+ test cases)
+7. Integration test: Add file → Remove file → Re-add file
+8. Test dictionary serialization round-trip
 
 **Acceptance Criteria**:
 - ✅ Removing symbols doesn't break global index consistency
 - ✅ Adding symbols updates completion index correctly
+- ✅ Dictionary serialization/deserialization works correctly
+- ✅ Startup time reduced by 10-100ms for large workspaces (from cached dictionaries)
 - ✅ No memory leaks (symbols properly cleaned up)
 - ✅ All tests passing
+
+**Additional Benefit**: Dictionary caching provides 10-100ms speedup on workspace initialization (orthogonal to incremental indexing but synergistic)
 
 ### Phase B-1.4: Incremental Re-indexing Logic (2-3 days)
 
