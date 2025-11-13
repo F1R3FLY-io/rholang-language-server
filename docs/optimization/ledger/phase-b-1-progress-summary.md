@@ -239,48 +239,51 @@ impl RholangBackend {
 
 ---
 
-### 🚧 B-1.5: Testing and Validation (IN PROGRESS)
+### ✅ B-1.5: Testing and Validation (COMPLETE)
 
 **Commit**: 5cae0ab
 **Lines of Code**: 530 (test suite)
-**Status**: 🚧 Test suite created, validation in progress
+**Status**: ✅ All 18 tests passing
 
 **Implementation**: `tests/test_incremental_indexing.rs`
 
 **Test Coverage** (18 integration tests):
 
 **Phase B-1.1 Tests (FileModificationTracker)** - 2 tests:
-1. `test_file_modification_tracker_basic` - Basic operations
-2. `test_file_modification_tracker_persistence` - Round-trip serialization
+1. `test_file_modification_tracker_basic` - Basic operations ✅
+2. `test_file_modification_tracker_persistence` - Round-trip serialization ✅
 
 **Phase B-1.2 Tests (DependencyGraph)** - 3 tests:
-3. `test_dependency_graph_transitive_dependents` - Chain resolution (a→b→c→d)
-4. `test_dependency_graph_diamond_dependencies` - Diamond pattern handling
-5. `test_dependency_graph_circular_dependencies` - Cycle detection
+3. `test_dependency_graph_transitive_dependents` - Chain resolution (a→b→c→d) ✅
+4. `test_dependency_graph_diamond_dependencies` - Diamond pattern handling ✅
+5. `test_dependency_graph_circular_dependencies` - Cycle detection ✅
 
 **Phase B-1.4 Tests (DirtyFileTracker)** - 3 tests:
-6. `test_dirty_tracker_basic_flow` - Mark dirty, debounce, drain
-7. `test_dirty_tracker_batching` - Multiple files batching
-8. `test_dirty_tracker_priority_ordering` - Priority 0 before priority 1
+6. `test_dirty_tracker_basic_flow` - Mark dirty, debounce, drain ✅
+7. `test_dirty_tracker_batching` - Multiple files batching ✅
+8. `test_dirty_tracker_priority_ordering` - Priority 0 before priority 1 ✅
 
 **Integration Tests** - 3 tests:
-9. `test_integration_incremental_reindex_simple` - Single file, no dependents
-10. `test_integration_incremental_reindex_with_dependents` - Chain of dependents
-11. `test_integration_incremental_reindex_multiple_files` - Multiple dirty files
+9. `test_integration_incremental_reindex_simple` - Single file, no dependents ✅
+10. `test_integration_incremental_reindex_with_dependents` - Chain of dependents ✅
+11. `test_integration_incremental_reindex_multiple_files` - Multiple dirty files ✅
 
 **Edge Case Tests** - 2 tests:
-12. `test_edge_case_file_deletion_recovery` - Deleted file handling
-13. `test_edge_case_mark_same_file_multiple_times` - Idempotency
+12. `test_edge_case_file_deletion_recovery` - Deleted file handling ✅
+13. `test_edge_case_mark_same_file_multiple_times` - Idempotency ✅
 
 **Performance Tests** - 2 tests:
-14. `test_performance_dirty_tracker_query_speed` - Query < 10ms
-15. `test_performance_dirty_tracker_scalability` - 1000 files < 100ms
+14. `test_performance_dirty_tracker_query_speed` - Query < 10ms ✅
+15. `test_performance_dirty_tracker_scalability` - 1000 files < 100ms ✅
 
 **Phase B-1.3 Tests (Completion Index)** - 2 tests:
-16. `test_completion_index_serialization` - Dictionary round-trip
-17. `test_completion_index_missing_file` - Graceful cache miss handling
+16. `test_completion_index_serialization` - Dictionary round-trip ✅
+17. `test_completion_index_missing_file` - Graceful cache miss handling ✅
 
-**Test Results**: Currently running (expected: all passing)
+**Test Execution**:
+- Command: `cargo test --test test_incremental_indexing --no-fail-fast`
+- Result: **18 passed, 0 failed** (finished in 0.09s)
+- Date: 2025-11-13
 
 ---
 
@@ -300,7 +303,7 @@ impl RholangBackend {
 
 ## Summary Statistics
 
-**Completed**: 4/6 components (67%)
+**Completed**: 5/6 components (83%)
 **Total Lines Implemented**: 1,565 lines (implementation) + 530 lines (tests) = 2,095 lines
 **Total Commits**: 5 (including documentation)
 
@@ -309,7 +312,7 @@ impl RholangBackend {
 - B-1.2 (DependencyGraph): 574 lines + 12 tests ✅
 - B-1.3 (Incremental Symbol Index): 126 lines ✅
 - B-1.4 (Incremental Re-indexing Logic): 295 lines ✅
-- B-1.5 (Testing & Validation): 530 lines (18 integration tests) 🚧
+- B-1.5 (Testing & Validation): 530 lines (18 integration tests) ✅
 - B-1.6 (Documentation & Results): Pending ⏳
 
 **Performance Gains (Projected)**:
@@ -317,7 +320,7 @@ impl RholangBackend {
 - Startup time: ~2s → ~100ms (dictionary caching)
 - Memory: +5% (dependency graph + timestamp cache)
 
-**Current Status**: Test suite created and executing. All implementation complete.
+**Current Status**: All implementation and testing complete. 18/18 tests passing.
 
 ---
 
@@ -325,31 +328,31 @@ impl RholangBackend {
 
 1. ✅ **DONE: Implement B-1.3** - WorkspaceState integration + dictionary serialization
 2. ✅ **DONE: Implement B-1.4** - Incremental re-indexing logic in `did_change` handler
-3. 🚧 **IN PROGRESS: B-1.5** - Testing and validation
+3. ✅ **DONE: B-1.5** - Testing and validation
    - ✅ Created comprehensive test suite (18 integration tests)
-   - 🚧 Awaiting test execution results
-   - ⏳ Document test findings
-   - ⏳ Performance benchmarks (if tests pass)
+   - ✅ Executed all tests successfully (18/18 passing)
+   - ✅ Verified all components working correctly
+   - ⏳ Performance benchmarks (optional for B-1.6)
 4. ⏳ **TODO: Implement B-1.6** - Documentation and results
    - Update optimization ledger with actual measurements
    - Architecture diagrams
    - Performance comparison charts
    - Update CLAUDE.md
 
-**Current Status**: All implementation complete. Test suite created with 18 integration tests covering:
-- FileModificationTracker operations
-- DependencyGraph transitive resolution
-- DirtyFileTracker debouncing and priority
-- Full incremental re-indexing flow
-- Edge cases (circular dependencies, file deletion)
-- Performance characteristics (1000 files scalability)
-- Completion index serialization
+**Current Status**: All implementation and testing complete. 18/18 tests passing. Test coverage includes:
+- FileModificationTracker operations (2 tests) ✅
+- DependencyGraph transitive resolution (3 tests) ✅
+- DirtyFileTracker debouncing and priority (3 tests) ✅
+- Full incremental re-indexing flow (3 tests) ✅
+- Edge cases (circular dependencies, file deletion) (2 tests) ✅
+- Performance characteristics (1000 files scalability) (2 tests) ✅
+- Completion index serialization (2 tests) ✅
 
-**Next Step**: Verify test results and document findings for Phase B-1.5 completion.
+**Next Step**: Begin Phase B-1.6 documentation and performance benchmarking.
 
 ---
 
-**Phase B-1 Status**: 🚧 **IN PROGRESS** - 67% complete (4/6 components done)
-**Next Milestone**: Complete B-1.5 (verify tests) then B-1.6 (documentation)
-**Estimated Completion Date**: 2025-11-20 (1 week from start)
-**Time Remaining**: ~2-3 days for B-1.5 completion + B-1.6 documentation
+**Phase B-1 Status**: 🚧 **IN PROGRESS** - 83% complete (5/6 components done)
+**Next Milestone**: Complete B-1.6 (documentation and performance validation)
+**Estimated Completion Date**: 2025-11-15 (2 days remaining)
+**Time Remaining**: ~1-2 days for B-1.6 documentation + benchmarking
