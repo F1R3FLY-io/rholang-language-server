@@ -24,6 +24,59 @@
 
 ---
 
+## Investigation: liblevenshtein Caching Infrastructure
+
+**Date**: 2025-11-13
+**Investigation Outcome**: ⚠️ **liblevenshtein LRU is dictionary-specific, not suitable for document IR caching**
+
+### Findings
+
+After examining `liblevenshtein-rust/src/cache/eviction/lru.rs`, I discovered:
+
+**What liblevenshtein provides**:
+1. **`Lru<D>` wrapper** (`src/cache/eviction/lru.rs`):
+   - Wraps **dictionaries** (like `PathMapDictionary`) with access tracking
+   - Maintains metadata: `Arc<RwLock<HashMap<String, EntryMetadata>>>`
+   - Tracks last access time via `Instant::now()`
+   - Provides `find_lru()` and `evict_lru()` for LRU eviction
+   - **Design pattern**: Decorator pattern for dictionaries
+
+2. **`FuzzyMultiMap`** (`src/cache/multimap.rs`):
+   - Aggregates values from fuzzy-matched dictionary keys
+   - Not a general-purpose cache
+   - Designed for completion/lookup scenarios
+
+**Why it's NOT suitable for Phase B-2**:
+- liblevenshtein's `Lru` is a **dictionary wrapper**, not an object cache
+- It wraps types implementing `Dictionary` trait (tries, DAWGs, etc.)
+- `CachedDocument` is not a dictionary - it's a complex struct with IR, symbol tables, and Tree-Sitter trees
+- No generic `LruCache<K, V>` type available
+
+**What we CAN leverage**:
+1. **Implementation patterns**:
+   - Separate metadata tracking (don't pollute cached values)
+   - Thread-safe access via `Arc<RwLock<HashMap>>`
+   - Access time tracking with `Instant::now()`
+   - LRU eviction algorithm (`find_lru()` logic)
+
+2. **Code reference**:
+   - `liblevenshtein-rust/src/cache/eviction/lru.rs:41-61` - EntryMetadata structure
+   - `liblevenshtein-rust/src/cache/eviction/lru.rs:132-158` - LRU finding algorithm
+
+### Revised Approach
+
+**Phase B-2 will use**:
+- **`lru` crate (v0.12)** - General-purpose LRU cache for `Url → CachedDocument`
+- **`blake3` crate (v1.5)** - Fast content hashing for invalidation
+- **Implementation patterns from liblevenshtein** - Metadata separation, thread safety
+
+**Rationale**:
+- Need generic `LruCache<Url, CachedDocument>`, not dictionary wrapper
+- `lru` crate provides exactly this (well-tested, ~50K downloads/month)
+- Leverage liblevenshtein's design patterns for architecture
+
+---
+
 ## Problem Analysis
 
 ### Current Behavior (Wasteful Re-parsing)
