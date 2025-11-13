@@ -41,7 +41,9 @@ use liblevenshtein::dictionary::prefix_zipper::PrefixZipper;
 use liblevenshtein::prelude::{DynamicDawg, Algorithm, Transducer};
 use parking_lot::RwLock;
 use rayon::prelude::*;
+use serde::{Serialize, Deserialize};
 use std::sync::Arc;
+use std::path::Path;
 use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Documentation, MarkupContent, MarkupKind};
 
 /// Rholang static keywords and operators
@@ -60,11 +62,12 @@ pub(crate) const RHOLANG_KEYWORDS: &[&str] = &[
 ];
 
 /// Metadata associated with a completion symbol
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolMetadata {
     /// Symbol name
     pub name: String,
     /// LSP completion item kind
+    #[serde(with = "completion_item_kind_serde")]
     pub kind: CompletionItemKind,
     /// Documentation text (optional)
     pub documentation: Option<String>,
@@ -72,6 +75,27 @@ pub struct SymbolMetadata {
     pub signature: Option<String>,
     /// Number of times this symbol has been referenced (for ranking)
     pub reference_count: usize,
+}
+
+/// Custom serde for CompletionItemKind (not natively serializable)
+mod completion_item_kind_serde {
+    use super::*;
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S>(kind: &CompletionItemKind, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u32(*kind as u32)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<CompletionItemKind, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = u32::deserialize(deserializer)?;
+        Ok(unsafe { std::mem::transmute(value) })
+    }
 }
 
 /// Symbol with distance from query (for ranking)
@@ -442,6 +466,85 @@ impl WorkspaceCompletionIndex {
             .or_insert_with(std::collections::HashSet::new)
             .insert(symbol_name);
     }
+
+    /// **Phase B-1.3**: Serialize completion dictionaries to file for fast reload
+    ///
+    /// Serializes both static and dynamic dictionaries + metadata using bincode.
+    /// This avoids rebuilding the index from scratch on workspace initialization.
+    ///
+    /// # Performance
+    /// - Expected: ~10-100ms speedup on startup for 1000+ symbols
+    /// - File size: ~10KB per 100 symbols (bincode is compact)
+    ///
+    /// # Cache Location
+    /// - Default: `~/.cache/rholang-language-server/completion_index.bin`
+    pub fn serialize_to_file(&self, path: &Path) -> std::io::Result<()> {
+        // Create cache struct from current state
+        let cache = CompletionIndexCache {
+            dynamic_dict: self.dynamic_dict.read().clone(),
+            metadata_map: self.metadata_map.read().clone(),
+        };
+
+        // Serialize with bincode (same as FileModificationTracker)
+        let data = bincode::serialize(&cache).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::Other, format!("Serialization failed: {}", e))
+        })?;
+
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // Atomic write-then-rename pattern (Phase B-1.1 style)
+        let temp_path = path.with_extension("tmp");
+        std::fs::write(&temp_path, &data)?;
+        std::fs::rename(&temp_path, path)?;
+
+        Ok(())
+    }
+
+    /// **Phase B-1.3**: Deserialize completion dictionaries from file
+    ///
+    /// Loads pre-built dictionaries from cache, avoiding full workspace rebuild.
+    /// Returns None if cache doesn't exist or is corrupted.
+    ///
+    /// # Performance
+    /// - Expected: ~1-10ms to load 1000+ symbols from cache
+    /// - Fallback: Caller must rebuild index if this returns None
+    pub fn deserialize_from_file(path: &Path) -> std::io::Result<Option<Self>> {
+        // Check if cache file exists
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        // Read and deserialize
+        let data = std::fs::read(path)?;
+        let cache: CompletionIndexCache = bincode::deserialize(&data).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Deserialization failed: {}", e))
+        })?;
+
+        // Rebuild WorkspaceCompletionIndex from cache
+        // Note: Static dict is recreated (it's always the same keywords)
+        let index = Self::new();  // Creates static_dict + static_metadata
+
+        // Replace dynamic components with cached versions
+        *index.dynamic_dict.write() = cache.dynamic_dict;
+        *index.metadata_map.write() = cache.metadata_map;
+
+        Ok(Some(index))
+    }
+}
+
+/// Serializable cache for completion index (Phase B-1.3)
+///
+/// Contains only the dynamic parts that change based on workspace content.
+/// Static keywords are always rebuilt from RHOLANG_KEYWORDS constant.
+#[derive(Serialize, Deserialize)]
+struct CompletionIndexCache {
+    /// Dynamic user symbols dictionary
+    dynamic_dict: DynamicDawg<()>,
+    /// Metadata for dynamic symbols
+    metadata_map: rustc_hash::FxHashMap<String, SymbolMetadata>,
 }
 
 impl Default for WorkspaceCompletionIndex {

@@ -17,6 +17,8 @@ use crate::ir::transforms::symbol_table_builder::InvertedIndex;
 use crate::ir::global_index::GlobalSymbolIndex;
 use crate::lsp::symbol_index::SymbolIndex;
 use crate::lsp::features::completion::incremental::DocumentCompletionState;
+use crate::lsp::backend::file_modification_tracker::FileModificationTracker;
+use crate::lsp::backend::dependency_graph::DependencyGraph;
 
 /// Language detected for a document based on file extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,12 +218,22 @@ pub struct WorkspaceState {
     /// Fuzzy completion index using liblevenshtein DynamicDawg
     /// Lock-free concurrent access for fast completion queries
     pub completion_index: Arc<crate::lsp::features::completion::WorkspaceCompletionIndex>,
+
+    /// Phase B-1.1: File modification tracker for incremental indexing
+    /// Tracks file timestamps to detect changes across LSP restarts
+    pub file_modification_tracker: Arc<FileModificationTracker>,
+
+    /// Phase B-1.2: Cross-file dependency graph for incremental indexing
+    /// Tracks which files depend on which to minimize re-indexing scope
+    pub dependency_graph: Arc<DependencyGraph>,
 }
 
 impl WorkspaceState {
     /// Create a new empty workspace state with lock-free concurrent data structures
-    pub fn new() -> Self {
-        Self {
+    ///
+    /// Phase B-1: Now async to initialize FileModificationTracker (requires file I/O)
+    pub async fn new() -> std::io::Result<Self> {
+        Ok(Self {
             documents: Arc::new(DashMap::new()),
             global_table: Arc::new(tokio::sync::RwLock::new(SymbolTable::new(None))),
             // REMOVED (Priority 2b): global_inverted_index initialization
@@ -232,12 +244,11 @@ impl WorkspaceState {
             rholang_symbols: Arc::new(crate::lsp::rholang_contracts::RholangContracts::new()),
             indexing_state: Arc::new(tokio::sync::RwLock::new(IndexingState::Idle)),
             completion_index: Arc::new(crate::lsp::features::completion::WorkspaceCompletionIndex::new()),
-        }
+            file_modification_tracker: Arc::new(FileModificationTracker::new().await?),
+            dependency_graph: Arc::new(DependencyGraph::new()),
+        })
     }
 }
 
-impl Default for WorkspaceState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// Phase B-1: Removed Default impl since new() is now async
+// Use WorkspaceState::new().await instead

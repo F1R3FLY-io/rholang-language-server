@@ -159,7 +159,9 @@ impl RholangBackend {
             doc_change_tx: doc_change_tx.clone(),
             validation_cancel: validation_cancel.clone(),
             indexing_tx: indexing_tx.clone(),
-            workspace: Arc::new(WorkspaceState::new()),
+            workspace: Arc::new(WorkspaceState::new().await.map_err(|e| {
+                anyhow::anyhow!("Failed to initialize workspace state: {}", e)
+            })?),
             file_watcher: Arc::new(Mutex::new(None)),
             file_events: Arc::new(Mutex::new(rx)),
             file_sender: Arc::new(Mutex::new(tx)),
