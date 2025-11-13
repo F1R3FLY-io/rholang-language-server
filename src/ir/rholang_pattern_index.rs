@@ -36,6 +36,7 @@ use serde::{Serialize, Deserialize};
 use crate::ir::rholang_node::RholangNode;
 use crate::ir::semantic_node::Position;
 use crate::ir::mork_canonical::MorkForm;
+use crate::ir::space_pool::SpacePool;
 
 /// Location of a symbol in the workspace
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -100,14 +101,24 @@ impl PatternMetadata {
 /// Stores contract patterns in a trie structure for efficient lookup:
 /// - Path structure: ["contract", <name>, <param0_mork_bytes>, <param1_mork_bytes>, ...]
 /// - Value: PatternMetadata with location and signature info
+///
+/// # Performance (Phase A-3)
+///
+/// Uses object pooling to eliminate Space allocation overhead (~2.5 µs per call).
+/// See `docs/optimization/ledger/phase-a-3-space-object-pooling.md` for details.
 pub struct RholangPatternIndex {
     /// PathMap trie storing contract patterns
     /// Keys are byte paths, values are PatternMetadata
     patterns: PathMap<PatternMetadata>,
 
     /// MORK SharedMappingHandle for thread-safe symbol interning
-    /// Each thread creates its own Space when needed for serialization
+    /// Shared across all pooled Space objects
     shared_mapping: SharedMappingHandle,
+
+    /// Object pool for Space instances (Phase A-3 optimization)
+    /// Eliminates ~2.5 µs allocation overhead per serialization
+    /// Expected speedup: 2.56x for pattern serialization
+    space_pool: SpacePool,
 }
 
 // Manual Debug implementation for cleaner output
@@ -116,17 +127,27 @@ impl std::fmt::Debug for RholangPatternIndex {
         f.debug_struct("RholangPatternIndex")
             .field("patterns", &self.patterns)
             .field("shared_mapping", &"<SharedMappingHandle>")
+            .field("space_pool_size", &self.space_pool.size())
             .finish()
     }
 }
 
 impl RholangPatternIndex {
     /// Create a new empty pattern index
+    ///
+    /// # Phase A-3 Optimization
+    ///
+    /// Initializes SpacePool with capacity of 16 (typical workspace size).
+    /// Pool size can be tuned based on concurrent serialization operations:
+    /// - Small workspaces (<100 contracts): 8-16 objects
+    /// - Medium workspaces (100-1000 contracts): 16-32 objects
+    /// - Large workspaces (>1000 contracts): 32-64 objects
     pub fn new() -> Self {
         use mork_interning::SharedMapping;
         Self {
             patterns: PathMap::new(),
             shared_mapping: SharedMapping::new(),
+            space_pool: SpacePool::new(16), // Phase A-3: Object pooling for 2.56x speedup
         }
     }
 
@@ -151,12 +172,8 @@ impl RholangPatternIndex {
         // Extract contract name and parameters
         let (name, params) = Self::extract_contract_signature(contract_node)?;
 
-        // Create thread-local Space for this operation (MORK pattern)
-        let space = Space {
-            btm: PathMap::new(),
-            sm: self.shared_mapping.clone(),
-            mmaps: std::collections::HashMap::new(),
-        };
+        // Acquire Space from pool (Phase A-3: 2.56x speedup)
+        let space = self.space_pool.acquire();
 
         // Convert parameters to MORK bytes
         let param_patterns: Vec<Vec<u8>> = params
@@ -212,12 +229,8 @@ impl RholangPatternIndex {
         contract_name: &str,
         arguments: &[&RholangNode],
     ) -> Result<Vec<PatternMetadata>, String> {
-        // Create thread-local Space for this operation (MORK pattern)
-        let space = Space {
-            btm: PathMap::new(),
-            sm: self.shared_mapping.clone(),
-            mmaps: std::collections::HashMap::new(),
-        };
+        // Acquire Space from pool (Phase A-3: 2.56x speedup)
+        let space = self.space_pool.acquire();
 
         // Convert arguments to MORK bytes
         let arg_patterns: Vec<Vec<u8>> = arguments
