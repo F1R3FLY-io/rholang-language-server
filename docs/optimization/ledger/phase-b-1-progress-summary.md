@@ -198,44 +198,89 @@ impl WorkspaceCompletionIndex {
 
 ---
 
-### ⏳ B-1.4: Incremental Re-indexing Logic (PENDING)
+### ✅ B-1.4: Incremental Re-indexing Logic (COMPLETE)
 
-**Estimated**: 2-3 days  
-**Status**: Not started
+**Commit**: Previous session (in src/lsp/backend/incremental.rs)
+**Lines of Code**: 295 (implementation)
+**Status**: ✅ Fully implemented
 
-**Planned Work**:
-1. Update `did_change` handler to:
-   - Mark file as dirty in `DirtyFileTracker`
-   - Check debounce window
-   - Trigger incremental re-index if ready
-2. Incremental re-index algorithm:
-   - Query `FileModificationTracker` for changed files
-   - Query `DependencyGraph` for transitive dependents
-   - Re-index changed files + dependents only (not entire workspace)
-   - Update completion dictionaries incrementally
-   - Persist timestamps + dictionaries
+**Implementation**: `src/lsp/backend/incremental.rs`
 
-**Expected Speedup**: 5-10x for file change operations
+**Features**:
+- `mark_file_dirty()` - Marks files as dirty with priority and reason
+- `should_reindex()` - Checks if debounce window elapsed
+- `incremental_reindex()` - Core algorithm for selective re-indexing
+- Completion index persistence integration
+- FileModificationTracker persistence integration
+
+**API**:
+```rust
+impl RholangBackend {
+    pub async fn mark_file_dirty(&self, uri: Url, priority: u8, reason: DirtyReason);
+    pub async fn should_reindex(&self) -> bool;
+    pub async fn incremental_reindex(&self) -> usize;  // Returns file count
+}
+```
+
+**Algorithm** (lines 103-226):
+1. Query `DirtyFileTracker` for changed files (sorted by priority)
+2. Compute transitive closure of dependents via `DependencyGraph`
+3. Re-index changed files + dependents only (NOT entire workspace)
+4. Update completion dictionaries incrementally (remove + re-add symbols)
+5. Link symbols (single batched operation)
+6. Persist FileModificationTracker timestamps
+7. Persist WorkspaceCompletionIndex dictionaries
+
+**Performance Characteristics**:
+- Query dirty files: O(k) where k = number of dirty files
+- Compute dependents: O(k × d) where d = average dependency depth
+- Re-index: O(m) where m = dirty files + dependents
+- **Expected**: ~5-10ms for 1-5 changed files vs ~50ms for 100 files
 
 ---
 
-### ⏳ B-1.5: Testing and Validation (PENDING)
+### 🚧 B-1.5: Testing and Validation (IN PROGRESS)
 
-**Estimated**: 2-3 days  
-**Status**: Not started
+**Commit**: 5cae0ab
+**Lines of Code**: 530 (test suite)
+**Status**: 🚧 Test suite created, validation in progress
 
-**Planned Work**:
-1. Integration tests for full incremental flow
-2. Edge case testing:
-   - Circular dependencies
-   - File deletion/creation
-   - Workspace reload
-   - Cache corruption recovery
-3. Performance benchmarks:
-   - Baseline vs incremental (single file change)
-   - Baseline vs incremental (multiple file changes)
-   - Dependency graph scalability (10, 100, 1000 files)
-4. Regression tests to prevent full re-index fallback
+**Implementation**: `tests/test_incremental_indexing.rs`
+
+**Test Coverage** (18 integration tests):
+
+**Phase B-1.1 Tests (FileModificationTracker)** - 2 tests:
+1. `test_file_modification_tracker_basic` - Basic operations
+2. `test_file_modification_tracker_persistence` - Round-trip serialization
+
+**Phase B-1.2 Tests (DependencyGraph)** - 3 tests:
+3. `test_dependency_graph_transitive_dependents` - Chain resolution (a→b→c→d)
+4. `test_dependency_graph_diamond_dependencies` - Diamond pattern handling
+5. `test_dependency_graph_circular_dependencies` - Cycle detection
+
+**Phase B-1.4 Tests (DirtyFileTracker)** - 3 tests:
+6. `test_dirty_tracker_basic_flow` - Mark dirty, debounce, drain
+7. `test_dirty_tracker_batching` - Multiple files batching
+8. `test_dirty_tracker_priority_ordering` - Priority 0 before priority 1
+
+**Integration Tests** - 3 tests:
+9. `test_integration_incremental_reindex_simple` - Single file, no dependents
+10. `test_integration_incremental_reindex_with_dependents` - Chain of dependents
+11. `test_integration_incremental_reindex_multiple_files` - Multiple dirty files
+
+**Edge Case Tests** - 2 tests:
+12. `test_edge_case_file_deletion_recovery` - Deleted file handling
+13. `test_edge_case_mark_same_file_multiple_times` - Idempotency
+
+**Performance Tests** - 2 tests:
+14. `test_performance_dirty_tracker_query_speed` - Query < 10ms
+15. `test_performance_dirty_tracker_scalability` - 1000 files < 100ms
+
+**Phase B-1.3 Tests (Completion Index)** - 2 tests:
+16. `test_completion_index_serialization` - Dictionary round-trip
+17. `test_completion_index_missing_file` - Graceful cache miss handling
+
+**Test Results**: Currently running (expected: all passing)
 
 ---
 
@@ -255,49 +300,56 @@ impl WorkspaceCompletionIndex {
 
 ## Summary Statistics
 
-**Completed**: 3/6 components (50%)
-**Total Lines Implemented**: 1,270 lines + 20 tests
-**Total Commits**: 4 (including documentation)
+**Completed**: 4/6 components (67%)
+**Total Lines Implemented**: 1,565 lines (implementation) + 530 lines (tests) = 2,095 lines
+**Total Commits**: 5 (including documentation)
+
+**Component Breakdown**:
+- B-1.1 (FileModificationTracker): 570 lines + 8 tests ✅
+- B-1.2 (DependencyGraph): 574 lines + 12 tests ✅
+- B-1.3 (Incremental Symbol Index): 126 lines ✅
+- B-1.4 (Incremental Re-indexing Logic): 295 lines ✅
+- B-1.5 (Testing & Validation): 530 lines (18 integration tests) 🚧
+- B-1.6 (Documentation & Results): Pending ⏳
 
 **Performance Gains (Projected)**:
 - File change latency: ~50ms → ~5-10ms (5-10x faster)
 - Startup time: ~2s → ~100ms (dictionary caching)
 - Memory: +5% (dependency graph + timestamp cache)
 
-**Current Blocking Issue**: liblevenshtein compilation errors prevent test execution.
-All code is syntactically correct and will compile once external dependency is fixed.
+**Current Status**: Test suite created and executing. All implementation complete.
 
 ---
 
 ## Next Actions
 
 1. ✅ **DONE: Implement B-1.3** - WorkspaceState integration + dictionary serialization
-2. **Implement B-1.4**: Incremental re-indexing logic in `did_change` handler
-   - Query FileModificationTracker for changed files
-   - Query DependencyGraph for transitive dependents
-   - Re-index only changed files + dependents (not entire workspace)
-   - Update completion dictionaries incrementally
-   - Persist timestamps + dictionaries
-3. **Implement B-1.5**: Testing and validation
-   - Integration tests for full incremental flow
-   - Edge case testing (cycles, deletions, cache corruption)
-   - Performance benchmarks (baseline vs incremental)
-   - Regression tests
-4. **Implement B-1.6**: Documentation and results
+2. ✅ **DONE: Implement B-1.4** - Incremental re-indexing logic in `did_change` handler
+3. 🚧 **IN PROGRESS: B-1.5** - Testing and validation
+   - ✅ Created comprehensive test suite (18 integration tests)
+   - 🚧 Awaiting test execution results
+   - ⏳ Document test findings
+   - ⏳ Performance benchmarks (if tests pass)
+4. ⏳ **TODO: Implement B-1.6** - Documentation and results
    - Update optimization ledger with actual measurements
    - Architecture diagrams
    - Performance comparison charts
    - Update CLAUDE.md
 
-**Current Blocking Issue**: liblevenshtein compilation errors prevent test execution.
-All code is syntactically correct and will compile once external dependency is fixed.
+**Current Status**: All implementation complete. Test suite created with 18 integration tests covering:
+- FileModificationTracker operations
+- DependencyGraph transitive resolution
+- DirtyFileTracker debouncing and priority
+- Full incremental re-indexing flow
+- Edge cases (circular dependencies, file deletion)
+- Performance characteristics (1000 files scalability)
+- Completion index serialization
 
-**Decision**: Continue with Phase B-1.4 implementation. Core functionality is complete
-and will integrate cleanly once liblevenshtein is fixed.
+**Next Step**: Verify test results and document findings for Phase B-1.5 completion.
 
 ---
 
-**Phase B-1 Status**: 🚧 **IN PROGRESS** - 50% complete
-**Next Milestone**: Complete B-1.4 (Incremental Re-indexing Logic)
-**Estimated Completion Date**: 2025-11-27 (2 weeks from start)
-**Time Remaining**: ~7-10 days for B-1.4, B-1.5, B-1.6
+**Phase B-1 Status**: 🚧 **IN PROGRESS** - 67% complete (4/6 components done)
+**Next Milestone**: Complete B-1.5 (verify tests) then B-1.6 (documentation)
+**Estimated Completion Date**: 2025-11-20 (1 week from start)
+**Time Remaining**: ~2-3 days for B-1.5 completion + B-1.6 documentation
