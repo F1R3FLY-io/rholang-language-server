@@ -71,9 +71,9 @@ ledger/
 
 | Optimization | Phase | Status | Speedup | Commit |
 |-------------|-------|--------|---------|--------|
-| Lazy Subtrie Extraction | A-1 | ✅ **ACCEPTED** | **O(1)** constant time (~41ns) | 0858b0f, 505a557, 16eeaaf |
+| Lazy Subtrie Extraction | A-1 | ✅ **COMPLETE** | **O(1)** constant time (~41ns) | 0858b0f, 505a557, 16eeaaf |
 | LRU Pattern Cache | A-2 | ❌ **REJECTED** | <2x (wrong bottleneck) | - |
-| Space Object Pooling | A-3 | ✅ **IMPLEMENTED** | **2.56x** pattern serialization, **5.9x** workspace indexing | 48e7f1d, 5d14685 |
+| Space Object Pooling | A-3 | ✅ **COMPLETE** | **2.56x** pattern serialization, **5.9x** workspace indexing | 48e7f1d, 5d14685, 5b0a553 |
 | Scientific Methodology | Ongoing | Active | N/A | All phases |
 
 ## Hardware Specifications
