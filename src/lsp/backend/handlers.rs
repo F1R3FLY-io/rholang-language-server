@@ -323,6 +323,8 @@ impl LanguageServer for RholangBackend {
     }
 
     /// Handles changes to a text document, applying incremental updates and re-validating.
+    ///
+    /// Phase B-1.4: Integrated with incremental re-indexing
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri.clone();
         let version = params.text_document.version;
@@ -351,6 +353,10 @@ impl LanguageServer for RholangBackend {
 
                         // Phase 9.3: Update incremental completion state
                         self.update_completion_state_incremental(&uri, &content_changes, cached_doc_arc).await;
+
+                        // Phase B-1.4: Mark file as dirty for incremental workspace re-indexing
+                        use crate::lsp::backend::dirty_tracker::DirtyReason;
+                        self.mark_file_dirty(uri.clone(), 0, DirtyReason::DidChange).await;
                     }
                     Err(e) => warn!("Failed to update {}: {}", uri, e),
                 }

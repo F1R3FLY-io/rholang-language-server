@@ -481,6 +481,50 @@ impl RholangBackend {
         });
     }
 
+    /// Spawns an incremental workspace re-indexing task (Phase B-1.4)
+    ///
+    /// This background task periodically checks for dirty files and triggers
+    /// incremental re-indexing when:
+    /// 1. There are dirty files in the tracker, AND
+    /// 2. The oldest dirty file has been waiting >= debounce_window (100ms)
+    ///
+    /// Features:
+    /// - Periodic check every 50ms (responsive but not wasteful)
+    /// - Batches dirty files within debounce window (100ms default)
+    /// - Only re-indexes changed files + transitive dependents
+    /// - Persists timestamps + completion dictionaries after each cycle
+    ///
+    /// Expected speedup: 5-10x faster than full workspace re-index
+    pub(super) fn spawn_incremental_reindexer(
+        backend: RholangBackend,
+    ) {
+        let mut shutdown_rx = backend.shutdown_tx.subscribe();
+
+        tokio::spawn(async move {
+            // Check interval: 50ms is responsive but not wasteful
+            let mut interval = tokio::time::interval(Duration::from_millis(50));
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        // Check if we should trigger incremental re-index
+                        if backend.should_reindex().await {
+                            debug!("Incremental re-index triggered (Phase B-1.4)");
+                            let files_reindexed = backend.incremental_reindex().await;
+                            trace!("Incremental re-index completed: {} files processed", files_reindexed);
+                        }
+                    }
+                    _ = shutdown_rx.recv() => {
+                        info!("Incremental re-indexer received shutdown signal");
+                        break;
+                    }
+                }
+            }
+
+            info!("Incremental re-indexer task terminated");
+        });
+    }
+
     /// Spawns a debounced diagnostics publisher task
     ///
     /// This function creates a background task that batches diagnostic updates before

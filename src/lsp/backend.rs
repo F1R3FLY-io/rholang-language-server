@@ -65,8 +65,9 @@ mod handlers;
 mod indexing;
 mod unified_handlers;
 mod dirty_tracker;  // Phase 11: Incremental indexing
-mod file_modification_tracker;  // Phase B-1.1: File modification timestamp tracking
-mod dependency_graph;  // Phase B-1.2: Cross-file dependency tracking
+pub mod file_modification_tracker;  // Phase B-1.1: File modification timestamp tracking
+pub mod dependency_graph;  // Phase B-1.2: Cross-file dependency tracking
+mod incremental;  // Phase B-1.4: Incremental re-indexing logic
 
 pub use state::RholangBackend;
 use state::{DocumentChangeEvent, IndexingTask, WorkspaceChangeEvent, WorkspaceChangeType};
@@ -190,6 +191,9 @@ impl RholangBackend {
 
         // Spawn debounced diagnostics publisher
         Self::spawn_debounced_diagnostics_publisher(backend.clone(), diagnostics_rx);
+
+        // Phase B-1.4: Spawn incremental workspace re-indexer
+        Self::spawn_incremental_reindexer(backend.clone());
 
         Ok(backend)
     }

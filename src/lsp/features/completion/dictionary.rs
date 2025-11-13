@@ -86,15 +86,74 @@ mod completion_item_kind_serde {
     where
         S: Serializer,
     {
-        serializer.serialize_u32(*kind as u32)
+        // CompletionItemKind is CompletionItemKind(i32)
+        // We need to serialize it via serde's implementation
+        // Use a helper match to get the numeric value
+        let value = match *kind {
+            CompletionItemKind::TEXT => 1,
+            CompletionItemKind::METHOD => 2,
+            CompletionItemKind::FUNCTION => 3,
+            CompletionItemKind::CONSTRUCTOR => 4,
+            CompletionItemKind::FIELD => 5,
+            CompletionItemKind::VARIABLE => 6,
+            CompletionItemKind::CLASS => 7,
+            CompletionItemKind::INTERFACE => 8,
+            CompletionItemKind::MODULE => 9,
+            CompletionItemKind::PROPERTY => 10,
+            CompletionItemKind::UNIT => 11,
+            CompletionItemKind::VALUE => 12,
+            CompletionItemKind::ENUM => 13,
+            CompletionItemKind::KEYWORD => 14,
+            CompletionItemKind::SNIPPET => 15,
+            CompletionItemKind::COLOR => 16,
+            CompletionItemKind::FILE => 17,
+            CompletionItemKind::REFERENCE => 18,
+            CompletionItemKind::FOLDER => 19,
+            CompletionItemKind::ENUM_MEMBER => 20,
+            CompletionItemKind::CONSTANT => 21,
+            CompletionItemKind::STRUCT => 22,
+            CompletionItemKind::EVENT => 23,
+            CompletionItemKind::OPERATOR => 24,
+            CompletionItemKind::TYPE_PARAMETER => 25,
+            _ => 1, // Default to TEXT
+        };
+        serializer.serialize_i32(value)
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<CompletionItemKind, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let value = u32::deserialize(deserializer)?;
-        Ok(unsafe { std::mem::transmute(value) })
+        let value = i32::deserialize(deserializer)?;
+        // Convert i32 back to CompletionItemKind
+        Ok(match value {
+            1 => CompletionItemKind::TEXT,
+            2 => CompletionItemKind::METHOD,
+            3 => CompletionItemKind::FUNCTION,
+            4 => CompletionItemKind::CONSTRUCTOR,
+            5 => CompletionItemKind::FIELD,
+            6 => CompletionItemKind::VARIABLE,
+            7 => CompletionItemKind::CLASS,
+            8 => CompletionItemKind::INTERFACE,
+            9 => CompletionItemKind::MODULE,
+            10 => CompletionItemKind::PROPERTY,
+            11 => CompletionItemKind::UNIT,
+            12 => CompletionItemKind::VALUE,
+            13 => CompletionItemKind::ENUM,
+            14 => CompletionItemKind::KEYWORD,
+            15 => CompletionItemKind::SNIPPET,
+            16 => CompletionItemKind::COLOR,
+            17 => CompletionItemKind::FILE,
+            18 => CompletionItemKind::REFERENCE,
+            19 => CompletionItemKind::FOLDER,
+            20 => CompletionItemKind::ENUM_MEMBER,
+            21 => CompletionItemKind::CONSTANT,
+            22 => CompletionItemKind::STRUCT,
+            23 => CompletionItemKind::EVENT,
+            24 => CompletionItemKind::OPERATOR,
+            25 => CompletionItemKind::TYPE_PARAMETER,
+            _ => CompletionItemKind::TEXT, // Default fallback
+        })
     }
 }
 
@@ -479,11 +538,18 @@ impl WorkspaceCompletionIndex {
     /// # Cache Location
     /// - Default: `~/.cache/rholang-language-server/completion_index.bin`
     pub fn serialize_to_file(&self, path: &Path) -> std::io::Result<()> {
+        // Extract terms from metadata_map (which is synchronized with dynamic_dict)
+        let metadata_map = self.metadata_map.read();
+        let dynamic_terms: Vec<String> = metadata_map.keys().cloned().collect();
+
         // Create cache struct from current state
         let cache = CompletionIndexCache {
-            dynamic_dict: self.dynamic_dict.read().clone(),
-            metadata_map: self.metadata_map.read().clone(),
+            dynamic_terms,
+            metadata_map: metadata_map.clone(),
         };
+
+        // Release lock before serialization
+        drop(metadata_map);
 
         // Serialize with bincode (same as FileModificationTracker)
         let data = bincode::serialize(&cache).map_err(|e| {
@@ -527,8 +593,14 @@ impl WorkspaceCompletionIndex {
         // Note: Static dict is recreated (it's always the same keywords)
         let index = Self::new();  // Creates static_dict + static_metadata
 
+        // Rebuild dynamic dictionary from terms
+        let mut dynamic_dict = DynamicDawg::new();
+        for term in &cache.dynamic_terms {
+            dynamic_dict.insert(term);
+        }
+
         // Replace dynamic components with cached versions
-        *index.dynamic_dict.write() = cache.dynamic_dict;
+        *index.dynamic_dict.write() = dynamic_dict;
         *index.metadata_map.write() = cache.metadata_map;
 
         Ok(Some(index))
@@ -539,10 +611,13 @@ impl WorkspaceCompletionIndex {
 ///
 /// Contains only the dynamic parts that change based on workspace content.
 /// Static keywords are always rebuilt from RHOLANG_KEYWORDS constant.
+///
+/// Note: DynamicDawg doesn't implement Serialize/Deserialize, so we store
+/// the terms as a Vec<String> and rebuild the dictionary on load.
 #[derive(Serialize, Deserialize)]
 struct CompletionIndexCache {
-    /// Dynamic user symbols dictionary
-    dynamic_dict: DynamicDawg<()>,
+    /// Terms to rebuild dynamic dictionary from
+    dynamic_terms: Vec<String>,
     /// Metadata for dynamic symbols
     metadata_map: rustc_hash::FxHashMap<String, SymbolMetadata>,
 }
