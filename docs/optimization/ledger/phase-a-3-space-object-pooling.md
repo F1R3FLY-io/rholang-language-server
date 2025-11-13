@@ -299,19 +299,21 @@ This validates the pooling hypothesis - the allocation overhead dominates.
 
 ### Implementation Tasks (ACCEPTED)
 
-- [ ] **Implement `SpacePool` with RAII guards** (`src/ir/space_pool.rs`)
-  - Use design from Section 2 (lines 63-128)
-  - `SpacePool::new(max_size: usize)` - Pool constructor
-  - `SpacePool::acquire() -> PooledSpace` - Get Space from pool
-  - `PooledSpace` with `Deref`/`DerefMut` traits
-  - `Drop` implementation for automatic return to pool
-  - Pool size: Start with 16 (typical workspace has <100 contracts)
+- [x] **Implement `SpacePool` with RAII guards** (`src/ir/space_pool.rs`) - ✅ **COMPLETE** (commit 48e7f1d)
+  - ✅ Use design from Section 2 (lines 63-128)
+  - ✅ `SpacePool::new(max_size: usize)` - Pool constructor
+  - ✅ `SpacePool::acquire() -> PooledSpace` - Get Space from pool
+  - ✅ `PooledSpace` with `Deref`/`DerefMut` traits
+  - ✅ `Drop` implementation for automatic return to pool
+  - ✅ Pool size: Start with 16 (typical workspace has <100 contracts)
+  - ✅ All 8 unit tests passing
 
-- [ ] **Integrate into `RholangPatternIndex`** (`src/ir/rholang_pattern_index.rs`)
-  - Replace `Space::new()` calls with `pool.acquire()`
-  - Update `pattern_to_mork_bytes()` signature to accept `&Space` instead of creating new
-  - Add pool initialization in constructor
-  - Thread-safe access via `Arc<Mutex<SpacePool>>`
+- [x] **Integrate into `RholangPatternIndex`** (`src/ir/rholang_pattern_index.rs`) - ✅ **COMPLETE** (commit 5d14685)
+  - ✅ Replace `Space::new()` calls with `pool.acquire()` (2 locations)
+  - ✅ Add pool initialization in constructor
+  - ✅ Update Debug impl to show pool size
+  - ✅ Thread-safe via `SpacePool` (uses `Arc<Mutex<Vec<Space>>>` internally)
+  - ✅ All 6 RholangPatternIndex unit tests passing
 
 - [ ] **Add regression tests** (`tests/test_space_pooling.rs`)
   - Test pool acquire/release cycle
