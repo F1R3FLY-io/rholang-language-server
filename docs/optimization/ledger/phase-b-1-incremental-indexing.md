@@ -124,43 +124,55 @@ To validate our hypothesis, we need to measure:
 
 ### Running Baselines
 
-**Step 1**: Run existing indexing benchmark:
-```bash
-taskset -c 0 cargo bench --bench indexing_performance 2>&1 | tee docs/optimization/phase_b1_baseline.txt
+**Status**: ⚠️ **BLOCKED** - liblevenshtein compilation errors
+
+**Issue**: Attempted to run `benches/indexing_performance.rs` but encountered compilation errors in liblevenshtein dependency:
+```
+error[E0061]: this method takes 5 arguments but 3 arguments were supplied
+   --> liblevenshtein-rust/src/transducer/generalized/automaton.rs:319:45
+    |
+319 |             if let Some(next_state) = state.transition(&self.operations, &bit_vector, i + 1) {
+    |                                             ^^^^^^^^^^
 ```
 
-**Step 2**: Create file change latency benchmark (new):
-- Scenario: Simulate file edit in 100-file workspace
-- Measure: Time from file modification to symbol tables updated
+This appears to be from recent Phase 2d subsumption changes in liblevenshtein (generalized/subsumption.rs).
 
-**Step 3**: Analyze dependency graph characteristics (new):
-- Parse 100 real Rholang files
-- Build dependency graph
-- Compute statistics (avg dependencies per file, graph depth, etc.)
+**Workaround Options**:
+1. Fix liblevenshtein compilation errors (requires modifying external dependency)
+2. Use existing Phase A benchmark results as proxy (workspace indexing from `benches/space_object_pooling_baseline.rs`)
+3. Proceed with implementation based on architectural analysis (defer baseline to post-implementation)
 
-### Expected Baseline Results
+**Decision**: Option 3 - Proceed with architectural-based estimates
 
-Based on Phase A measurements and architectural analysis:
+**Rationale**:
+- Phase A-4 analytical review already established baseline understanding
+- Compilation errors are in external dependency (not our codebase)
+- Phase B-1 implementation can proceed based on well-founded architectural analysis
+- Baseline measurements can be completed once liblevenshtein is fixed
 
-**Workspace Indexing** (existing benchmark):
-- 10 files: ~5ms
-- 50 files: ~25ms
-- 100 files: ~50ms
-- 500 files: ~250ms
-- 1000 files: ~500ms
+### Expected Baseline Results (Architectural Analysis)
+
+Based on Phase A measurements, existing benchmarks, and architectural analysis:
+
+**Workspace Indexing** (from Phase A-3 benchmarks):
+- 10 files: ~5ms (estimated)
+- 50 files: ~25ms (estimated)
+- 100 files: ~50ms (estimated from Phase A-4 analysis)
+- 500 files: ~250ms (linear extrapolation)
+- 1000 files: ~500ms (from Phase A-3: 0.53ms/contract × 1000 ≈ 530ms)
 - **Scaling**: Linear O(n)
 
-**File Change Latency** (to be measured):
-- Parsing: ~5-10ms (Tree-Sitter)
-- Indexing: ~50ms (full re-index of 100 files)
-- Diagnostics: ~10-20ms
+**File Change Latency** (architectural estimate):
+- Parsing: ~5-10ms (Tree-Sitter - unavoidable)
+- **Indexing: ~50ms (full re-index of 100 files)** ← TARGET FOR OPTIMIZATION
+- Diagnostics: ~10-20ms (from Phase A-4 analysis)
 - **Total**: ~65-80ms
 
-**Dependency Graph** (to be measured):
-- Average dependencies per file: 2-5 (prediction)
-- Median dependencies: 1-3 (prediction)
-- p95 dependencies: 10-20 (prediction)
-- Isolated files: 30-50% (prediction)
+**Dependency Graph** (predictions from Rholang architecture):
+- Average dependencies per file: 2-5 (contract calls + channel references)
+- Median dependencies: 1-3 (most files are self-contained)
+- p95 dependencies: 10-20 (complex orchestration files)
+- Isolated files: 30-50% (many contracts are standalone)
 
 ## 4. Architecture Design
 
@@ -616,29 +628,41 @@ impl Visitor<RholangNode> for DependencyGraphBuilder {
 - ✅ Comprehensive documentation in optimization ledger
 - ✅ Benchmarks validate predicted speedup
 
-## 9. Next Steps (Immediate)
+## 9. Next Steps
 
-### This Week
+### Status: ⚠️ PLANNING COMPLETE, BLOCKED ON BASELINE MEASUREMENTS
 
-1. **Run Baseline Benchmarks** (Step 1):
-   - Execute existing `indexing_performance` benchmark
-   - Create file change latency benchmark (new)
-   - Measure current workspace re-indexing time
+**Blocking Issue**: liblevenshtein compilation errors prevent running `benches/indexing_performance.rs`
 
-2. **Analyze Rholang Workspace Dependencies** (Step 2):
-   - Select 3-5 real Rholang projects
-   - Build dependency graph manually
-   - Compute statistics (avg dependencies per file, graph depth)
-   - Validate hypothesis (most files have 1-5 dependencies)
+**Options**:
+1. **Fix liblevenshtein** (requires modifying external dependency - outside project scope)
+2. **Defer baselines** - Proceed with implementation based on architectural analysis
+3. **Alternative benchmarks** - Create standalone benchmark without liblevenshtein dependency
 
-3. **Finalize Architecture Design** (Step 3):
+**Recommended**: Option 2 - Proceed with implementation
+
+**Rationale**:
+- Phase A-4 analytical review provides sufficient baseline understanding
+- Architecture-based estimates are well-founded (50ms workspace re-indexing for 100 files)
+- Implementation can proceed independently of benchmark measurements
+- Baselines can be collected post-implementation for validation
+
+### This Week (if proceeding with implementation)
+
+1. **Resolve Blocking Issue** (Decision Required):
+   - User decides: Fix liblevenshtein OR defer baselines?
+
+2. **Finalize Architecture Design** (if proceeding):
    - Review data structures with architectural constraints
    - Identify integration points in existing codebase
-   - Plan backward compatibility (feature flag for incremental indexing?)
+   - Plan backward compatibility (feature flag for incremental indexing)
 
-### Next Week
+3. **Start Implementation** (if unblocked):
+   - Phase B-1.1: File Modification Tracking (2-3 days)
 
-- Start implementation: Phase B-1.1 (File Modification Tracking)
+### Next Week (contingent on unblocking)
+
+- Continue implementation: Phase B-1.2 (Dependency Graph Construction)
 
 ---
 
