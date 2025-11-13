@@ -65,6 +65,7 @@ mod handlers;
 mod indexing;
 mod unified_handlers;
 mod dirty_tracker;  // Phase 11: Incremental indexing
+mod file_modification_tracker;  // Phase B-1.1: File modification timestamp tracking
 
 pub use state::RholangBackend;
 use state::{DocumentChangeEvent, IndexingTask, WorkspaceChangeEvent, WorkspaceChangeType};
