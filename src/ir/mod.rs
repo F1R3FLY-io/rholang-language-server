@@ -12,6 +12,7 @@ pub mod pipeline;
 pub mod rholang_node;
 pub mod rholang_pattern_index;
 pub mod semantic_node;
+pub mod space_pool;
 pub mod structured_documentation;
 pub mod symbol_resolution;
 pub mod symbol_table;
