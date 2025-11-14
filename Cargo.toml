@@ -16,6 +16,7 @@ anyhow = "1.0"
 archery = "1.2.1"  # Matches rpds 1.1.1's dependency
 async-trait = "0.1"
 bincode = "1.3"  # Binary serialization for file timestamps (Phase B-1.1)
+blake3 = "1.5"  # Fast content hashing for cache invalidation (Phase B-2)
 chrono = "0.4"  # Used for runtime timestamps in LSP
 clap = { version = "4.5", features = ["derive"] }
 const_format = "0.2"  # Used for compile-time string formatting
@@ -23,6 +24,7 @@ dashmap = "6.1"
 dirs = "5.0"
 liblevenshtein = { path = "../liblevenshtein-rust", features = ["pathmap-backend"] }  # Fuzzy matching + contextual completion with DynamicDawg (Phase 9)
 futures = "0.3"  # Includes futures-util functionality
+lru = "0.12"  # LRU cache for document IR caching (Phase B-2)
 parking_lot = "0.12"
 lsp-types = "0.97"
 once_cell = "1.20"  # Lazy static initialization (for parse cache)
@@ -119,6 +121,14 @@ harness = false
 
 [[bench]]
 name = "space_object_pooling_baseline"
+harness = false
+
+[[bench]]
+name = "indexing_performance"
+harness = false
+
+[[bench]]
+name = "cache_performance"
 harness = false
 
 # Debian package metadata

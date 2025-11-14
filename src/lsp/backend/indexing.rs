@@ -327,9 +327,21 @@ impl RholangBackend {
         _version: i32,
         tree: Option<tree_sitter::Tree>,
     ) -> Result<CachedDocument, String> {
+        use crate::lsp::backend::document_cache::ContentHash;
         use std::collections::hash_map::DefaultHasher;
 
-        // Compute fast hash of content for change detection
+        // Phase B-2: Compute content hash for cache lookup (blake3 for fast hashing)
+        let content_hash_blake3 = ContentHash::from_str(text);
+
+        // Check cache first (Phase B-2 optimization)
+        if let Some(cached_doc) = self.workspace.document_cache.get(uri, &content_hash_blake3) {
+            debug!("Cache HIT for {} - returning cached document", uri);
+            return Ok((*cached_doc).clone());
+        }
+
+        debug!("Cache MISS for {} - parsing and indexing", uri);
+
+        // Compute fallback hash for backward compatibility with content_hash field
         let mut hasher = DefaultHasher::new();
         text.hash(&mut hasher);
         let content_hash = hasher.finish();
@@ -406,6 +418,16 @@ impl RholangBackend {
                 // Caller is responsible for batching workspace updates (documents, contracts, calls)
                 // into a single write lock and calling link_symbols() afterward.
 
+                // Phase B-2: Insert into cache before returning
+                let modified_at = std::time::SystemTime::now(); // Use current time for in-memory documents
+                self.workspace.document_cache.insert(
+                    uri.clone(),
+                    content_hash_blake3,
+                    Arc::new(cached.clone()),
+                    modified_at,
+                );
+                debug!("Cached document for {} (hash: {:?})", uri, content_hash_blake3.as_blake3());
+
                 Ok(cached)
             }
         }
@@ -419,6 +441,16 @@ impl RholangBackend {
         version: i32,
         content_hash: u64,
     ) -> Result<CachedDocument, String> {
+        use crate::lsp::backend::document_cache::ContentHash;
+
+        // Phase B-2: Check cache first
+        let content_hash_blake3 = ContentHash::from_str(text);
+        if let Some(cached_doc) = self.workspace.document_cache.get(uri, &content_hash_blake3) {
+            debug!("Cache HIT for MeTTa file {} - returning cached document", uri);
+            return Ok((*cached_doc).clone());
+        }
+
+        debug!("Cache MISS for MeTTa file {} - parsing and indexing", uri);
         use crate::parsers::MettaParser;
         use crate::ir::semantic_node::{NodeBase, Position};
         use crate::ir::unified_ir::UnifiedIR;
@@ -499,6 +531,16 @@ impl RholangBackend {
             content_hash,
             completion_state: None,  // Phase 9: Initialized lazily on first completion request
         };
+
+        // Phase B-2: Insert into cache before returning
+        let modified_at = std::time::SystemTime::now();
+        self.workspace.document_cache.insert(
+            uri.clone(),
+            content_hash_blake3,
+            Arc::new(cached_doc.clone()),
+            modified_at,
+        );
+        debug!("Cached MeTTa document for {} (hash: {:?})", uri, content_hash_blake3.as_blake3());
 
         // Broadcast workspace change event (ReactiveX Phase 2)
         let file_count = self.workspace.documents.len();

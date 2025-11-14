@@ -68,6 +68,7 @@ pub mod dirty_tracker;  // Phase 11: Incremental indexing
 pub mod file_modification_tracker;  // Phase B-1.1: File modification timestamp tracking
 pub mod dependency_graph;  // Phase B-1.2: Cross-file dependency tracking
 pub mod incremental;  // Phase B-1.4: Incremental re-indexing logic
+pub mod document_cache;  // Phase B-2: Document IR caching with LRU eviction
 
 pub use state::RholangBackend;
 use state::{DocumentChangeEvent, IndexingTask, WorkspaceChangeEvent, WorkspaceChangeType};
