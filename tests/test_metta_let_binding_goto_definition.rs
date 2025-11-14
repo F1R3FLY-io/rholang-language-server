@@ -30,20 +30,26 @@ new test in {
         .expect("Failed to receive diagnostics");
 
     // Position of the SECOND $x (in the usage: (+ $x 1))
-    // Line 3 (1-indexed) = line 2 (0-indexed)
+    // Source starts with newline from r#", so:
+    // Line 0: empty
+    // Line 1: new test in {
+    // Line 2: // @metta
+    // Line 3: test!("(let $x 42 (+ $x 1))") |  <-- MeTTa string is here
+    // Line 4: for (@code <- test) { Nil }
+    //
     // test!("(let $x 42 (+ $x 1))") |
     //  ^column 2                      ^column 31
-    // The string content starts after the opening quote at column 9
+    // The string content starts after the opening quote at column 8
     // "(let $x 42 (+ $x 1))"
-    //  0123456789012345678
-    //            ^-- $x usage at position 14 inside the string
-    // String starts at column 9, so absolute position is 9 + 14 = 23
+    //  01234567890123456789
+    //               ^-- $x usage at position 14-15 inside the string
+    // String starts at column 8 (opening quote), +1 for quote, +14 for $x = column 23
     let usage_position = Position {
-        line: 2,
+        line: 3,
         character: 23,
     };
 
-    println!("Testing goto-definition on $x usage at line 3, character 24");
+    println!("Testing goto-definition on $x usage at line 4, character 24");
 
     match client.definition(&doc.uri(), usage_position) {
         Ok(Some(location)) => {
@@ -52,10 +58,10 @@ new test in {
 
             // Expected: Should go to the FIRST $x (the let binding)
             // "(let $x 42 (+ $x 1))"
-            //  0123456
-            //       ^-- $x definition at position 6 inside the string
-            // String starts at column 9, so absolute position is 9 + 6 = 15
-            let expected_line = 2u32;
+            //  01234567890123456789
+            //       ^-- $x definition at position 5-6 inside the string
+            // String starts at column 8 (quote), +1 for quote, +5 for $x = column 14
+            let expected_line = 3u32;
             let expected_char_min = 14u32; // Approximate range for $x binding
             let expected_char_max = 16u32;
 

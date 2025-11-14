@@ -132,11 +132,11 @@ impl ServerConfig {
                 conflicts_with_all = ["stdio", "socket", "websocket"]
             )]
             pipe: Option<String>,
-            #[arg(long, help = "Disable RNode integration for semantic analysis (rely on parser only)")]
+            #[arg(long, help = "DEPRECATED: Use --validator-backend=rust instead. Disable RNode integration for semantic analysis (rely on parser only). This flag will be removed in a future version.")]
             no_rnode: bool,
             #[arg(
                 long,
-                help = "Validator backend to use: 'rust' for embedded interpreter, or 'grpc:<address>:<port>' for RNode server. Can be set via RHOLANG_VALIDATOR_BACKEND env variable. Defaults to 'rust' if interpreter feature enabled, otherwise 'grpc:localhost:40402'.",
+                help = "Validator backend to use: 'rust' for embedded interpreter (automatically skips RNode connection), or 'grpc:<address>:<port>' for RNode server. Can be set via RHOLANG_VALIDATOR_BACKEND env variable. Defaults to 'rust' if interpreter feature enabled, otherwise 'grpc:localhost:40402'.",
                 value_name = "BACKEND"
             )]
             validator_backend: Option<String>,
@@ -148,6 +148,12 @@ impl ServerConfig {
         }
 
         let args = Args::parse();
+
+        // Emit deprecation warning for --no-rnode flag
+        if args.no_rnode {
+            eprintln!("WARNING: --no-rnode is deprecated. Use --validator-backend=rust instead.");
+            eprintln!("         This flag will be removed in a future version.");
+        }
 
         let rnode_address = std::env::var("RHOLANG_ADDRESS_NODE").unwrap_or(args.rnode_address);
         let rnode_port = match std::env::var("RHOLANG_PORT_NODE") {
@@ -517,8 +523,8 @@ async fn serve_connection<R, W>(
 {
     info!("Accepted connection from {}", addr);
 
-    // Determine gRPC address from CLI arg, or fall back to rnode_client if present
-    let grpc_address = validator_backend.or_else(|| {
+    // Determine validator backend from CLI arg, or fall back to rnode_client if present
+    let validator_backend_arg = validator_backend.or_else(|| {
         rnode_client.as_ref().map(|_| "grpc:localhost:40402".to_string())
     });
 
@@ -526,7 +532,7 @@ async fn serve_connection<R, W>(
         // Block on async backend creation (only happens once during initialization)
         let backend = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
-                RholangBackend::new(client, grpc_address.clone(), client_process_id, pid_channel.clone())
+                RholangBackend::new(client, validator_backend_arg.clone(), client_process_id, pid_channel.clone())
                     .await
                     .expect("Failed to create Rholang backend")
             })
@@ -627,8 +633,8 @@ async fn run_stdio_server(
     // Create reactive channel for PID events
     let (pid_tx, mut pid_rx) = tokio::sync::mpsc::channel::<u32>(1);
 
-    // Determine gRPC address from CLI arg, or fall back to rnode_client if present
-    let grpc_address = config.validator_backend.clone().or_else(|| {
+    // Determine validator backend from CLI arg, or fall back to rnode_client if present
+    let validator_backend_arg = config.validator_backend.clone().or_else(|| {
         rnode_client.as_ref().map(|_| "grpc:localhost:40402".to_string())
     });
 
@@ -636,7 +642,7 @@ async fn run_stdio_server(
         // Block on async backend creation (only happens once during initialization)
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
-                RholangBackend::new(client, grpc_address.clone(), config.client_process_id, Some(pid_tx.clone()))
+                RholangBackend::new(client, validator_backend_arg.clone(), config.client_process_id, Some(pid_tx.clone()))
                     .await
                     .expect("Failed to create Rholang backend")
             })
@@ -881,7 +887,15 @@ async fn run_server(config: ServerConfig, conn_manager: ConnectionManager) -> io
     info!("Build: {} ({}{}) [build-id: {}]",
           git_hash, git_branch, git_dirty, build_id);
 
-    let rnode_client_opt: Option<LspClient<tonic::transport::Channel>> = if !config.no_rnode {
+    // Determine if RNode connection is needed based on validator backend
+    // - If validator_backend starts with "grpc", RNode is required
+    // - If validator_backend is "rust", RNode is not needed
+    // - If validator_backend is None, fall back to no_rnode flag for backward compatibility
+    let needs_rnode = config.validator_backend.as_deref()
+        .map(|backend| backend.starts_with("grpc"))
+        .unwrap_or(!config.no_rnode);
+
+    let rnode_client_opt: Option<LspClient<tonic::transport::Channel>> = if needs_rnode {
         let rnode_endpoint = format!("http://{}:{}", config.rnode_address, config.rnode_port);
         match tonic::transport::Uri::try_from(&rnode_endpoint) {
             Ok(rnode_uri) => {
@@ -902,7 +916,11 @@ async fn run_server(config: ServerConfig, conn_manager: ConnectionManager) -> io
             }
         }
     } else {
-        info!("RNode integration disabled via --no-rnode flag; relying on parser for analysis.");
+        if let Some(backend) = config.validator_backend.as_deref() {
+            info!("RNode connection skipped (validator backend '{}' does not require it)", backend);
+        } else {
+            info!("RNode integration disabled via --no-rnode flag; relying on parser for analysis.");
+        }
         None
     };
 
@@ -980,6 +998,7 @@ fn main() -> io::Result<()> {
             let mut panic_log_path = cache_dir;
             panic_log_path.push("f1r3fly-io");
             panic_log_path.push("rholang-language-server");
+            panic_log_path.push("logs");
 
             // Ensure directory exists
             let _ = std::fs::create_dir_all(&panic_log_path);

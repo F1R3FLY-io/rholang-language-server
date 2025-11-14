@@ -213,7 +213,22 @@ impl RholangBackend {
             let virtual_docs = self.virtual_docs.read().await;
             let virtual_docs_for_parent = virtual_docs.get_by_parent(uri);
 
+            debug!(
+                "Checking {} virtual documents for parent {}",
+                virtual_docs_for_parent.len(),
+                uri
+            );
+
             for virtual_doc in virtual_docs_for_parent {
+                debug!(
+                    "Checking virtual doc {} with range: start=({},{}) end=({},{})",
+                    virtual_doc.uri,
+                    virtual_doc.parent_start.line,
+                    virtual_doc.parent_start.character,
+                    virtual_doc.parent_end.line,
+                    virtual_doc.parent_end.character
+                );
+
                 // Check if position is within this virtual document's range
                 let in_range = if virtual_doc.parent_start.line == virtual_doc.parent_end.line {
                     // Single-line region

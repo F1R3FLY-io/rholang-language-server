@@ -148,7 +148,11 @@ impl DependencyGraph {
     /// O(k) where k = number of transitive dependents (BFS traversal)
     pub fn get_dependents(&self, file: &Url) -> DashSet<Url> {
         let mut dependents = DashSet::new();
+        let mut visited = DashSet::new();
         let mut queue = VecDeque::new();
+
+        // Mark the file itself as visited so it won't be included in results
+        visited.insert(file.clone());
         queue.push_back(file.clone());
 
         while let Some(current) = queue.pop_front() {
@@ -158,7 +162,8 @@ impl DependencyGraph {
                     let dep_url = dep.key().clone();
 
                     // If not already visited, add to result and queue for transitive exploration
-                    if dependents.insert(dep_url.clone()) {
+                    if visited.insert(dep_url.clone()) {
+                        dependents.insert(dep_url.clone());
                         queue.push_back(dep_url);
                     }
                 }
@@ -216,10 +221,7 @@ impl DependencyGraph {
             for dep in deps.iter() {
                 if let Some(reverse_deps) = self.reverse.get(dep.key()) {
                     reverse_deps.remove(file);
-                    // Clean up empty sets
-                    if reverse_deps.is_empty() {
-                        self.reverse.remove(dep.key());
-                    }
+                    // Don't clean up empty sets - files should remain in graph
                 }
             }
         }
@@ -230,10 +232,7 @@ impl DependencyGraph {
             for dependent in dependents.iter() {
                 if let Some(forward_deps) = self.forward.get(dependent.key()) {
                     forward_deps.remove(file);
-                    // Clean up empty sets
-                    if forward_deps.is_empty() {
-                        self.forward.remove(dependent.key());
-                    }
+                    // Don't clean up empty sets - files should remain in graph
                 }
             }
         }
@@ -567,6 +566,7 @@ mod tests {
         let dependents = graph.get_dependents(&a);
 
         // All three files depend on each other transitively
+        assert!(!dependents.contains(&a));
         assert!(dependents.contains(&b));
         assert!(dependents.contains(&c));
     }

@@ -36,14 +36,33 @@ macro_rules! with_lsp_client {
                     assert!(result.is_ok(), "Initialize failed: {}", result.unwrap_err());
                     let result = client.initialized();
                     assert!(result.is_ok(), "Initialized failed: {}", result.unwrap_err());
-                    $callback(&client);
+
+                    // Run callback with panic-safe cleanup
+                    let callback_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        $callback(&client);
+                    }));
+
+                    // Always perform cleanup, even if callback panicked
                     let result = client.shutdown();
-                    assert!(result.is_ok(), "Shutdown failed: {}", result.unwrap_err());
+                    if let Err(e) = result {
+                        eprintln!("Warning: Shutdown failed during cleanup: {}", e);
+                    }
                     let result = client.exit();
-                    assert!(result.is_ok(), "Exit failed: {}", result.unwrap_err());
+                    if let Err(e) = result {
+                        eprintln!("Warning: Exit failed during cleanup: {}", e);
+                    }
                     let result = client.stop().await;
-                    assert!(result.is_ok(), "Stop failed: {}", result.unwrap_err());
-                    event_thread.await.expect("Failed to await event thread");
+                    if let Err(e) = result {
+                        eprintln!("Warning: Stop failed during cleanup: {}", e);
+                    }
+                    if let Err(e) = event_thread.await {
+                        eprintln!("Warning: Event thread join failed during cleanup: {}", e);
+                    }
+
+                    // Re-panic if callback panicked, after cleanup is complete
+                    if let Err(panic_payload) = callback_result {
+                        std::panic::resume_unwind(panic_payload);
+                    }
                 }
                 Err(e) => {
                     panic!("Failed to start client: {}", e);

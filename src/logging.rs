@@ -25,6 +25,7 @@ fn get_log_dir() -> io::Result<PathBuf> {
     let mut log_dir = cache_dir;
     log_dir.push("f1r3fly-io");
     log_dir.push("rholang-language-server");
+    log_dir.push("logs");
 
     // Create directory if it doesn't exist (creates parent directories as needed)
     if !log_dir.exists() {

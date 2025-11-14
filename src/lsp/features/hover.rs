@@ -326,6 +326,37 @@ impl GenericHover {
                         return Some(name.as_str());
                     }
                 }
+                RholangNode::LinearBind { names, .. } |
+                RholangNode::RepeatedBind { names, .. } |
+                RholangNode::PeekBind { names, .. } => {
+                    debug!("extract_symbol_name: Handling binding node with {} names", names.iter().len());
+
+                    // Extract from the first bound name
+                    if let Some(first_name) = names.iter().next() {
+                        match first_name.as_ref() {
+                            // Most common: Quote wrapping a Var (e.g., @result, @code)
+                            RholangNode::Quote { quotable, .. } => {
+                                if let RholangNode::Var { name, .. } = quotable.as_ref() {
+                                    debug!("Extracted symbol name from binding->Quote->Var: {}", name);
+                                    return Some(name.as_str());
+                                }
+                            }
+                            // Less common: bare Var (if pattern is not quoted)
+                            RholangNode::Var { name, .. } => {
+                                debug!("Extracted symbol name from binding->Var: {}", name);
+                                return Some(name.as_str());
+                            }
+                            // Wildcard patterns have no symbol name
+                            RholangNode::Wildcard { .. } => {
+                                debug!("Wildcard pattern has no symbol name");
+                                return None;
+                            }
+                            _ => {
+                                debug!("Unhandled binding pattern type: {}", first_name.type_name());
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }

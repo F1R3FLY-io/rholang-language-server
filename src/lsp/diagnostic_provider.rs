@@ -73,7 +73,7 @@ impl BackendConfig {
     /// Format:
     /// - "rust" -> Rust backend
     /// - "grpc:<address>" -> gRPC backend (e.g., "grpc:localhost:40401")
-    fn parse(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         let s = s.trim().to_lowercase();
 
         if s == "rust" {

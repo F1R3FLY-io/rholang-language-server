@@ -395,6 +395,9 @@ mod tests {
             rholang_symbols: Arc::new(crate::lsp::rholang_contracts::RholangContracts::new()),
             indexing_state: Arc::new(tokio::sync::RwLock::new(crate::lsp::models::IndexingState::Idle)),
             completion_index: Arc::new(crate::lsp::features::completion::WorkspaceCompletionIndex::new()),
+            file_modification_tracker: Arc::new(crate::lsp::backend::file_modification_tracker::FileModificationTracker::new_for_testing()),
+            dependency_graph: Arc::new(crate::lsp::backend::dependency_graph::DependencyGraph::new()),
+            document_cache: Arc::new(crate::lsp::backend::document_cache::DocumentCache::new()),
         });
         let parent_uri = Url::parse("file:///test.rho").unwrap();
 

@@ -405,7 +405,7 @@ mod tests {
         let uri = mock_url("test");
         let hash = ContentHash::from_str("test content");
 
-        assert_eq!(cache.get(&uri, &hash), None);
+        assert!(cache.get(&uri, &hash).is_none());
 
         let stats = cache.stats();
         assert_eq!(stats.total_queries, 1);

@@ -254,6 +254,16 @@ impl LanguageServer for RholangBackend {
     async fn shutdown(&self) -> jsonrpc::Result<()> {
         info!("Received shutdown request");
 
+        // Persist file modification timestamps before shutdown
+        if let Err(e) = self.workspace.file_modification_tracker.persist().await {
+            warn!("Failed to persist file timestamps during shutdown: {}", e);
+        }
+
+        // Persist completion index before shutdown
+        if let Err(e) = self.persist_completion_index().await {
+            warn!("Failed to persist completion index during shutdown: {}", e);
+        }
+
         // Phase B-3.3: Serialize workspace cache before shutdown
         if let Some(root_path) = self.root_dir.read().await.as_ref() {
             info!("Serializing workspace cache to disk...");

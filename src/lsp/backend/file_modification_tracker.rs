@@ -125,6 +125,18 @@ impl FileModificationTracker {
         Ok(tracker)
     }
 
+    /// Create a new file modification tracker for testing (synchronous, no file I/O)
+    ///
+    /// This constructor is intended for unit tests where file I/O is not needed.
+    /// Uses `/tmp` as the cache directory but doesn't actually create files.
+    #[cfg(test)]
+    pub fn new_for_testing() -> Self {
+        Self {
+            timestamps: Arc::new(DashMap::new()),
+            cache_path: PathBuf::from("/tmp/rholang-language-server/file_timestamps.bin"),
+        }
+    }
+
     /// Check if a file has changed since it was last indexed
     ///
     /// Compares current filesystem modification time against cached timestamp.

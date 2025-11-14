@@ -290,13 +290,15 @@ If using RNode for semantic validation:
 }
 ```
 
-### Disable RNode Validation
+### Use Rust Interpreter (No RNode Required)
 
-For faster local-only development:
+For faster local-only development using the embedded Rust interpreter:
 
 ```bash
-rholang-language-server --no-rnode
+rholang-language-server --validator-backend=rust
 ```
+
+**Note**: The `--no-rnode` flag is deprecated and will be removed in a future version. Use `--validator-backend=rust` instead.
 
 ## Tips and Tricks
 

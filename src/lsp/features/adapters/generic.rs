@@ -162,6 +162,9 @@ mod tests {
                 crate::lsp::models::IndexingState::Idle,
             )),
             completion_index: Arc::new(crate::lsp::features::completion::WorkspaceCompletionIndex::new()),
+            file_modification_tracker: Arc::new(crate::lsp::backend::file_modification_tracker::FileModificationTracker::new_for_testing()),
+            dependency_graph: Arc::new(crate::lsp::backend::dependency_graph::DependencyGraph::new()),
+            document_cache: Arc::new(crate::lsp::backend::document_cache::DocumentCache::new()),
         });
 
         let adapter = create_generic_adapter(workspace, "python".to_string());

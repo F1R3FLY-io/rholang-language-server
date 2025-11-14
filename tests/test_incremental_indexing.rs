@@ -46,7 +46,10 @@ async fn test_file_modification_tracker_detects_changes() {
         .await
         .unwrap();
 
-    let uri = test_uri("test_file");
+    // Create an actual test file
+    let test_file = temp_dir.path().join("test_file.rho");
+    tokio::fs::write(&test_file, "contract test = { Nil }").await.unwrap();
+    let uri = Url::from_file_path(&test_file).unwrap();
 
     // First check: file should be considered changed (no cached timestamp)
     let has_changed = tracker.has_changed(&uri).await.unwrap();
@@ -65,7 +68,10 @@ async fn test_file_modification_tracker_persistence() {
     let temp_dir = tempfile::tempdir().unwrap();
     let cache_dir = temp_dir.path().to_path_buf();
 
-    let uri = test_uri("persistent_file");
+    // Create an actual test file
+    let test_file = temp_dir.path().join("persistent_file.rho");
+    tokio::fs::write(&test_file, "contract test = { Nil }").await.unwrap();
+    let uri = Url::from_file_path(&test_file).unwrap();
 
     // First instance: mark file as indexed
     {
@@ -158,8 +164,9 @@ fn test_dependency_graph_circular_dependencies() {
     let dependents = graph.get_dependents(&uri_a);
 
     // Should handle cycle gracefully (visited set prevents infinite loop)
-    assert_eq!(dependents.len(), 3, "Cycle should include all files in loop");
-    assert!(dependents.contains(&uri_a), "Cycle includes self");
+    // Note: get_dependents() excludes the queried file itself (see test_self_dependency in dependency_graph.rs)
+    assert_eq!(dependents.len(), 2, "Cycle should include other files in loop");
+    assert!(!dependents.contains(&uri_a), "Queried file is excluded from dependents");
     assert!(dependents.contains(&uri_b));
     assert!(dependents.contains(&uri_c));
 }

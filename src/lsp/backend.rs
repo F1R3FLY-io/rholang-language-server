@@ -78,21 +78,23 @@ use utils::SemanticTokensBuilder;
 impl RholangBackend {
     /// Creates a new instance of the Rholang backend with the given client and connections.
     ///
-    /// If `grpc_address` is provided, uses gRPC backend to connect to RNode server.
-    /// Otherwise, uses the Rust interpreter backend (if available).
+    /// If `validator_backend` is provided, parses it to determine backend type:
+    /// - "rust" → Rust interpreter backend
+    /// - "grpc:address:port" → gRPC backend connecting to RNode server
+    /// Otherwise, uses environment variable or feature-based default.
     /// Backend can also be selected via RHOLANG_VALIDATOR_BACKEND environment variable.
     pub async fn new(
         client: Client,
-        grpc_address: Option<String>,
+        validator_backend: Option<String>,
         client_process_id: Option<u32>,
         pid_channel: Option<tokio::sync::mpsc::Sender<u32>>,
     ) -> anyhow::Result<Self> {
         // Determine backend configuration
-        let backend_config = if let Some(addr) = grpc_address {
-            info!("Using gRPC backend at {}", addr);
-            BackendConfig::Grpc(addr)
+        let backend_config = if let Some(backend_str) = validator_backend {
+            // Parse to determine Rust vs Grpc backend
+            BackendConfig::parse(&backend_str)
         } else {
-            // Check environment variable, otherwise use default
+            // Check environment variable, then use feature-based default
             BackendConfig::from_env_or_default(None)
         };
 

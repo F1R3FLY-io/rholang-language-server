@@ -236,12 +236,13 @@ impl RholangBackend {
     ///
     /// # Errors
     /// Returns error if serialization or file I/O fails
-    async fn persist_completion_index(&self) -> std::io::Result<()> {
+    pub async fn persist_completion_index(&self) -> std::io::Result<()> {
         use std::path::PathBuf;
 
         // Get cache directory (same pattern as FileModificationTracker)
         let cache_dir = dirs::cache_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join("f1r3fly-io")
             .join("rholang-language-server");
 
         // Create cache directory if it doesn't exist
@@ -275,6 +276,7 @@ impl RholangBackend {
 
         let cache_dir = dirs::cache_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join("f1r3fly-io")
             .join("rholang-language-server");
 
         let cache_path = cache_dir.join("completion_index.bin");

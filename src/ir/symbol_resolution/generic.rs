@@ -152,6 +152,9 @@ mod tests {
                 crate::lsp::models::IndexingState::Idle,
             )),
             completion_index: Arc::new(crate::lsp::features::completion::WorkspaceCompletionIndex::new()),
+            file_modification_tracker: Arc::new(crate::lsp::backend::file_modification_tracker::FileModificationTracker::new_for_testing()),
+            dependency_graph: Arc::new(crate::lsp::backend::dependency_graph::DependencyGraph::new()),
+            document_cache: Arc::new(crate::lsp::backend::document_cache::DocumentCache::new()),
         });
 
         // Add test symbol
@@ -215,6 +218,9 @@ mod tests {
                 crate::lsp::models::IndexingState::Idle,
             )),
             completion_index: Arc::new(crate::lsp::features::completion::WorkspaceCompletionIndex::new()),
+            file_modification_tracker: Arc::new(crate::lsp::backend::file_modification_tracker::FileModificationTracker::new_for_testing()),
+            dependency_graph: Arc::new(crate::lsp::backend::dependency_graph::DependencyGraph::new()),
+            document_cache: Arc::new(crate::lsp::backend::document_cache::DocumentCache::new()),
         });
 
         // Add multiple locations for same symbol
@@ -292,6 +298,9 @@ mod tests {
                 crate::lsp::models::IndexingState::Idle,
             )),
             completion_index: Arc::new(crate::lsp::features::completion::WorkspaceCompletionIndex::new()),
+            file_modification_tracker: Arc::new(crate::lsp::backend::file_modification_tracker::FileModificationTracker::new_for_testing()),
+            dependency_graph: Arc::new(crate::lsp::backend::dependency_graph::DependencyGraph::new()),
+            document_cache: Arc::new(crate::lsp::backend::document_cache::DocumentCache::new()),
         });
 
         let resolver = GenericSymbolResolver::new(workspace, "ruby".to_string());
