@@ -54,7 +54,9 @@ impl std::hash::Hash for Position {
 
 /// Base structure for all Intermediate Representation (IR) nodes, encapsulating positional and textual metadata.
 /// Provides the foundation for tracking node locations and source text.
-#[derive(Debug, Clone)]
+///
+/// Phase B-3: Added Serialize/Deserialize for persistent cache support
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NodeBase {
     start: Position,                  // Absolute start position (preserved from Tree-Sitter)
     content_length: usize,            // "Soft" length: content up to last child (for semantic operations)

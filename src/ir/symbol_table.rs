@@ -7,7 +7,8 @@ use rpds::Vector;
 use archery::ArcK;
 
 /// Represents the type of a symbol in Rholang.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
+/// Phase B-3: Added Serialize/Deserialize for persistent cache
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum SymbolType {
     Variable,
     Contract,
@@ -16,19 +17,33 @@ pub enum SymbolType {
 
 /// Stores contract pattern information for pattern matching.
 /// This represents the formal parameters and remainder of a contract definition.
-#[derive(Debug, Clone)]
+/// Phase B-3: Custom serialization for Arc-wrapped nodes and rpds::Vector
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ContractPattern {
     /// The formal parameters (patterns) of the contract
+    #[serde(
+        serialize_with = "crate::serde_helpers::serialize_rpds_arc_vec",
+        deserialize_with = "crate::serde_helpers::deserialize_rpds_arc_vec"
+    )]
     pub formals: Vector<Arc<RholangNode>, ArcK>,
     /// Optional remainder parameter for variadic contracts
+    #[serde(
+        serialize_with = "crate::serde_helpers::serialize_option_arc",
+        deserialize_with = "crate::serde_helpers::deserialize_option_arc"
+    )]
     pub formals_remainder: Option<Arc<RholangNode>>,
     /// The contract body/process
+    #[serde(
+        serialize_with = "crate::serde_helpers::serialize_arc",
+        deserialize_with = "crate::serde_helpers::deserialize_arc"
+    )]
     pub proc: Arc<RholangNode>,
 }
 
 /// Stores information about a symbol, including its declaration and definition locations.
 /// For contracts, also stores the pattern signature for efficient pattern matching.
-#[derive(Debug, Clone)]
+/// Phase B-3: Custom serialization for Option<Arc<RholangNode>>
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Symbol {
     pub name: String,
     pub symbol_type: SymbolType,
@@ -41,6 +56,10 @@ pub struct Symbol {
     /// For Contract symbols with complex identifiers: stores the full identifier node
     /// Simple identifiers (Var, Quote(StringLiteral)) are stored in `name` only.
     /// Complex identifiers (Quote(Map), Quote(List), etc.) are stored here for structural matching.
+    #[serde(
+        serialize_with = "crate::serde_helpers::serialize_option_arc",
+        deserialize_with = "crate::serde_helpers::deserialize_option_arc"
+    )]
     pub contract_identifier_node: Option<Arc<RholangNode>>,
     /// Documentation extracted from doc comments (Phase 5: Completion Item Documentation)
     pub documentation: Option<String>,
@@ -139,7 +158,8 @@ impl Ord for Symbol {
 
 /// Pattern signature for efficient contract lookup.
 /// Groups contracts by name and arity for O(1) pattern matching queries.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Phase B-3: Added Serialize/Deserialize for persistent cache
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PatternSignature {
     /// Contract name
     pub name: String,
@@ -436,5 +456,53 @@ impl SymbolTable {
         if let Some(parent) = &self.parent {
             parent.collect_symbols_with_depth_helper(prefix, current_depth + 1, results);
         }
+    }
+}
+
+// Phase B-3: Custom serialization for SymbolTable
+// We serialize only the symbols, skipping pattern_index (rebuilt from symbols) and parent (re-established externally)
+impl serde::Serialize for SymbolTable {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("SymbolTable", 1)?;
+
+        // Convert DashMap<String, Arc<Symbol>> to HashMap<String, Symbol> for serialization
+        let symbols_map: std::collections::HashMap<String, Symbol> = self
+            .symbols
+            .iter()
+            .map(|entry| (entry.key().clone(), (**entry.value()).clone()))
+            .collect();
+
+        state.serialize_field("symbols", &symbols_map)?;
+        // Skip pattern_index - will be rebuilt from symbols on deserialization
+        // Skip parent - parent relationships are re-established externally
+        state.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SymbolTable {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct SymbolTableHelper {
+            symbols: std::collections::HashMap<String, Symbol>,
+        }
+
+        let helper = SymbolTableHelper::deserialize(deserializer)?;
+
+        // Create new SymbolTable (without parent)
+        let table = SymbolTable::new(None);
+
+        // Reconstruct symbols and pattern_index
+        for (_name, symbol) in helper.symbols {
+            table.insert(Arc::new(symbol));
+        }
+
+        Ok(table)
     }
 }

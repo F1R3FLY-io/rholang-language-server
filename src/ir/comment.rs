@@ -40,7 +40,8 @@ use tree_sitter::Node as TSNode;
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone)]
+/// Phase B-3: Added Serialize/Deserialize for persistent cache
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CommentNode {
     /// Kind of comment (line comment or block comment)
     pub kind: CommentKind,

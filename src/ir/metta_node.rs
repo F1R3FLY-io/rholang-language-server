@@ -12,12 +12,20 @@ use super::semantic_node::{NodeBase, Position};
 use super::semantic_node::{Metadata, SemanticNode, SemanticCategory};
 
 /// MeTTa-specific node types
-#[derive(Debug, Clone)]
+///
+/// Phase B-3: Added Serialize/Deserialize for persistent cache support.
+/// Note: Metadata fields are skipped during serialization (contain `dyn Any` trait objects).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum MettaNode {
     /// S-expression - the fundamental MeTTa construct (op arg1 arg2 ...)
     SExpr {
         base: NodeBase,
+        #[serde(
+            serialize_with = "crate::serde_helpers::serialize_arc_vec",
+            deserialize_with = "crate::serde_helpers::deserialize_arc_vec"
+        )]
         elements: Vec<Arc<MettaNode>>,
+        #[serde(skip)]
         metadata: Option<Arc<Metadata>>,
     },
 
@@ -25,6 +33,7 @@ pub enum MettaNode {
     Atom {
         base: NodeBase,
         name: String,
+        #[serde(skip)]
         metadata: Option<Arc<Metadata>>,
     },
 
@@ -33,62 +42,126 @@ pub enum MettaNode {
         base: NodeBase,
         name: String,
         var_type: MettaVariableType,
+        #[serde(skip)]
         metadata: Option<Arc<Metadata>>,
     },
 
     /// Equality definition - (= pattern body)
     Definition {
         base: NodeBase,
+        #[serde(
+            serialize_with = "crate::serde_helpers::serialize_arc",
+            deserialize_with = "crate::serde_helpers::deserialize_arc"
+        )]
         pattern: Arc<MettaNode>,
+        #[serde(
+            serialize_with = "crate::serde_helpers::serialize_arc",
+            deserialize_with = "crate::serde_helpers::deserialize_arc"
+        )]
         body: Arc<MettaNode>,
+        #[serde(skip)]
         metadata: Option<Arc<Metadata>>,
     },
 
     /// Type annotation - (: expr type)
     TypeAnnotation {
         base: NodeBase,
+        #[serde(
+            serialize_with = "crate::serde_helpers::serialize_arc",
+            deserialize_with = "crate::serde_helpers::deserialize_arc"
+        )]
         expr: Arc<MettaNode>,
+        #[serde(
+            serialize_with = "crate::serde_helpers::serialize_arc",
+            deserialize_with = "crate::serde_helpers::deserialize_arc"
+        )]
         type_expr: Arc<MettaNode>,
+        #[serde(skip)]
         metadata: Option<Arc<Metadata>>,
     },
 
     /// Evaluation - !(expr)
     Eval {
         base: NodeBase,
+        #[serde(
+            serialize_with = "crate::serde_helpers::serialize_arc",
+            deserialize_with = "crate::serde_helpers::deserialize_arc"
+        )]
         expr: Arc<MettaNode>,
+        #[serde(skip)]
         metadata: Option<Arc<Metadata>>,
     },
 
     /// Match expression - (match scrutinee (case1 result1) (case2 result2))
     Match {
         base: NodeBase,
+        #[serde(
+            serialize_with = "crate::serde_helpers::serialize_arc",
+            deserialize_with = "crate::serde_helpers::deserialize_arc"
+        )]
         scrutinee: Arc<MettaNode>,
+        #[serde(
+            serialize_with = "crate::serde_helpers::serialize_arc_tuple_vec",
+            deserialize_with = "crate::serde_helpers::deserialize_arc_tuple_vec"
+        )]
         cases: Vec<(Arc<MettaNode>, Arc<MettaNode>)>,
+        #[serde(skip)]
         metadata: Option<Arc<Metadata>>,
     },
 
     /// Let binding - (let ((var1 val1) (var2 val2)) body)
     Let {
         base: NodeBase,
+        #[serde(
+            serialize_with = "crate::serde_helpers::serialize_arc_tuple_vec",
+            deserialize_with = "crate::serde_helpers::deserialize_arc_tuple_vec"
+        )]
         bindings: Vec<(Arc<MettaNode>, Arc<MettaNode>)>,
+        #[serde(
+            serialize_with = "crate::serde_helpers::serialize_arc",
+            deserialize_with = "crate::serde_helpers::deserialize_arc"
+        )]
         body: Arc<MettaNode>,
+        #[serde(skip)]
         metadata: Option<Arc<Metadata>>,
     },
 
     /// Lambda - (λ (params) body) or (lambda (params) body)
     Lambda {
         base: NodeBase,
+        #[serde(
+            serialize_with = "crate::serde_helpers::serialize_arc_vec",
+            deserialize_with = "crate::serde_helpers::deserialize_arc_vec"
+        )]
         params: Vec<Arc<MettaNode>>,
+        #[serde(
+            serialize_with = "crate::serde_helpers::serialize_arc",
+            deserialize_with = "crate::serde_helpers::deserialize_arc"
+        )]
         body: Arc<MettaNode>,
+        #[serde(skip)]
         metadata: Option<Arc<Metadata>>,
     },
 
     /// If-then-else - (if cond then else)
     If {
         base: NodeBase,
+        #[serde(
+            serialize_with = "crate::serde_helpers::serialize_arc",
+            deserialize_with = "crate::serde_helpers::deserialize_arc"
+        )]
         condition: Arc<MettaNode>,
+        #[serde(
+            serialize_with = "crate::serde_helpers::serialize_arc",
+            deserialize_with = "crate::serde_helpers::deserialize_arc"
+        )]
         consequence: Arc<MettaNode>,
+        #[serde(
+            serialize_with = "crate::serde_helpers::serialize_option_arc",
+            deserialize_with = "crate::serde_helpers::deserialize_option_arc"
+        )]
         alternative: Option<Arc<MettaNode>>,
+        #[serde(skip)]
         metadata: Option<Arc<Metadata>>,
     },
 
@@ -96,6 +169,7 @@ pub enum MettaNode {
     Bool {
         base: NodeBase,
         value: bool,
+        #[serde(skip)]
         metadata: Option<Arc<Metadata>>,
     },
 
@@ -103,6 +177,7 @@ pub enum MettaNode {
     Integer {
         base: NodeBase,
         value: i64,
+        #[serde(skip)]
         metadata: Option<Arc<Metadata>>,
     },
 
@@ -110,6 +185,7 @@ pub enum MettaNode {
     Float {
         base: NodeBase,
         value: f64,
+        #[serde(skip)]
         metadata: Option<Arc<Metadata>>,
     },
 
@@ -117,12 +193,14 @@ pub enum MettaNode {
     String {
         base: NodeBase,
         value: std::string::String,
+        #[serde(skip)]
         metadata: Option<Arc<Metadata>>,
     },
 
     /// Nil/empty
     Nil {
         base: NodeBase,
+        #[serde(skip)]
         metadata: Option<Arc<Metadata>>,
     },
 
@@ -130,7 +208,12 @@ pub enum MettaNode {
     Error {
         base: NodeBase,
         message: std::string::String,
+        #[serde(
+            serialize_with = "crate::serde_helpers::serialize_arc_vec",
+            deserialize_with = "crate::serde_helpers::deserialize_arc_vec"
+        )]
         children: Vec<Arc<MettaNode>>,
+        #[serde(skip)]
         metadata: Option<Arc<Metadata>>,
     },
 
@@ -138,12 +221,13 @@ pub enum MettaNode {
     Comment {
         base: NodeBase,
         text: std::string::String,
+        #[serde(skip)]
         metadata: Option<Arc<Metadata>>,
     },
 }
 
 /// Type of MeTTa variable
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MettaVariableType {
     /// Regular variable ($x)
     Regular,

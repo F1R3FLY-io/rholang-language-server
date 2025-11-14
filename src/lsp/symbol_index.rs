@@ -3,11 +3,16 @@
 //! This module provides a generalized suffix array over all workspace symbols,
 //! enabling fast substring matching without iterating through all symbols.
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use suffix::SuffixTable;
 use tower_lsp::lsp_types::SymbolInformation;
 use std::sync::Arc;
 
 /// Suffix array-based index for fast symbol substring search
+///
+/// Phase B-3: Custom Serialize/Deserialize implementation.
+/// The suffix_table is reconstructed on deserialization since it can't be serialized
+/// (uses leaked memory for 'static lifetime requirements).
 #[derive(Debug)]
 pub struct SymbolIndex {
     /// Pre-computed workspace symbols (for returning results)
@@ -18,10 +23,56 @@ pub struct SymbolIndex {
 
     /// Suffix table for O(m log n) substring search
     /// Using Box to keep text and table together for lifetime requirements
+    /// Phase B-3: Skipped during serialization, rebuilt on deserialization
     suffix_table: Box<SuffixTable<'static, 'static>>,
 
     /// Maps character positions in concatenated text back to symbol indices
     position_to_symbol: Vec<usize>,
+}
+
+// Phase B-3: Custom serialization for SymbolIndex
+impl Serialize for SymbolIndex {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("SymbolIndex", 3)?;
+
+        // Serialize symbols as plain Vec (unwrap Arc)
+        state.serialize_field("symbols", self.symbols.as_ref())?;
+        state.serialize_field("text", &*self.text)?;
+        state.serialize_field("position_to_symbol", &self.position_to_symbol)?;
+        // Skip suffix_table - will be reconstructed on deserialization
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for SymbolIndex {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct SymbolIndexHelper {
+            symbols: Vec<SymbolInformation>,
+            text: String,
+            position_to_symbol: Vec<usize>,
+        }
+
+        let helper = SymbolIndexHelper::deserialize(deserializer)?;
+
+        // Rebuild suffix table from text (same as in new())
+        let leaked_text: &'static str = Box::leak(helper.text.clone().into_boxed_str());
+        let suffix_table = Box::new(SuffixTable::new(leaked_text));
+
+        Ok(SymbolIndex {
+            symbols: Arc::new(helper.symbols),
+            text: Box::new(helper.text),
+            suffix_table,
+            position_to_symbol: helper.position_to_symbol,
+        })
+    }
 }
 
 impl SymbolIndex {

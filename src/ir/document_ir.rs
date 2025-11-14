@@ -53,12 +53,17 @@ use std::sync::Arc;
 ///     println!("Comment: {}", comment.text);
 /// }
 /// ```
-#[derive(Debug, Clone)]
+/// Phase B-3: Custom serialization for Arc-wrapped root
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DocumentIR {
     /// Primary semantic tree (without comments)
     ///
     /// This is the IR tree used by all semantic analysis, symbol resolution,
     /// and LSP features. Comments are not included to keep it clean.
+    #[serde(
+        serialize_with = "crate::serde_helpers::serialize_arc",
+        deserialize_with = "crate::serde_helpers::deserialize_arc"
+    )]
     pub root: Arc<RholangNode>,
 
     /// Comment channel (sorted by position)

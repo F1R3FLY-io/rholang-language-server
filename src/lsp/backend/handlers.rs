@@ -47,7 +47,8 @@ use crate::ir::transforms::document_symbol_visitor::collect_document_symbols;
 use super::state::RholangBackend;
 use super::state::{DocumentChangeEvent, IndexingTask};
 use super::utils::SemanticTokensBuilder;
-use crate::lsp::models::{LspDocument, LspDocumentHistory, LspDocumentState};
+use super::persistent_cache::{serialize_workspace_cache, deserialize_workspace_cache};
+use crate::lsp::models::{CachedDocument, LspDocument, LspDocumentHistory, LspDocumentState};
 
 #[tower_lsp::async_trait]
 impl LanguageServer for RholangBackend {
@@ -83,7 +84,35 @@ impl LanguageServer for RholangBackend {
                 *root_guard = Some(root_path.clone());
                 drop(root_guard);
 
+                // Phase B-3.3: Try to load persistent cache (warm start)
+                let cache_loaded = match deserialize_workspace_cache(&root_path) {
+                    Ok(cached_documents) => {
+                        let doc_count = cached_documents.len();
+                        info!("Successfully loaded {} documents from persistent cache", doc_count);
+
+                        // Populate workspace state with cached documents (DashMap API)
+                        for (uri, doc) in cached_documents {
+                            self.workspace.documents.insert(uri, Arc::new(doc));
+                        }
+
+                        // Mark indexing as complete
+                        {
+                            let mut state = self.workspace.indexing_state.write().await;
+                            *state = crate::lsp::models::IndexingState::Complete;
+                        }
+
+                        info!("Warm start complete - {} documents loaded from cache", doc_count);
+                        true
+                    }
+                    Err(e) => {
+                        info!("Failed to load persistent cache ({}), falling back to cold start", e);
+                        false
+                    }
+                };
+
                 // Phase 2 optimization: Count files first, then set indexing state before queuing
+                // Skip indexing if cache was loaded successfully
+                if !cache_loaded {
                 let file_paths: Vec<_> = WalkDir::new(&root_path)
                     .into_iter()
                     .filter_map(|e| e.ok())
@@ -143,7 +172,9 @@ impl LanguageServer for RholangBackend {
                 } else {
                     info!("No .rho files found in workspace");
                 }
+                } // End of !cache_loaded conditional
 
+                // Set up file watcher (regardless of cache status)
                 let tx = self.file_sender.lock().unwrap().clone();
                 let mut watcher = RecommendedWatcher::new(
                     move |res| { let _ = tx.send(res); },
@@ -222,6 +253,31 @@ impl LanguageServer for RholangBackend {
     /// Handles the LSP shutdown request.
     async fn shutdown(&self) -> jsonrpc::Result<()> {
         info!("Received shutdown request");
+
+        // Phase B-3.3: Serialize workspace cache before shutdown
+        if let Some(root_path) = self.root_dir.read().await.as_ref() {
+            info!("Serializing workspace cache to disk...");
+
+            // Collect all cached documents from workspace state (DashMap API)
+            let documents: HashMap<Url, CachedDocument> = self.workspace.documents
+                .iter()
+                .map(|entry| {
+                    let uri = entry.key().clone();
+                    let doc = (**entry.value()).clone();  // Dereference Arc twice: once for entry, once for Arc<CachedDocument>
+                    (uri, doc)
+                })
+                .collect();
+
+            match serialize_workspace_cache(root_path, &documents) {
+                Ok(_) => {
+                    info!("Successfully serialized {} documents to cache", documents.len());
+                }
+                Err(e) => {
+                    // Non-fatal: log error but continue shutdown
+                    warn!("Failed to serialize workspace cache: {} - continuing shutdown", e);
+                }
+            }
+        }
 
         // Signal all background tasks to shut down gracefully
         let _ = self.shutdown_tx.send(());

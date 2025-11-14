@@ -6,6 +6,7 @@ pub mod lsp;
 pub mod metrics;
 pub mod parsers;
 pub mod rnode_apis;
+pub mod serde_helpers;  // Phase B-3: Custom serialization helpers for persistent cache
 pub mod tree_sitter;
 pub mod validators;
 pub mod wire_logger;

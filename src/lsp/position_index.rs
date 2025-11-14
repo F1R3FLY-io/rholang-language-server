@@ -22,6 +22,7 @@
 //! ```
 
 use crate::ir::rholang_node::{Position, RholangNode};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -30,6 +31,8 @@ use std::sync::Arc;
 /// Maps positions to nodes, allowing O(log n) lookup by position.
 /// Multiple nodes can exist at the same position (e.g., parent and child),
 /// so we store a Vec of nodes per position.
+///
+/// Phase B-3: Custom Serialize/Deserialize implementation to handle Arc-wrapped nodes
 #[derive(Debug, Clone)]
 pub struct PositionIndex {
     /// Ordered map: Position -> Nodes at that position
@@ -38,6 +41,55 @@ pub struct PositionIndex {
 
     /// Total number of nodes indexed
     node_count: usize,
+}
+
+// Phase B-3: Custom serialization for PositionIndex
+impl Serialize for PositionIndex {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("PositionIndex", 2)?;
+
+        // Serialize the BTreeMap by converting Arc values
+        let index_serializable: BTreeMap<Position, Vec<&RholangNode>> = self
+            .index
+            .iter()
+            .map(|(pos, nodes)| (*pos, nodes.iter().map(|n| n.as_ref()).collect()))
+            .collect();
+
+        state.serialize_field("index", &index_serializable)?;
+        state.serialize_field("node_count", &self.node_count)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for PositionIndex {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct PositionIndexHelper {
+            index: BTreeMap<Position, Vec<RholangNode>>,
+            node_count: usize,
+        }
+
+        let helper = PositionIndexHelper::deserialize(deserializer)?;
+
+        // Convert deserialized values back to Arc
+        let index = helper
+            .index
+            .into_iter()
+            .map(|(pos, nodes)| (pos, nodes.into_iter().map(Arc::new).collect()))
+            .collect();
+
+        Ok(PositionIndex {
+            index,
+            node_count: helper.node_count,
+        })
+    }
 }
 
 impl PositionIndex {
