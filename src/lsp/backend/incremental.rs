@@ -227,7 +227,7 @@ impl RholangBackend {
 
     /// Persist completion index to disk (Phase B-1.3 integration)
     ///
-    /// Saves the completion dictionaries to `~/.cache/rholang-language-server/completion_index.bin`
+    /// Saves the completion dictionaries to `~/.cache/f1r3fly-io/rholang-language-server/completion_index.bin`
     /// for fast startup on next LSP restart.
     ///
     /// # Performance
@@ -260,7 +260,7 @@ impl RholangBackend {
     /// Load completion index from disk on startup (Phase B-1.3 integration)
     ///
     /// Attempts to load cached completion dictionaries from
-    /// `~/.cache/rholang-language-server/completion_index.bin`.
+    /// `~/.cache/f1r3fly-io/rholang-language-server/completion_index.bin`.
     ///
     /// If cache doesn't exist or deserialization fails, returns None and will rebuild from scratch.
     ///

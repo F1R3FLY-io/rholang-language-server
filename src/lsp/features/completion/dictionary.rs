@@ -536,7 +536,7 @@ impl WorkspaceCompletionIndex {
     /// - File size: ~10KB per 100 symbols (bincode is compact)
     ///
     /// # Cache Location
-    /// - Default: `~/.cache/rholang-language-server/completion_index.bin`
+    /// - Default: `~/.cache/f1r3fly-io/rholang-language-server/completion_index.bin`
     pub fn serialize_to_file(&self, path: &Path) -> std::io::Result<()> {
         // Extract terms from metadata_map (which is synchronized with dynamic_dict)
         let metadata_map = self.metadata_map.read();

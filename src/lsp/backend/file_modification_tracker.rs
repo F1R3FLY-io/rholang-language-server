@@ -8,7 +8,7 @@
 //! # Architecture
 //!
 //! - **In-memory cache**: DashMap for fast concurrent lookups (O(1))
-//! - **Disk persistence**: Bincode-serialized HashMap at `~/.cache/rholang-language-server/file_timestamps.bin`
+//! - **Disk persistence**: Bincode-serialized HashMap at `~/.cache/f1r3fly-io/rholang-language-server/file_timestamps.bin`
 //! - **Filesystem queries**: Uses `std::fs::metadata()` to check current modification time
 //!
 //! # Performance
@@ -41,7 +41,7 @@
 //! # Disk Format
 //!
 //! The tracker uses bincode to serialize the timestamp cache to disk:
-//! - **Location**: `~/.cache/rholang-language-server/file_timestamps.bin`
+//! - **Location**: `~/.cache/f1r3fly-io/rholang-language-server/file_timestamps.bin`
 //! - **Format**: Bincode-serialized `HashMap<String, SystemTime>`
 //! - **Size**: ~40-80 bytes per file (depending on URI length)
 
@@ -66,7 +66,7 @@ pub struct FileModificationTracker {
     timestamps: Arc<DashMap<Url, SystemTime>>,
 
     /// Path to persistent storage (bincode-serialized HashMap)
-    /// Default: ~/.cache/rholang-language-server/file_timestamps.bin
+    /// Default: ~/.cache/f1r3fly-io/rholang-language-server/file_timestamps.bin
     cache_path: PathBuf,
 }
 
@@ -81,15 +81,15 @@ struct TimestampCache {
 impl FileModificationTracker {
     /// Create a new file modification tracker with default cache path
     ///
-    /// Default cache location: `~/.cache/rholang-language-server/file_timestamps.bin`
+    /// Default cache location: `~/.cache/f1r3fly-io/rholang-language-server/file_timestamps.bin`
     ///
     /// # Errors
     /// Returns `io::Error` if cache directory cannot be created
     pub async fn new() -> io::Result<Self> {
         let cache_dir = if let Some(home) = dirs::home_dir() {
-            home.join(".cache").join("rholang-language-server")
+            home.join(".cache").join("f1r3fly-io").join("rholang-language-server")
         } else {
-            PathBuf::from("/tmp/rholang-language-server")
+            PathBuf::from("/tmp/f1r3fly-io/rholang-language-server")
         };
 
         Self::with_cache_dir(cache_dir).await

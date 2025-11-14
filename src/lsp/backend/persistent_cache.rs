@@ -6,7 +6,7 @@
 //! Architecture:
 //! - Serialization format: bincode (compact binary)
 //! - Compression: zstd level 3 (fast compression)
-//! - Cache location: ~/.cache/rholang-language-server/v1/workspace-{hash}/
+//! - Cache location: ~/.cache/f1r3fly-io/rholang-language-server/v1/workspace-{hash}/
 //! - Invalidation: mtime + content hash verification
 //!
 //! Expected Performance:
@@ -20,6 +20,8 @@
 //! - Atomic writes: Uses tmp file + rename to avoid corruption
 
 use crate::ir::rholang_node::RholangNode;
+use crate::ir::metta_node::MettaNode;
+use crate::ir::semantic_node::Position;
 use crate::ir::symbol_table::SymbolTable;
 use crate::ir::DocumentIR;
 use crate::lsp::models::{CachedDocument, DocumentLanguage};
@@ -41,7 +43,7 @@ use tracing::debug;
 ///
 /// Increment this when making breaking changes to SerializableCachedDocument
 /// to invalidate old caches automatically.
-const CACHE_VERSION: u32 = 1;
+pub const CACHE_VERSION: u32 = 1;
 
 /// Cache metadata stored in metadata.json
 #[derive(Debug, Serialize, Deserialize)]
@@ -71,31 +73,62 @@ pub struct CacheMetadata {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SerializableCachedDocument {
     /// Rholang-specific IR (primary semantic tree)
+    #[serde(
+        serialize_with = "crate::serde_helpers::serialize_arc",
+        deserialize_with = "crate::serde_helpers::deserialize_arc"
+    )]
     pub ir: Arc<RholangNode>,
 
     /// Document IR with comment channel (if present)
+    #[serde(
+        serialize_with = "crate::serde_helpers::serialize_option_arc",
+        deserialize_with = "crate::serde_helpers::deserialize_option_arc"
+    )]
     pub document_ir: Option<Arc<DocumentIR>>,
 
-    /// MeTTa-specific IR (only for MeTTa files)
-    /// Note: Currently not serialized as MeTTa support is being phased out
-    #[serde(skip)]
-    pub metta_ir: Option<()>,
+    /// MeTTa-specific IR (only for MeTTa files and virtual documents)
+    ///
+    /// Phase B-3: Research confirms MeTTa is actively supported, especially for
+    /// embedded language use in virtual documents. Serializing this IR is critical
+    /// for maintaining cache effectiveness for Rholang files with embedded MeTTa.
+    #[serde(
+        serialize_with = "crate::serde_helpers::serialize_option_arc_vec",
+        deserialize_with = "crate::serde_helpers::deserialize_option_arc_vec"
+    )]
+    pub metta_ir: Option<Vec<Arc<MettaNode>>>,
 
     /// Position-indexed AST for O(log n) lookups
     ///
     /// Phase 6 optimization: Serializing this avoids rebuilding on load
+    #[serde(
+        serialize_with = "crate::serde_helpers::serialize_arc",
+        deserialize_with = "crate::serde_helpers::deserialize_arc"
+    )]
     pub position_index: Arc<PositionIndex>,
 
     /// Symbol table for this document
+    #[serde(
+        serialize_with = "crate::serde_helpers::serialize_arc",
+        deserialize_with = "crate::serde_helpers::deserialize_arc"
+    )]
     pub symbol_table: Arc<SymbolTable>,
 
     /// Inverted index for find-references and rename
-    pub inverted_index: HashMap<String, Vec<tower_lsp::lsp_types::Location>>,
+    /// Maps declaration position -> reference positions
+    pub inverted_index: HashMap<Position, Vec<Position>>,
 
     /// Suffix array-based symbol index
+    #[serde(
+        serialize_with = "crate::serde_helpers::serialize_arc",
+        deserialize_with = "crate::serde_helpers::deserialize_arc"
+    )]
     pub symbol_index: Arc<SymbolIndex>,
 
     /// Position mappings for IR nodes
+    #[serde(
+        serialize_with = "crate::serde_helpers::serialize_arc",
+        deserialize_with = "crate::serde_helpers::deserialize_arc"
+    )]
     pub positions: Arc<HashMap<usize, (crate::ir::semantic_node::Position, crate::ir::semantic_node::Position)>>,
 
     /// Document version number
@@ -133,7 +166,7 @@ impl SerializableCachedDocument {
         Ok(Self {
             ir: doc.ir.clone(),
             document_ir: doc.document_ir.clone(),
-            metta_ir: None,  // Skip MeTTa IR (not serialized)
+            metta_ir: doc.metta_ir.clone(),  // Serialize MeTTa IR (Phase B-3 correction)
             position_index: doc.position_index.clone(),
             symbol_table: doc.symbol_table.clone(),
             inverted_index: doc.inverted_index.clone(),
@@ -176,7 +209,7 @@ impl SerializableCachedDocument {
             ir: self.ir,
             position_index: self.position_index,
             document_ir: self.document_ir,
-            metta_ir: None,  // MeTTa IR not persisted
+            metta_ir: self.metta_ir,  // MeTTa IR restored from cache (Phase B-3 correction)
             unified_ir,
             language: self.language,
             tree,
@@ -230,7 +263,7 @@ impl SerializableCachedDocument {
 
 /// Get the workspace-specific cache directory
 ///
-/// Structure: ~/.cache/rholang-language-server/v{VERSION}/workspace-{hash}/
+/// Structure: ~/.cache/f1r3fly-io/rholang-language-server/v{VERSION}/workspace-{hash}/
 ///
 /// where {hash} is blake3(workspace_root_path) to ensure separate caches
 /// for different projects.
@@ -238,6 +271,7 @@ pub fn get_workspace_cache_dir(workspace_root: &Path) -> Result<PathBuf> {
     // Get base cache directory (platform-specific)
     let base_dir = dirs::cache_dir()
         .ok_or_else(|| anyhow::anyhow!("Failed to determine cache directory"))?
+        .join("f1r3fly-io")
         .join("rholang-language-server");
 
     // Version-specific subdirectory
@@ -258,6 +292,209 @@ fn is_cache_compatible(metadata: &CacheMetadata) -> bool {
     metadata.version == CACHE_VERSION
 }
 
+/// Serialize and persist workspace cache to disk
+///
+/// Writes the cache using:
+/// - bincode for compact binary serialization
+/// - zstd compression (level 3) for 3x size reduction
+/// - Atomic write pattern (tmp file + rename) for crash safety
+///
+/// # Arguments
+/// * `workspace_root` - Workspace root directory (for cache dir computation)
+/// * `documents` - Map of URI -> CachedDocument to serialize
+///
+/// # Returns
+/// Ok(()) on success, Err on any I/O or serialization error
+///
+/// # Performance
+/// Expected: ~100-300ms for 100 documents (dominated by disk I/O)
+pub fn serialize_workspace_cache(
+    workspace_root: &Path,
+    documents: &HashMap<Url, CachedDocument>,
+) -> Result<()> {
+    let cache_dir = get_workspace_cache_dir(workspace_root)?;
+
+    // Ensure cache directory exists
+    fs::create_dir_all(&cache_dir)
+        .with_context(|| format!("Failed to create cache directory: {:?}", cache_dir))?;
+
+    debug!("Serializing workspace cache to {:?} ({} documents)", cache_dir, documents.len());
+
+    // Convert CachedDocument -> SerializableCachedDocument
+    let mut serializable_docs = HashMap::new();
+    for (uri, doc) in documents {
+        match SerializableCachedDocument::from_cached_document(doc, uri.clone()) {
+            Ok(serializable) => {
+                serializable_docs.insert(uri.clone(), serializable);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to convert document to serializable form: {} - {}", uri, e);
+                // Continue with other documents (graceful degradation)
+            }
+        }
+    }
+
+    // Write metadata.json
+    let metadata = CacheMetadata {
+        version: CACHE_VERSION,
+        created_at: SystemTime::now(),
+        entry_count: serializable_docs.len(),
+        language_server_version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+
+    let metadata_path = cache_dir.join("metadata.json");
+    let metadata_tmp_path = cache_dir.join(".metadata.json.tmp");
+
+    let metadata_json = serde_json::to_string_pretty(&metadata)
+        .context("Failed to serialize cache metadata")?;
+    fs::write(&metadata_tmp_path, metadata_json)
+        .with_context(|| format!("Failed to write metadata to {:?}", metadata_tmp_path))?;
+    fs::rename(&metadata_tmp_path, &metadata_path)
+        .with_context(|| format!("Failed to atomically rename metadata file"))?;
+
+    // Serialize each document to separate file
+    for (uri, doc) in &serializable_docs {
+        // Create safe filename from URI
+        let uri_hash = blake3::hash(uri.as_str().as_bytes());
+        let filename = format!("{}.cache", uri_hash.to_hex());
+        let cache_file_path = cache_dir.join(&filename);
+        let tmp_cache_file_path = cache_dir.join(format!(".{}.tmp", filename));
+
+        // Serialize with bincode
+        let serialized = bincode::serialize(doc)
+            .with_context(|| format!("Failed to serialize document: {}", uri))?;
+
+        // Compress with zstd (level 3 for fast compression)
+        let compressed = zstd::encode_all(&serialized[..], 3)
+            .with_context(|| format!("Failed to compress document: {}", uri))?;
+
+        // Atomic write: tmp file + rename
+        fs::write(&tmp_cache_file_path, &compressed)
+            .with_context(|| format!("Failed to write cache file: {:?}", tmp_cache_file_path))?;
+        fs::rename(&tmp_cache_file_path, &cache_file_path)
+            .with_context(|| format!("Failed to atomically rename cache file for: {}", uri))?;
+    }
+
+    debug!("Successfully serialized {} documents to cache", serializable_docs.len());
+    Ok(())
+}
+
+/// Deserialize workspace cache from disk
+///
+/// Loads the cache with:
+/// - zstd decompression
+/// - bincode deserialization
+/// - Validation (version check + mtime check)
+///
+/// # Arguments
+/// * `workspace_root` - Workspace root directory (for cache dir computation)
+///
+/// # Returns
+/// Ok(HashMap<Url, CachedDocument>) on success, Err if cache doesn't exist or is invalid
+///
+/// # Performance
+/// Expected: ~100-300ms for 100 documents (dominated by disk I/O + text reconstruction)
+///
+/// # Graceful Degradation
+/// Returns error on any validation failure, triggering cold start fallback
+pub fn deserialize_workspace_cache(
+    workspace_root: &Path,
+) -> Result<HashMap<Url, CachedDocument>> {
+    let cache_dir = get_workspace_cache_dir(workspace_root)?;
+
+    // Check if cache directory exists
+    if !cache_dir.exists() {
+        debug!("Cache directory does not exist: {:?}", cache_dir);
+        anyhow::bail!("Cache directory not found");
+    }
+
+    debug!("Deserializing workspace cache from {:?}", cache_dir);
+
+    // Read and validate metadata
+    let metadata_path = cache_dir.join("metadata.json");
+    if !metadata_path.exists() {
+        debug!("Cache metadata not found: {:?}", metadata_path);
+        anyhow::bail!("Cache metadata not found");
+    }
+
+    let metadata_json = fs::read_to_string(&metadata_path)
+        .with_context(|| format!("Failed to read metadata from {:?}", metadata_path))?;
+    let metadata: CacheMetadata = serde_json::from_str(&metadata_json)
+        .context("Failed to deserialize cache metadata")?;
+
+    // Version compatibility check
+    if !is_cache_compatible(&metadata) {
+        debug!(
+            "Cache version mismatch: cached={}, current={}",
+            metadata.version, CACHE_VERSION
+        );
+        anyhow::bail!("Cache version incompatible");
+    }
+
+    debug!(
+        "Cache metadata valid: version={}, entry_count={}, created={:?}",
+        metadata.version, metadata.entry_count, metadata.created_at
+    );
+
+    // Deserialize all cache files
+    let mut documents = HashMap::new();
+    let cache_files: Vec<_> = fs::read_dir(&cache_dir)
+        .with_context(|| format!("Failed to read cache directory: {:?}", cache_dir))?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry.path().extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext == "cache")
+                .unwrap_or(false)
+        })
+        .collect();
+
+    debug!("Found {} cache files to deserialize", cache_files.len());
+
+    for entry in cache_files {
+        let cache_file_path = entry.path();
+
+        match deserialize_single_document(&cache_file_path) {
+            Ok((uri, doc)) => {
+                documents.insert(uri, doc);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to deserialize cache file {:?}: {}", cache_file_path, e);
+                // Continue with other files (graceful degradation)
+            }
+        }
+    }
+
+    debug!("Successfully deserialized {} documents from cache", documents.len());
+    Ok(documents)
+}
+
+/// Helper function to deserialize a single cached document
+fn deserialize_single_document(cache_file_path: &Path) -> Result<(Url, CachedDocument)> {
+    // Read compressed file
+    let compressed_data = fs::read(cache_file_path)
+        .with_context(|| format!("Failed to read cache file: {:?}", cache_file_path))?;
+
+    // Decompress with zstd
+    let decompressed = zstd::decode_all(&compressed_data[..])
+        .with_context(|| format!("Failed to decompress cache file: {:?}", cache_file_path))?;
+
+    // Deserialize with bincode
+    let serializable_doc: SerializableCachedDocument = bincode::deserialize(&decompressed)
+        .with_context(|| format!("Failed to deserialize cache file: {:?}", cache_file_path))?;
+
+    // Validate cache entry (mtime check)
+    if !serializable_doc.is_valid()? {
+        anyhow::bail!("Cache entry invalid (file modified)");
+    }
+
+    // Reconstruct CachedDocument
+    let uri = serializable_doc.uri.clone();
+    let doc = serializable_doc.to_cached_document()?;
+
+    Ok((uri, doc))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,8 +509,9 @@ mod tests {
         let workspace_root = Path::new("/home/user/myproject");
         let cache_dir = get_workspace_cache_dir(workspace_root).unwrap();
 
-        // Check that cache dir contains version and workspace hash
+        // Check that cache dir contains f1r3fly-io parent, version and workspace hash
         let cache_dir_str = cache_dir.to_string_lossy();
+        assert!(cache_dir_str.contains("f1r3fly-io"));
         assert!(cache_dir_str.contains("rholang-language-server"));
         assert!(cache_dir_str.contains(&format!("v{}", CACHE_VERSION)));
         assert!(cache_dir_str.contains("workspace-"));
