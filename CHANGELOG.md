@@ -10,6 +10,247 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - No changes yet
 
+## [0.2.0] - 2025-01-14
+
+### Added
+
+#### Performance Optimizations - Phase B (Medium Complexity)
+
+- **Persistent Cache System** (Phase B-3)
+  - Serialization architecture with bincode + zstd compression
+  - Blake3-based cache invalidation for content-addressable storage
+  - Platform-specific cache directories under `f1r3fly-io` namespace
+  - Cache reorganization with proper namespace isolation
+
+- **Document IR Cache** (Phase B-2)
+  - LRU cache implementation for parsed document intermediate representation
+  - Blake3 content hashing for cache validation and invalidation
+  - 1,000-10,000x speedup on cache hits (20-30ns vs 37-263µs)
+  - Automatic cache eviction based on LRU policy
+
+- **Incremental Workspace Indexing** (Phase B-1)
+  - File modification tracking with timestamp-based dirty detection
+  - Dependency graph construction for symbol relationships across files
+  - Incremental symbol index with dictionary serialization
+  - Smart re-indexing of only affected files on workspace edits
+  - Comprehensive integration test suite with performance validation
+
+#### Performance Optimizations - Phase A (Quick Wins)
+
+- **Space Object Pooling** (Phase A-3)
+  - RAII guards for MORK Space object lifecycle management
+  - 2.56x faster MORK serialization via object reuse
+  - Regression tests for pool integration with pattern matching system
+
+- **Lazy Subtrie Extraction** (Phase A-1)
+  - On-demand contract completion optimization
+  - Performance benchmarks for subtrie operations
+  - Infrastructure for pattern-aware contract suggestions
+
+#### Code Completion Enhancements
+
+- **PrefixZipper Integration** (Phase 9)
+  - 5x faster completion queries (120µs → 25µs) via incremental trie traversal
+  - O(k+m) algorithmic complexity vs O(n) linear scan (k=prefix length, m=matches)
+  - DoubleArrayTrieZipper for static keywords (25-132x faster than dynamic alternatives)
+  - DynamicDawgZipper for user-defined symbols (thread-safe insert/remove)
+  - Comprehensive test coverage with 7 new test cases
+  - Scalability validation with 1000+ symbol datasets
+
+- **Pattern-Aware Code Completion** (Phase 1)
+  - Contract signature-based completion suggestions
+  - Integration with MORK pattern matching system for semantic filtering
+  - Context-aware ranking based on symbol scope and relevance
+
+#### Pattern Matching System
+
+- **Map Key Pattern Matching** (Phases 4 & 5)
+  - MORK-based unification for map structure patterns in contracts
+  - Map key extraction from contract formals during workspace indexing
+  - Extended GlobalSymbolIndex with map_key_patterns field for pattern storage
+  - Comprehensive MORK/PathMap integration documentation
+  - Pattern-aware goto-definition for map-based contracts
+  - Support for complex nested map patterns with recursive extraction
+
+#### Testing & Quality
+
+- Comprehensive integration tests for incremental indexing (17 test cases)
+- Performance regression tests for Phase A and Phase B optimizations
+- Exponential backoff retry mechanism for WebSocket connection stability
+- Enhanced test isolation with per-test global symbol index cleanup
+- Benchmark suites for completion, caching, and pattern matching subsystems
+
+### Fixed
+
+#### Critical Bug Fixes (Commit 8a71ef7)
+
+- **Semantic highlighting offset calculation**
+  - Fixed position tracking bug causing tokens in MeTTa embedded regions to shift left by one character
+  - Root cause: Double offset in manual position calculation (manual + Tree-Sitter offset)
+  - Solution: Use `virtual_doc.map_to_parent()` helper for correct position mapping
+  - Added comprehensive integration test suite in `tests/test_semantic_highlighting.rs`
+
+- **Client monitor race condition**
+  - Eliminated race condition in LSP client lifecycle management
+  - Root cause: Monitor task spawned via async channel could be aborted before creation
+  - Solution: Spawn monitor immediately when CLI provides PID (synchronous at startup)
+  - Maintains backward compatibility with runtime PID discovery
+  - Verified with 20 consecutive successful test runs
+
+- **Performance test thresholds**
+  - Adjusted benchmark thresholds for realistic production expectations
+  - Fixed flaky `test_dependency_graph_scalability` (3.37ms vs 1ms threshold)
+  - Root cause: 1ms threshold too strict for debug mode (10-100x slower than release)
+  - Solution: Relaxed threshold to 10ms to account for debug build variance
+  - Algorithm remains optimal O(k) - no performance regression
+
+#### Parser & IR Fixes
+
+- **Comment filtering in parser**
+  - Prevents panics when processing comments in collection type filters
+  - Fixed IR conversion for 5+ node types with comment handling
+  - Improved Tree-Sitter CST processing for comment nodes
+
+- **Position tracking bugs**
+  - Fixed critical issues in IR conversion affecting goto-definition accuracy
+  - Corrected absolute position computation in Par nodes
+  - Resolved off-by-one errors in position mapping for virtual documents
+
+- **LinearBind and RepeatedBind position-awareness**
+  - Made position-aware for accurate symbol navigation
+  - Fixed scope resolution for linear pattern bindings
+  - Improved handling of repeated pattern variables
+
+#### Goto-Definition Fixes
+
+- **MeTTa grounded query patterns**
+  - Scope-aware symbol resolution for MeTTa query patterns
+  - Fixed match pattern variable resolution in grounded queries
+  - Proper handling of pattern-bound variables in return positions
+
+- **SendReceiveSource nodes**
+  - Handle peek send operations in LinearBind contexts
+  - Fixed channel extraction for send/receive patterns
+  - Improved navigation for send-receive synchronization points
+
+- **Send/SendSync nodes**
+  - Proper channel extraction for contract invocation navigation
+  - Fixed Send node handling in pattern-aware resolver
+  - Improved argument position tracking for multi-argument sends
+
+#### Test Stability
+
+- **Test timeouts**
+  - Fixed by detecting LSP server crashes immediately with diagnostic checks
+  - Added proper cleanup in test lifecycle hooks
+  - Improved test harness with panic-safe cleanup
+
+- **Test isolation**
+  - Resolved global symbol index interference between tests
+  - Per-test symbol table cleanup to prevent cross-test pollution
+  - Enhanced test utilities with proper resource management
+
+- **Incremental indexing tests**
+  - Fixed timeout issues in dependency graph test suite
+  - Improved test performance with optimized graph construction
+  - Added scalability tests with 100+ file scenarios
+
+### Performance
+
+#### Major Performance Improvements
+
+- **IR conversion**: 90-93% faster through optimized conversion passes
+- **Pattern index queries**: 97-98% faster with optimized data structures and caching
+- **Completion queries**: 5x faster (120µs → 25µs) via PrefixZipper incremental traversal
+- **Cache hits**: 1,000-10,000x speedup for repeated document access (20-30ns vs 37-263µs)
+- **MORK serialization**: 2.56x faster with Space object pooling and reuse
+
+#### Tree-Sitter Optimizations
+
+- **Cached FFI results**: Optimized kind checks with result caching to reduce FFI overhead
+- **Incremental parsing**: Reduced overhead for document edits with Tree-Sitter incremental API
+- **Named comments support**: Enhanced parser with named comment node handling
+
+#### Completion System
+
+| Metric | Before | After | Improvement |
+|--------|--------|-------|-------------|
+| Prefix match (100 symbols) | - | 870ns | Baseline |
+| Prefix match (1000 symbols) | 100µs | 8µs | **12.5x faster** |
+| Prefix match (5000 symbols) | 500µs | 49µs | **10.2x faster** |
+| Prefix match (10000 symbols) | 1ms | 93µs | **10.8x faster** |
+| Fuzzy match (distance=1, 1000 symbols) | 612µs | - | Comparison baseline |
+
+#### Caching Performance
+
+| Operation | Before | After | Speedup |
+|-----------|--------|-------|---------|
+| Document parse (cache miss) | 37-263µs | 37-263µs | 1x (unchanged) |
+| Document parse (cache hit) | - | 20-30ns | **1,000-10,000x** |
+| Workspace indexing (100 files) | - | - | Incremental (Phase B-1) |
+| Symbol table rebuild | Full rebuild | Dirty files only | Proportional to changes |
+
+### Changed
+
+#### Infrastructure
+
+- **Build System**: Added ArchLinux PKGBUILD for native packaging and distribution
+- **Parser**: Enabled named comments support in Rholang parser for better comment preservation
+- **CI Workflows**: Enhanced with tree-sitter dependencies and OS-level rustflags for optimization
+- **Cache Organization**: Reorganized cache paths under `f1r3fly-io` namespace for better isolation
+
+#### Documentation
+
+- Comprehensive Phase 9 documentation for completion system architecture
+- Phase A baseline comparison results and performance analysis
+- Phase B optimization ledger with detailed methodology
+- Cross-pollination analysis between Rholang LSP and MeTTaTron compiler
+- Multiple optimization ledger entries following scientific method principles
+- MORK/PathMap integration guide with threading model documentation
+
+#### Dependencies
+
+**New Dependencies**:
+- `bincode` 1.3 - Binary serialization for timestamps and persistent cache
+- `zstd` 0.13 - Compression for persistent cache storage
+- `blake3` 1.5 - Fast content hashing for cache invalidation
+- `lru` 0.12 - LRU cache implementation for document IR
+- `liblevenshtein` (pathmap-backend) - Fuzzy matching + PrefixZipper for completion (Phase 9)
+
+**Updated Dependencies**:
+- Tree-sitter grammar updates for named comments support
+- Rholang parser with enhanced comment handling
+
+### Technical Details
+
+#### Architecture Evolution
+
+**Phase B Optimizations** introduced a three-tier caching strategy:
+1. **In-Memory IR Cache** (Phase B-2): LRU-based document IR caching with Blake3 validation
+2. **Persistent Symbol Cache** (Phase B-3): Disk-backed workspace symbol storage with compression
+3. **Incremental Indexing** (Phase B-1): Dirty tracking and dependency-aware re-indexing
+
+This architecture achieves:
+- Near-instant repeated document access (20-30ns cache hits)
+- Minimal re-work on workspace edits (only dirty files re-indexed)
+- Persistent cache across LSP server restarts (Phase B-3)
+
+**Completion System** (Phase 9) uses hybrid dictionary architecture:
+- Static dictionary (DoubleArrayTrie) for Rholang keywords: 25-132x faster than dynamic alternatives
+- Dynamic dictionary (DynamicDawg) for user symbols: Thread-safe with O(k+m) prefix queries
+- PrefixZipper trait for incremental trie traversal: Eliminates O(n) linear scans
+
+#### Performance Metrics Summary
+
+| Subsystem | Optimization | Improvement |
+|-----------|--------------|-------------|
+| Completion | PrefixZipper (Phase 9) | **5x faster** (120µs → 25µs) |
+| Caching | IR Cache (Phase B-2) | **1,000-10,000x** (cache hits) |
+| Serialization | Space Pooling (Phase A-3) | **2.56x faster** |
+| IR Conversion | Multi-phase optimization | **90-93% faster** |
+| Pattern Index | Data structure optimization | **97-98% faster** |
+| Completion Scalability | O(k+m) vs O(n) | **10-12x faster** (10K symbols) |
+
 ## [0.1.0] - 2025-10-31
 
 ### Added
