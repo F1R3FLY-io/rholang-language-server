@@ -2595,6 +2595,17 @@ impl super::super::semantic_node::SemanticNode for RholangNode {
             RholangNode::Map { pairs, .. } => pairs.len() * 2, // key + value for each pair
             RholangNode::Tuple { elements, .. } => elements.len(),
 
+            // Binding nodes (for comprehensions)
+            RholangNode::LinearBind { names, remainder, source, .. } => {
+                names.len() + (if remainder.is_some() { 1 } else { 0 }) + 1 // names + remainder? + source
+            }
+            RholangNode::RepeatedBind { names, remainder, source, .. } => {
+                names.len() + (if remainder.is_some() { 1 } else { 0 }) + 1
+            }
+            RholangNode::PeekBind { names, remainder, source, .. } => {
+                names.len() + (if remainder.is_some() { 1 } else { 0 }) + 1
+            }
+
             // Leaf nodes and nodes we'll skip for now
             _ => 0,
         }
@@ -2777,6 +2788,29 @@ impl super::super::semantic_node::SemanticNode for RholangNode {
             }
             RholangNode::Tuple { elements, .. } => {
                 elements.get(index).map(|e| &**e as &dyn super::super::semantic_node::SemanticNode)
+            }
+
+            // Binding nodes (for comprehensions)
+            RholangNode::LinearBind { names, remainder, source, .. }
+            | RholangNode::RepeatedBind { names, remainder, source, .. }
+            | RholangNode::PeekBind { names, remainder, source, .. } => {
+                if index < names.len() {
+                    Some(&**names.get(index)?)
+                } else if let Some(rem) = remainder {
+                    if index == names.len() {
+                        Some(&**rem)
+                    } else if index == names.len() + 1 {
+                        Some(&**source)
+                    } else {
+                        None
+                    }
+                } else {
+                    if index == names.len() {
+                        Some(&**source)
+                    } else {
+                        None
+                    }
+                }
             }
 
             // Leaf nodes and unhandled return None
