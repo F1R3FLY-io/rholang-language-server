@@ -340,3 +340,65 @@ new statusCh in {
     client.close_document(&doc).expect("Failed to close document");
     println!("✓ Test completed");
 });
+
+/// Test renaming contract parameter by clicking INSIDE the identifier
+///
+/// This tests the specific issue reported where clicking inside @fromRoom
+/// (e.g., at character 36 instead of 33) should still work.
+with_lsp_client!(test_rename_contract_param_inside_identifier, CommType::Stdio, |client: &LspClient| {
+    println!("\n=== Test: Rename contract parameter (click inside identifier) ===");
+
+    let source = r#"
+contract robotAPI(@"find_path", @fromRoom, @toRoom, ret) = {
+  new result in {
+    fromRoom!(result) |
+    for (@msg <- result) {
+      ret!(msg)
+    }
+  }
+}
+"#;
+
+    let doc = client.open_document("/test/contract_param_inside_test.rho", source)
+        .expect("Failed to open document");
+
+    let _diagnostics = client.await_diagnostics(&doc)
+        .expect("Failed to receive diagnostics");
+
+    // Click INSIDE the identifier "fromRoom" (not at the beginning)
+    // Line 1: contract robotAPI(@"find_path", @fromRoom, @toRoom, ret) = {
+    // Position 36 is in the middle of "fromRoom" (the 'o')
+    let inside_identifier_position = Position {
+        line: 1,
+        character: 36,  // Inside "fromRoom", not at the @
+    };
+
+    println!("Renaming @fromRoom to @sourceRoom (clicking inside identifier at column 36)");
+
+    match client.rename(&doc.uri(), inside_identifier_position, "sourceRoom") {
+        Ok(workspace_edit) => {
+            if let Some(changes) = workspace_edit.changes {
+                let doc_uri = doc.uri().parse().expect("Valid URI");
+                if let Some(text_edits) = changes.get(&doc_uri) {
+                    // Should rename: parameter + usage in body
+                    assert!(text_edits.len() >= 2,
+                        "Expected at least 2 edits (param + usage), got {}", text_edits.len());
+
+                    // Verify all edits contain the new name
+                    for edit in text_edits {
+                        assert!(edit.new_text.contains("sourceRoom"),
+                            "Edit should contain new name 'sourceRoom', got: {}", edit.new_text);
+                    }
+
+                    println!("✓ Contract parameter renamed successfully ({} edits)", text_edits.len());
+                }
+            }
+        }
+        Err(e) => {
+            panic!("✗ Contract parameter rename (inside identifier) failed: {}", e);
+        }
+    }
+
+    client.close_document(&doc).expect("Failed to close document");
+    println!("✓ Test completed");
+});

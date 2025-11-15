@@ -61,6 +61,105 @@ impl GenericReferences {
         current_table
     }
 
+    /// Resolve the position for symbol lookup when dealing with quoted parameters
+    ///
+    /// When a user clicks inside a quoted parameter like `@fromRoom`, the node finder
+    /// might return the Var node (for `fromRoom`) instead of the Quote node (for `@fromRoom`).
+    /// However, the symbol table stores the position of the Quote node.
+    ///
+    /// This function walks up the tree to find if there's a Quote parent at the same position,
+    /// and if so, returns the Quote's position for symbol lookup.
+    ///
+    /// # Arguments
+    /// * `root` - Root node of the semantic tree
+    /// * `node` - The node found at the position (might be Var inside Quote)
+    /// * `position` - The original position where the user clicked
+    ///
+    /// # Returns
+    /// The position to use for symbol table lookup (Quote position if applicable, else original)
+    fn resolve_symbol_position(
+        root: &dyn SemanticNode,
+        node: &dyn SemanticNode,
+        position: &Position,
+    ) -> Position {
+        use crate::ir::rholang_node::RholangNode;
+
+        // Check if this is a Var node
+        if let Some(rholang_node) = node.as_any().downcast_ref::<RholangNode>() {
+            if let RholangNode::Var { .. } = rholang_node {
+                // This is a Var - check if there's a Quote parent
+                if let Some(quote_pos) = Self::find_quote_parent_position(root, position) {
+                    debug!(
+                        "Resolved Var position {:?} to Quote position {:?}",
+                        position, quote_pos
+                    );
+                    return quote_pos;
+                }
+            }
+        }
+
+        // Not a Var, or no Quote parent - use original position
+        *position
+    }
+
+    /// Find if there's a Quote node that contains the given position
+    ///
+    /// This is a helper for `resolve_symbol_position` that walks the tree to find
+    /// a Quote node whose child (a Var) is at the target position.
+    fn find_quote_parent_position(root: &dyn SemanticNode, target: &Position) -> Option<Position> {
+        Self::find_quote_parent_recursive(root, target, &Position { row: 0, column: 0, byte: 0 })
+    }
+
+    /// Recursive helper for find_quote_parent_position
+    fn find_quote_parent_recursive(
+        node: &dyn SemanticNode,
+        target: &Position,
+        prev_end: &Position,
+    ) -> Option<Position> {
+        use super::node_finder::position_in_range;
+        use crate::ir::rholang_node::RholangNode;
+
+        let start = node.base().start();
+        let end = node.base().end();
+
+        // Check if target position is within this node's span
+        if !position_in_range(target, &start, &end) {
+            return None;
+        }
+
+        // Check if this is a Quote node
+        if let Some(rholang_node) = node.as_any().downcast_ref::<RholangNode>() {
+            if let RholangNode::Quote { quotable, .. } = rholang_node {
+                // Check if the quotable child (Var or StringLiteral) contains our target
+                if let Some(child_node) = quotable.as_ref().as_any().downcast_ref::<RholangNode>() {
+                    match child_node {
+                        RholangNode::Var { .. } | RholangNode::StringLiteral { .. } => {
+                            let child_start = quotable.base().start();
+                            let child_end = quotable.base().end();
+
+                            // If target is inside the Var/StringLiteral, return Quote's position
+                            if position_in_range(target, &child_start, &child_end) {
+                                return Some(start); // Return Quote's position
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Recursively search children
+        for i in 0..node.children_count() {
+            if let Some(child) = node.child_at(i) {
+                if let Some(quote_pos) = Self::find_quote_parent_recursive(child, target, &start) {
+                    return Some(quote_pos);
+                }
+            }
+        }
+
+        None
+    }
+
     /// Find all references to a symbol at the given position
     ///
     /// # Arguments
@@ -115,6 +214,11 @@ impl GenericReferences {
             }
         }
 
+        // Resolve the position for symbol lookup
+        // If this is a Var inside a Quote (e.g., user clicked inside @fromRoom),
+        // use the Quote's position since that's where the symbol is stored
+        let lookup_position = Self::resolve_symbol_position(root, node, position);
+
         // Extract symbol name
         let symbol_name = self.extract_symbol_name(node)?;
         debug!("Finding references for symbol '{}'", symbol_name);
@@ -127,7 +231,7 @@ impl GenericReferences {
             .cloned()
             .or_else(|| {
                 // Node doesn't have symbol table, search for nearest ancestor with one
-                Self::find_ancestor_symbol_table(root, position)
+                Self::find_ancestor_symbol_table(root, &lookup_position)
             })
             .unwrap_or_else(|| symbol_table.clone());
 
