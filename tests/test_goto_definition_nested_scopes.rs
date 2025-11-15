@@ -177,9 +177,9 @@ with_lsp_client!(test_goto_definition_fromroom_contract_param, CommType::Stdio, 
     // Expected definition: line 203 (1-indexed) = line 202 (0-indexed)
     // contract robotAPI(@"all_connections", @fromRoom, ret) = {
     // The @ symbol is at character 40, the 'f' in fromRoom is at character 41
-    // Definition should point to the @ symbol (start of the Quote node)
+    // Definition should point to the identifier (start of the Var node)
     let expected_line = 202u32;
-    let expected_char = 40u32;  // The @ symbol before fromRoom
+    let expected_char = 41u32;  // The identifier 'fromRoom'
 
     println!("\n=== Test Details ===");
     println!("Usage position: line {} (0-indexed), character {} (0-indexed)",

@@ -45,15 +45,15 @@ with_lsp_client!(test_goto_definition_destroom_validate_plan, CommType::Stdio, |
     let usage_line = 302u32;
     let usage_char = 67u32;
 
-    // Expected definition: line 298, column 52 (1-indexed) - validate_plan contract's @destRoom
-    // In LSP (0-indexed): line 297, character 51 (the @ symbol, start of Quote node)
+    // Expected definition: line 298, column 53 (1-indexed) - validate_plan contract's @destRoom
+    // In LSP (0-indexed): line 297, character 52 (the identifier, start of Var node)
     let expected_line = 297u32;
-    let expected_char = 51u32;
+    let expected_char = 52u32;
 
-    // Wrong definition to check against: line 279, column 55 (1-indexed) - transport_object contract's @destRoom
-    // In LSP (0-indexed): line 278, character 54 (the @ symbol)
+    // Wrong definition to check against: line 279, column 56 (1-indexed) - transport_object contract's @destRoom
+    // In LSP (0-indexed): line 278, character 55 (the identifier)
     let wrong_line = 278u32;
-    let wrong_char = 54u32;
+    let wrong_char = 55u32;
 
     println!("\n=== Test Details ===");
     println!("Usage position: line {} (0-indexed), character {} (0-indexed)", usage_line, usage_char);
@@ -190,15 +190,15 @@ with_lsp_client!(test_goto_definition_destroom_transport_object, CommType::Stdio
     let usage_line = 283u32;
     let usage_char = 67u32;
 
-    // Expected definition: line 279, column 55 (1-indexed) - transport_object contract's @destRoom
-    // In LSP (0-indexed): line 278, character 54 (the @ symbol, start of Quote node)
+    // Expected definition: line 279, column 56 (1-indexed) - transport_object contract's @destRoom
+    // In LSP (0-indexed): line 278, character 55 (the identifier, start of Var node)
     let expected_line = 278u32;
-    let expected_char = 54u32;
+    let expected_char = 55u32;
 
-    // Wrong definition to check against: line 298, column 52 (1-indexed) - validate_plan contract's @destRoom
-    // In LSP (0-indexed): line 297, character 51 (the @ symbol)
+    // Wrong definition to check against: line 298, column 53 (1-indexed) - validate_plan contract's @destRoom
+    // In LSP (0-indexed): line 297, character 52 (the identifier)
     let wrong_line = 297u32;
-    let wrong_char = 51u32;
+    let wrong_char = 52u32;
 
     println!("\n=== Test Details ===");
     println!("Usage position: line {} (0-indexed), character {} (0-indexed)", usage_line, usage_char);
