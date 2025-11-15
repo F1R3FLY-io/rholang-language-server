@@ -2548,6 +2548,14 @@ impl super::super::semantic_node::SemanticNode for RholangNode {
                 let _ = channel;
                 1 + inputs.len() // channel + inputs
             }
+            RholangNode::SendReceiveSource { name, inputs, .. } => {
+                let _ = name;
+                1 + inputs.len() // name + inputs
+            }
+            RholangNode::ReceiveSendSource { name, .. } => {
+                let _ = name;
+                1 // just name
+            }
             RholangNode::New { decls, proc, .. } => {
                 let _ = (decls, proc);
                 decls.len() + 1 // decls + proc
@@ -2665,6 +2673,22 @@ impl super::super::semantic_node::SemanticNode for RholangNode {
                     Some(&**channel)
                 } else if index <= inputs.len() {
                     Some(&**inputs.get(index - 1)?)
+                } else {
+                    None
+                }
+            }
+            RholangNode::SendReceiveSource { name, inputs, .. } => {
+                if index == 0 {
+                    Some(&**name)
+                } else if index <= inputs.len() {
+                    Some(&**inputs.get(index - 1)?)
+                } else {
+                    None
+                }
+            }
+            RholangNode::ReceiveSendSource { name, .. } => {
+                if index == 0 {
+                    Some(&**name)
                 } else {
                     None
                 }
