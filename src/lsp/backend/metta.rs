@@ -351,12 +351,14 @@ impl RholangBackend {
                 let end_point = node.end_position();
 
                 // Calculate absolute line and column in the original document
-                let line = virtual_doc.parent_start.line + start_point.row as u32;
-                let column = if start_point.row == 0 {
-                    virtual_doc.parent_start.character + start_point.column as u32
-                } else {
-                    start_point.column as u32
+                // Use virtual_doc.map_to_parent() to correctly handle position mapping
+                let virtual_pos = LspPosition {
+                    line: start_point.row as u32,
+                    character: start_point.column as u32,
                 };
+                let parent_pos = virtual_doc.map_to_parent(virtual_pos);
+                let line = parent_pos.line;
+                let column = parent_pos.character;
 
                 let length = if start_point.row == end_point.row {
                     (end_point.column - start_point.column) as u32

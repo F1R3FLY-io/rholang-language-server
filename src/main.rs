@@ -655,16 +655,35 @@ async fn run_stdio_server(
     let stdin = BufReader::with_capacity(BUFFER_SIZE, tokio::io::stdin());
     let stdout = tokio::io::BufWriter::with_capacity(BUFFER_SIZE, tokio::io::stdout());
 
-    // Spawn reactive listener for PID events
+    // If CLI provided PID, spawn monitor immediately (fixes race condition)
+    // This ensures the monitor task exists before LSP initialization completes,
+    // preventing the scenario where the client dies before the monitor is spawned.
+    if let Some(cli_pid) = config.client_process_id {
+        info!("Starting client monitor for CLI-provided PID: {}", cli_pid);
+        let conn_manager_clone = conn_manager.clone();
+        let monitor_task = tokio::spawn(async move {
+            monitor_client_process(cli_pid, conn_manager_clone).await;
+        });
+        conn_manager.add_task(monitor_task);
+    }
+
+    // Still listen for runtime-provided PID (for LSP clients that send processId later)
+    // This handles cases where the client doesn't provide --client-process-id via CLI
     let conn_manager_clone = conn_manager.clone();
     let conn_manager_clone2 = conn_manager.clone();
+    let cli_pid = config.client_process_id; // Capture for comparison
     tokio::spawn(async move {
-        if let Some(pid) = pid_rx.recv().await {
-            info!("Received client PID from LSP initialization: {}", pid);
-            let monitor_task = tokio::spawn(async move {
-                monitor_client_process(pid, conn_manager_clone).await;
-            });
-            conn_manager_clone2.add_task(monitor_task);
+        if let Some(runtime_pid) = pid_rx.recv().await {
+            // Only spawn monitor if different from CLI PID (avoid duplicate monitors)
+            if Some(runtime_pid) != cli_pid {
+                info!("Received runtime PID from LSP initialization: {}", runtime_pid);
+                let monitor_task = tokio::spawn(async move {
+                    monitor_client_process(runtime_pid, conn_manager_clone).await;
+                });
+                conn_manager_clone2.add_task(monitor_task);
+            } else {
+                info!("Runtime PID {} matches CLI PID, skipping duplicate monitor", runtime_pid);
+            }
         }
     });
 

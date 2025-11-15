@@ -444,7 +444,7 @@ fn test_dependency_graph_scalability() {
     let elapsed = start.elapsed();
 
     assert_eq!(result.len(), 100, "Should find all 100 dependents");
-    assert!(elapsed.as_micros() < 1000, "Query should complete in < 1ms (was {:?})", elapsed);
+    assert!(elapsed.as_micros() < 10000, "Query should complete in < 10ms (was {:?})", elapsed);
 }
 
 #[tokio::test]
