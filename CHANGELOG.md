@@ -121,6 +121,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Fixed scope resolution for linear pattern bindings
   - Improved handling of repeated pattern variables
 
+#### Rename Fixes (Commits da018ea, 7440517, aca557c, 6bf2142)
+
+- **Position consistency for quoted parameters** (da018ea, ba783ca)
+  - Fixed inverted index position mismatch between declarations and references
+  - Store identifier-only positions (e.g., `fromRoom` not `@fromRoom`) consistently
+  - Prevents overlapping TextEdits by aligning Quote and Var positions
+  - Preserves `@` symbol during rename operations (renames `@foo` to `@bar`, not `bar`)
+  - Updated 4 goto-definition tests to reflect identifier-based positioning
+
+- **Binding node AST traversal** (7440517)
+  - Exposed children in LinearBind, RepeatedBind, and PeekBind nodes
+  - Added `source` field to children_count() and child_at() for for-comprehensions
+  - Enables rename through nested bindings: `for (@compiledQuery <- mettaCompile!?(code))`
+  - Fixed: clicking on `mettaCompile` now correctly identifies channel, not binding pattern
+  - All 412 tests pass with no regressions
+
+- **SendReceiveSource and ReceiveSendSource traversal** (aca557c)
+  - Exposed `name` field for send-receive syntax traversal (`ch!?` and `ch?!`)
+  - Added both node types to children_count() and child_at()
+  - SendReceiveSource: returns name + inputs (e.g., `mettaCompile!?(code)`)
+  - ReceiveSendSource: returns name only (e.g., `channel?!`)
+  - Fixes rename for send-receive synchronization constructs
+
+- **TextEdit overlap detection and merging** (6bf2142)
+  - Added ranges_overlap() to detect overlapping ranges on same line
+  - Added find_outermost_range() to merge overlapping ranges
+  - Keeps widest range when overlaps detected (preserves `@fromRoom`, not split edits)
+  - Ensures LSP spec compliance: no overlapping TextEdits
+  - Handles complex multi-reference scenarios with automatic merge
+
 #### Goto-Definition Fixes
 
 - **MeTTa grounded query patterns**
