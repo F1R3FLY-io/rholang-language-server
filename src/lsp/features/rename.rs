@@ -174,10 +174,45 @@ impl GenericRename {
                 RholangNode::Var { name, .. } => {
                     return Some(name.as_str());
                 }
-                // For Quote nodes (e.g., @fromRoom), extract from the inner node
+                // For Quote nodes (e.g., @fromRoom or @"string"), extract from the inner node
                 RholangNode::Quote { quotable, .. } => {
-                    if let RholangNode::Var { name, .. } = quotable.as_ref() {
-                        return Some(name.as_str());
+                    match quotable.as_ref() {
+                        // Quoted variable: @x
+                        RholangNode::Var { name, .. } => {
+                            return Some(name.as_str());
+                        }
+                        // Quoted string: @"foo"
+                        RholangNode::StringLiteral { value, .. } => {
+                            return Some(value.as_str());
+                        }
+                        _ => {}
+                    }
+                }
+                // For LinearBind/RepeatedBind/PeekBind nodes (e.g., for (@x <- ch) or for (@x <= ch))
+                RholangNode::LinearBind { names, .. }
+                | RholangNode::RepeatedBind { names, .. }
+                | RholangNode::PeekBind { names, .. } => {
+                    // Extract from first name (most common case)
+                    if let Some(first_name) = names.first() {
+                        match &**first_name {
+                            // Handle Quote wrapper (e.g., @fromRoom)
+                            RholangNode::Quote { quotable, .. } => {
+                                match quotable.as_ref() {
+                                    RholangNode::Var { name, .. } => {
+                                        return Some(name.as_str());
+                                    }
+                                    RholangNode::StringLiteral { value, .. } => {
+                                        return Some(value.as_str());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            // Direct Var (no Quote)
+                            RholangNode::Var { name, .. } => {
+                                return Some(name.as_str());
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 _ => {}
