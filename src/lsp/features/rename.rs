@@ -174,6 +174,10 @@ impl GenericRename {
                 RholangNode::Var { name, .. } => {
                     return Some(name.as_str());
                 }
+                // For StringLiteral nodes directly (quoted strings like @"init")
+                RholangNode::StringLiteral { value, .. } => {
+                    return Some(value.as_str());
+                }
                 // For Quote nodes (e.g., @fromRoom or @"string"), extract from the inner node
                 RholangNode::Quote { quotable, .. } => {
                     match quotable.as_ref() {

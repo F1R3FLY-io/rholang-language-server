@@ -1291,23 +1291,37 @@ impl Visitor for SymbolTableBuilder {
                     RholangNode::RepeatedBind { names, remainder, .. } |
                     RholangNode::PeekBind { names, remainder, .. } => {
                         for name in names {
-                            let bound_vars = self.collect_bound_vars(name);
-                            for var in bound_vars {
-                                if let RholangNode::Var { name: var_name, .. } = &*var {
-                                    if !var_name.is_empty() {  // Skip empty variable names
-                                        // Use the bind node position (includes @ prefix) instead of just the var name
-                                        let location = b.absolute_start(&self.root);
-                                        let symbol = Arc::new(Symbol::new(
-                                            var_name.clone(),
-                                            SymbolType::Variable,
-                                            self.current_uri.clone(),
-                                            location,
-                                        ));
-                                        new_table.insert(symbol);
-                                        trace!("Declared variable '{}' in input scope at {:?}", var_name, location);
-                                    } else {
-                                        trace!("Skipped empty variable name in input binding at {:?}", var.absolute_start(&self.root));
+                            // Extract symbol name and position from Quote wrapper
+                            let (symbol_name, symbol_position) = match &**name {
+                                // Quote with Var: @fromRoom
+                                RholangNode::Quote { quotable, .. } => {
+                                    match &**quotable {
+                                        RholangNode::Var { name: var_name, .. } => {
+                                            (Some(var_name.clone()), quotable.absolute_start(&self.root))
+                                        }
+                                        RholangNode::StringLiteral { value, .. } => {
+                                            (Some(value.clone()), quotable.absolute_start(&self.root))
+                                        }
+                                        _ => (None, quotable.absolute_start(&self.root))
                                     }
+                                }
+                                // Direct Var (no Quote)
+                                RholangNode::Var { name: var_name, .. } => {
+                                    (Some(var_name.clone()), name.absolute_start(&self.root))
+                                }
+                                _ => (None, name.absolute_start(&self.root))
+                            };
+
+                            if let Some(sym_name) = symbol_name {
+                                if !sym_name.is_empty() {
+                                    let symbol = Arc::new(Symbol::new(
+                                        sym_name.clone(),
+                                        SymbolType::Variable,
+                                        self.current_uri.clone(),
+                                        symbol_position,
+                                    ));
+                                    new_table.insert(symbol);
+                                    trace!("Declared variable '{}' in input scope at {:?}", sym_name, symbol_position);
                                 }
                             }
                         }
@@ -1413,20 +1427,37 @@ impl Visitor for SymbolTableBuilder {
                        RholangNode::RepeatedBind { names, remainder, .. } |
                        RholangNode::PeekBind { names, remainder, .. } = &**i {
                     for name in names {
-                        if let RholangNode::Var { name: var_name, .. } = &**name {
-                            if !var_name.is_empty() {  // Skip empty variable names
-                                // Use the bind node position (includes @ prefix) instead of just the var name
-                                let location = i.absolute_start(&self.root);
+                        // Extract symbol name and position from Quote wrapper
+                        let (symbol_name, symbol_position) = match &**name {
+                            // Quote with Var: @fromRoom
+                            RholangNode::Quote { quotable, .. } => {
+                                match &**quotable {
+                                    RholangNode::Var { name: var_name, .. } => {
+                                        (Some(var_name.clone()), quotable.absolute_start(&self.root))
+                                    }
+                                    RholangNode::StringLiteral { value, .. } => {
+                                        (Some(value.clone()), quotable.absolute_start(&self.root))
+                                    }
+                                    _ => (None, quotable.absolute_start(&self.root))
+                                }
+                            }
+                            // Direct Var (no Quote)
+                            RholangNode::Var { name: var_name, .. } => {
+                                (Some(var_name.clone()), name.absolute_start(&self.root))
+                            }
+                            _ => (None, name.absolute_start(&self.root))
+                        };
+
+                        if let Some(sym_name) = symbol_name {
+                            if !sym_name.is_empty() {
                                 let symbol = Arc::new(Symbol::new(
-                                    var_name.clone(),
+                                    sym_name.clone(),
                                     SymbolType::Variable,
                                     self.current_uri.clone(),
-                                    location,
+                                    symbol_position,
                                 ));
                                 new_table.insert(symbol);
-                                trace!("Declared variable '{}' in choice branch scope at {:?}", var_name, location);
-                            } else {
-                                trace!("Skipped empty variable name in choice branch at {:?}", name.absolute_start(&self.root));
+                                trace!("Declared variable '{}' in choice branch scope at {:?}", sym_name, symbol_position);
                             }
                         }
                     }

@@ -77,9 +77,6 @@ new getAll in {
                 }
             }
         }
-        Ok(()) => {
-            panic!("✗ BUG: Rename returned empty workspace edit");
-        }
         Err(e) => {
             panic!("✗ Rename failed: {}", e);
         }
@@ -185,44 +182,47 @@ new channel in {
     println!("✓ Test completed");
 });
 
-/// Test renaming a quoted string literal (@"string")
-with_lsp_client!(test_rename_quoted_string, CommType::Stdio, |client: &LspClient| {
-    println!("\n=== Test: Rename quoted string literal ===");
+/// Test renaming a quoted contract name (@"ContractName")
+with_lsp_client!(test_rename_quoted_contract_name, CommType::Stdio, |client: &LspClient| {
+    println!("\n=== Test: Rename quoted contract name ===");
 
     let source = r#"
-contract process(@"init", ret) = {
-  ret!(@"init")
+new ret, ack in {
+  contract @"ProcessService"(method, data, callback) = {
+    callback!(method, data)
+  } |
+  @"ProcessService"!("execute", 42, *ret)
 }
 "#;
 
-    let doc = client.open_document("/test/quoted_string_test.rho", source)
+    let doc = client.open_document("/test/quoted_contract_name_test.rho", source)
         .expect("Failed to open document");
 
     let _diagnostics = client.await_diagnostics(&doc)
         .expect("Failed to receive diagnostics");
 
-    // Position of @"init" in contract parameter
-    let param_position = Position {
-        line: 1,
-        character: 18,  // Inside "init" string
+    // Position of @"ProcessService" in contract definition (inside the string)
+    let contract_position = Position {
+        line: 2,
+        character: 14,  // Inside "ProcessService" string
     };
 
-    println!("Renaming @\"init\" to @\"start\"");
+    println!("Renaming @\"ProcessService\" to @\"TaskService\"");
 
-    match client.rename(&doc.uri(), param_position, "start") {
+    match client.rename(&doc.uri(), contract_position, "TaskService") {
         Ok(workspace_edit) => {
             if let Some(changes) = workspace_edit.changes {
                 let doc_uri = doc.uri().parse().expect("Valid URI");
                 if let Some(text_edits) = changes.get(&doc_uri) {
-                    // Should rename both the parameter and the usage
+                    // Should rename both the contract definition and the invocation
                     assert!(text_edits.len() >= 2,
-                        "Expected at least 2 edits for quoted string parameter + usage");
-                    println!("✓ Quoted string rename successful with {} edits", text_edits.len());
+                        "Expected at least 2 edits for contract name (definition + invocation)");
+                    println!("✓ Quoted contract name rename successful with {} edits", text_edits.len());
                 }
             }
         }
         Err(e) => {
-            panic!("✗ Quoted string rename failed: {}", e);
+            panic!("✗ Quoted contract name rename failed: {}", e);
         }
     }
 
@@ -290,52 +290,50 @@ new getData in {
     println!("✓ Test completed");
 });
 
-/// Test renaming quoted contract parameter
-with_lsp_client!(test_rename_quoted_contract_param, CommType::Stdio, |client: &LspClient| {
-    println!("\n=== Test: Rename quoted contract parameter ===");
+/// Test renaming LinearBind variable used in match expression
+with_lsp_client!(test_rename_linear_bind_in_match, CommType::Stdio, |client: &LspClient| {
+    println!("\n=== Test: Rename LinearBind in match ===");
 
     let source = r#"
-contract execute(@"action", @data, ret) = {
-  new x in {
-    x!(@"action") |
-    for (@result <- x) {
-      match @"action" {
-        "run" => ret!(true)
-        _ => ret!(false)
-      }
+new statusCh in {
+  statusCh!("ready") |
+  for (@status <- statusCh) {
+    match status {
+      "ready" => Nil
+      _ => Nil
     }
   }
 }
 "#;
 
-    let doc = client.open_document("/test/contract_param_test.rho", source)
+    let doc = client.open_document("/test/linear_bind_match_test.rho", source)
         .expect("Failed to open document");
 
     let _diagnostics = client.await_diagnostics(&doc)
         .expect("Failed to receive diagnostics");
 
-    // Position in the contract parameter @"action"
-    let param_position = Position {
-        line: 1,
-        character: 18,  // Inside "action"
+    // Position in the LinearBind @status
+    let bind_position = Position {
+        line: 3,
+        character: 8,  // @status
     };
 
-    println!("Renaming @\"action\" to @\"command\"");
+    println!("Renaming @status to @state");
 
-    match client.rename(&doc.uri(), param_position, "command") {
+    match client.rename(&doc.uri(), bind_position, "state") {
         Ok(workspace_edit) => {
             if let Some(changes) = workspace_edit.changes {
                 let doc_uri = doc.uri().parse().expect("Valid URI");
                 if let Some(text_edits) = changes.get(&doc_uri) {
-                    // Should rename: parameter + 2 usages in body
-                    assert!(text_edits.len() >= 3,
-                        "Expected at least 3 edits (param + 2 usages), got {}", text_edits.len());
-                    println!("✓ Contract parameter renamed successfully ({} edits)", text_edits.len());
+                    // Should rename: bind + usage in match
+                    assert!(text_edits.len() >= 2,
+                        "Expected at least 2 edits (bind + match usage), got {}", text_edits.len());
+                    println!("✓ LinearBind in match renamed successfully ({} edits)", text_edits.len());
                 }
             }
         }
         Err(e) => {
-            panic!("✗ Contract parameter rename failed: {}", e);
+            panic!("✗ LinearBind in match rename failed: {}", e);
         }
     }
 

@@ -159,7 +159,7 @@ fn find_node_at_position_recursive<'a>(
 }
 
 /// Check if a position is within a range (inclusive start, exclusive end)
-fn position_in_range(pos: &Position, start: &Position, end: &Position) -> bool {
+pub fn position_in_range(pos: &Position, start: &Position, end: &Position) -> bool {
     // Only use byte offset comparison if the target position has a computed byte offset
     // (i.e., byte > 0). If target has byte == 0, it means the byte offset was not computed
     // from the LSP position, so we must use line/column comparison.

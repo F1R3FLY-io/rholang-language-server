@@ -16,6 +16,51 @@ use crate::lsp::rholang_contracts::RholangContracts;
 pub struct GenericReferences;
 
 impl GenericReferences {
+    /// Find the nearest ancestor node that has a symbol_table in its metadata
+    ///
+    /// Walks down the tree from root following the position path, tracking the last node
+    /// that had symbol_table metadata. This gives us the correct scope for symbol lookup.
+    fn find_ancestor_symbol_table(root: &dyn SemanticNode, target_pos: &Position) -> Option<Arc<crate::ir::symbol_table::SymbolTable>> {
+        Self::find_ancestor_table_recursive(root, target_pos, &Position { row: 0, column: 0, byte: 0 })
+    }
+
+    /// Recursive helper for find_ancestor_symbol_table
+    fn find_ancestor_table_recursive(
+        node: &dyn SemanticNode,
+        target: &Position,
+        prev_end: &Position,
+    ) -> Option<Arc<crate::ir::symbol_table::SymbolTable>> {
+        use super::node_finder::position_in_range;
+
+        let start = node.base().start();
+        let end = node.base().end();
+
+        // Check if target position is within this node's span
+        if !position_in_range(target, &start, &end) {
+            return None;
+        }
+
+        // Check if this node has a symbol table - remember it
+        let current_table = node.metadata()
+            .and_then(|m| m.get("symbol_table"))
+            .and_then(|st| st.downcast_ref::<Arc<crate::ir::symbol_table::SymbolTable>>())
+            .cloned();
+
+        // Recursively search children
+        for i in 0..node.children_count() {
+            if let Some(child) = node.child_at(i) {
+                let child_start = child.base().start();
+                if let Some(child_table) = Self::find_ancestor_table_recursive(child, target, &start) {
+                    // Child or descendant has a symbol table - use it (it's more specific)
+                    return Some(child_table);
+                }
+            }
+        }
+
+        // No child had a symbol table, use ours if we have one
+        current_table
+    }
+
     /// Find all references to a symbol at the given position
     ///
     /// # Arguments
@@ -75,11 +120,15 @@ impl GenericReferences {
         debug!("Finding references for symbol '{}'", symbol_name);
 
         // Try to get the scope-specific symbol table from the node's metadata
-        // This allows us to access variables in nested scopes (new, let, for, etc.)
+        // If the node doesn't have one, find the nearest ancestor that does by walking the tree
         let scope_table = node.metadata()
             .and_then(|m| m.get("symbol_table"))
             .and_then(|st| st.downcast_ref::<Arc<crate::ir::symbol_table::SymbolTable>>())
             .cloned()
+            .or_else(|| {
+                // Node doesn't have symbol table, search for nearest ancestor with one
+                Self::find_ancestor_symbol_table(root, position)
+            })
             .unwrap_or_else(|| symbol_table.clone());
 
         // Two-tier resolution: Check contracts first, then local variables
@@ -230,6 +279,10 @@ impl GenericReferences {
                     if let RholangNode::Var { name, .. } = channel.as_ref() {
                         return Some(name.as_str());
                     }
+                }
+                // For StringLiteral nodes directly (quoted strings like @"init")
+                RholangNode::StringLiteral { value, .. } => {
+                    return Some(value.as_str());
                 }
                 // For Quote nodes (e.g., @fromRoom or @"string"), extract from the inner node
                 RholangNode::Quote { quotable, .. } => {
