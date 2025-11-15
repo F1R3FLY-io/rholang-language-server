@@ -21,6 +21,52 @@ use crate::lsp::rholang_contracts::RholangContracts;
 /// to rename them all atomically.
 pub struct GenericRename;
 
+/// Check if two ranges overlap on the same line
+///
+/// Per LSP spec, text edits must not overlap. This function detects overlapping
+/// ranges to ensure compliance.
+///
+/// # Returns
+/// `true` if ranges are on the same line and their character ranges intersect
+fn ranges_overlap(r1: &Range, r2: &Range) -> bool {
+    // Must be on exactly the same line (both start and end)
+    if r1.start.line != r2.start.line || r1.end.line != r2.end.line {
+        return false;
+    }
+
+    // Check if character ranges intersect
+    // Ranges overlap if: NOT (r1 entirely before r2 OR r2 entirely before r1)
+    !(r1.end.character <= r2.start.character || r2.end.character <= r1.start.character)
+}
+
+/// Find the outermost (widest) range among a set of overlapping ranges
+///
+/// When ranges overlap, we keep the one with the widest span to ensure we
+/// replace the entire symbol construct (e.g., `@fromRoom` not just `fromRoom`).
+///
+/// # Returns
+/// The range with the smallest start position and largest end position
+fn find_outermost_range(ranges: &[Range]) -> Range {
+    if ranges.is_empty() {
+        panic!("find_outermost_range called with empty vec");
+    }
+
+    let mut outermost = ranges[0];
+
+    for range in &ranges[1..] {
+        // Earlier start position (further left)
+        if range.start.character < outermost.start.character {
+            outermost.start = range.start;
+        }
+        // Later end position (further right)
+        if range.end.character > outermost.end.character {
+            outermost.end = range.end;
+        }
+    }
+
+    outermost
+}
+
 impl GenericRename {
     /// Rename a symbol at the given position
     ///
@@ -65,7 +111,7 @@ impl GenericRename {
 
         trace!("Found {} locations to rename", locations.len());
 
-        // Group edits by document URI with deduplication
+        // Group edits by document URI with overlap detection and deduplication
         let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
 
         for location in locations {
@@ -79,9 +125,46 @@ impl GenericRename {
                 .entry(location.uri)
                 .or_insert_with(Vec::new);
 
-            // Only add if not already present (deduplicate by range)
-            if !edits.iter().any(|e| e.range == edit.range) {
+            // Check for overlaps with existing edits
+            let overlapping_indices: Vec<usize> = edits
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| ranges_overlap(&e.range, &edit.range))
+                .map(|(i, _)| i)
+                .collect();
+
+            if overlapping_indices.is_empty() {
+                // No overlap - add the edit
                 edits.push(edit);
+            } else {
+                // Found overlapping edits - merge them by keeping outermost range
+                let mut all_ranges = vec![edit.range];
+                for &idx in &overlapping_indices {
+                    all_ranges.push(edits[idx].range);
+                }
+
+                let merged_range = find_outermost_range(&all_ranges);
+                let merged_edit = TextEdit {
+                    range: merged_range,
+                    new_text: new_name.to_string(),
+                };
+
+                // Remove overlapping edits (in reverse order to maintain indices)
+                for &idx in overlapping_indices.iter().rev() {
+                    edits.remove(idx);
+                }
+
+                // Add merged edit
+                edits.push(merged_edit);
+
+                debug!(
+                    "Merged {} overlapping edits into single edit at {}:{}-{}:{}",
+                    overlapping_indices.len() + 1,
+                    merged_range.start.line,
+                    merged_range.start.character,
+                    merged_range.end.line,
+                    merged_range.end.character
+                );
             }
         }
 
