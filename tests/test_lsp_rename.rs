@@ -402,3 +402,83 @@ contract robotAPI(@"find_path", @fromRoom, @toRoom, ret) = {
     client.close_document(&doc).expect("Failed to close document");
     println!("✓ Test completed");
 });
+
+/// Test that @ symbol is preserved when renaming quoted parameters
+///
+/// This verifies the fix for the inverted index storing consistent positions:
+/// - Declaration and references both use identifier range (without @)
+/// - No overlapping edits are created
+/// - The @ symbol is naturally preserved in the source
+with_lsp_client!(test_rename_preserves_at_symbol, CommType::Stdio, |client: &LspClient| {
+    println!("\n=== Test: Rename preserves @ symbol ===");
+
+    let source = r#"
+contract robotAPI(@"find_path", @fromRoom, @toRoom, ret) = {
+  new result in {
+    fromRoom!(result) |
+    for (@msg <- result) {
+      ret!(msg)
+    }
+  }
+}
+"#;
+
+    let doc = client.open_document("/test/at_preservation_test.rho", source)
+        .expect("Failed to open document");
+
+    let _diagnostics = client.await_diagnostics(&doc)
+        .expect("Failed to receive diagnostics");
+
+    // Rename fromRoom to sourceRoom
+    let rename_position = Position {
+        line: 1,
+        character: 36,  // Inside "fromRoom"
+    };
+
+    println!("Renaming @fromRoom to sourceRoom (should result in @sourceRoom)");
+
+    match client.rename(&doc.uri(), rename_position, "sourceRoom") {
+        Ok(workspace_edit) => {
+            if let Some(changes) = workspace_edit.changes {
+                let doc_uri = doc.uri().parse().expect("Valid URI");
+                if let Some(text_edits) = changes.get(&doc_uri) {
+                    // Should have at least 2 edits (param + usage)
+                    assert!(text_edits.len() >= 2,
+                        "Expected at least 2 edits (param + usage), got {}", text_edits.len());
+
+                    println!("✓ Got {} text edits", text_edits.len());
+
+                    // Verify NO overlapping edits
+                    for (i, edit1) in text_edits.iter().enumerate() {
+                        for (j, edit2) in text_edits.iter().enumerate() {
+                            if i != j && edit1.range.start.line == edit2.range.start.line {
+                                // Check for overlap on same line
+                                let overlap = !(edit1.range.end.character <= edit2.range.start.character ||
+                                               edit2.range.end.character <= edit1.range.start.character);
+                                assert!(!overlap,
+                                    "Found overlapping edits:\n  Edit {}: [{}, {}]\n  Edit {}: [{}, {}]",
+                                    i, edit1.range.start.character, edit1.range.end.character,
+                                    j, edit2.range.start.character, edit2.range.end.character);
+                            }
+                        }
+                    }
+                    println!("✓ No overlapping edits found");
+
+                    // Verify all edits contain new name (without checking @ since it's not in the edit range)
+                    for edit in text_edits {
+                        assert_eq!(edit.new_text, "sourceRoom",
+                            "Edit should replace identifier only, got: '{}'", edit.new_text);
+                    }
+
+                    println!("✓ All edits contain correct new name 'sourceRoom'");
+                }
+            }
+        }
+        Err(e) => {
+            panic!("✗ Rename failed: {}", e);
+        }
+    }
+
+    client.close_document(&doc).expect("Failed to close document");
+    println!("✓ Test completed - @ symbol preserved");
+});

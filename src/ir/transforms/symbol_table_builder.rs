@@ -351,12 +351,13 @@ impl SymbolTableBuilder {
                 }
             },
 
-            // Quoted pattern - for simple variables, use the Quote's position (the @ symbol)
+            // Quoted pattern - for simple variables, use the Var's position (identifier only, not the @ symbol)
             RholangNode::Quote { quotable, .. } => {
-                // For contract parameters like @destRoom, point to the @ symbol
+                // For contract parameters like @destRoom, point to the identifier (destRoom), not the @ symbol
+                // This ensures declaration and reference positions are consistent
                 if let RholangNode::Var { name, .. } = &**quotable {
                     if !name.is_empty() && name != "_" {
-                        let position = node.absolute_start(&self.root);  // Use Quote's position, not Var's
+                        let position = quotable.absolute_start(&self.root);  // Use Var's position (identifier), not Quote's
                         trace!("extract_bindings_recursive: Extracted quoted Var '{}' at {:?}", name, position);
                         bindings.push((name.clone(), position));
                         return;  // Don't recurse for simple quoted variables
