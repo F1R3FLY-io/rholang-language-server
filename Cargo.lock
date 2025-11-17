@@ -1914,9 +1914,11 @@ checksum = "1171693293099992e19cddea4e8b849964e9846f4acee11b3948bcc337be8776"
 [[package]]
 name = "liblevenshtein"
 version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e870924857dcca135e4fc7f24e16396051ef82b97007146a7aefb27cf604f7b6"
 dependencies = [
  "parking_lot",
- "pathmap",
+ "pathmap 0.2.0-alpha0 (registry+https://github.com/rust-lang/crates.io-index)",
  "rustc-hash 1.1.0",
  "smallvec",
  "thiserror 2.0.12",
@@ -2095,7 +2097,7 @@ dependencies = [
  "mork-expr",
  "mork-frontend",
  "mork-interning",
- "pathmap",
+ "pathmap 0.2.0-alpha0",
  "regex",
  "rustyline",
  "smallvec",
@@ -2159,7 +2161,7 @@ dependencies = [
  "crypto",
  "hex",
  "itertools 0.12.1",
- "pathmap",
+ "pathmap 0.2.0-alpha0",
  "proptest",
  "proptest-derive",
  "prost 0.14.1",
@@ -2194,7 +2196,7 @@ dependencies = [
  "mork-expr",
  "mork-frontend",
  "mork-interning",
- "pathmap",
+ "pathmap 0.2.0-alpha0",
  "rand 0.9.1",
  "serde",
 ]
@@ -2215,7 +2217,7 @@ version = "0.1.0"
 dependencies = [
  "memmap2",
  "mork-expr",
- "pathmap",
+ "pathmap 0.2.0-alpha0",
  "regex",
  "typed-arena",
 ]
@@ -2230,7 +2232,7 @@ dependencies = [
  "memmap2",
  "mork-expr",
  "mork-frontend",
- "pathmap",
+ "pathmap 0.2.0-alpha0",
  "rayon",
  "zip",
 ]
@@ -2541,6 +2543,26 @@ dependencies = [
  "reusing-vec",
  "smallvec",
  "tikv-jemallocator",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "pathmap"
+version = "0.2.0-alpha0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8685798c049192c69c0bf739af32581a9dd21b852d46a084035b12ccf71fe3c7"
+dependencies = [
+ "arrayvec",
+ "dyn-clone",
+ "fast-slice-utils",
+ "gxhash 3.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "libz-ng-sys",
+ "local-or-heap",
+ "maybe-dangling",
+ "num-traits",
+ "pathmap-derive",
+ "reusing-vec",
+ "smallvec",
  "xxhash-rust",
 ]
 
@@ -3254,7 +3276,7 @@ dependencies = [
  "notify",
  "once_cell",
  "parking_lot",
- "pathmap",
+ "pathmap 0.2.0-alpha0",
  "petgraph 0.8.2",
  "prost 0.13.5",
  "quickcheck",

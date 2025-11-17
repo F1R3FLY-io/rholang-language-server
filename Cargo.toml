@@ -23,7 +23,7 @@ dirs = "5.0"  # Platform-specific cache directories (Phase B-3)
 clap = { version = "4.5", features = ["derive"] }
 const_format = "0.2"  # Used for compile-time string formatting
 dashmap = "6.1"
-liblevenshtein = { path = "../liblevenshtein-rust", features = ["pathmap-backend"] }  # Fuzzy matching + contextual completion with DynamicDawg (Phase 9)
+liblevenshtein = { version = "^0.7", features = ["pathmap-backend"] }  # Fuzzy matching + contextual completion with DynamicDawg (Phase 9)
 futures = "0.3"  # Includes futures-util functionality
 lru = "0.12"  # LRU cache for document IR caching (Phase B-2)
 parking_lot = "0.12"
@@ -38,6 +38,7 @@ mettatron = { git = "https://github.com/F1R3FLY-io/MeTTa-Compiler.git", branch =
 tree-sitter-metta = { git = "https://github.com/F1R3FLY-io/MeTTa-Compiler.git", branch = "dylon/rholang-language-server" }
 notify = "5.0"
 pathmap = { git = "https://github.com/Adam-Vandervorst/PathMap.git", branch = "master", features = ["jemalloc", "arena_compact"] }
+# pathmap = { version = "0.2.0-alpha0", features = ["jemalloc", "arena_compact"] }
 petgraph = "0.8.2"
 prost = "0.13"
 rayon = "1.10"
